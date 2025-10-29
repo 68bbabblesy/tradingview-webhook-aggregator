@@ -60,17 +60,17 @@ app.get("/test-telegram", async (req, res) => {
       }),
     });
 
+    // Capture full response text to debug
     const responseBody = await response.json();
     console.log("📩 Telegram response:", responseBody);
 
     if (responseBody.ok) {
       res.send("Telegram test message sent successfully!");
     } else {
-      res.send("Failed to send message to Telegram.");
+      res.send(`Failed to send message to Telegram: ${responseBody.description}`);
     }
   } catch (err) {
     console.error("❌ Telegram test failed:", err);
     res.status(500).send("Telegram test failed");
   }
 });
-
