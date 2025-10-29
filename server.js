@@ -4,24 +4,22 @@ import fetch from "node-fetch";
 const app = express();
 app.use(express.json());
 
-// Environment variables (set these in Render)
 const TELEGRAM_BOT_TOKEN = process.env.TELEGRAM_BOT_TOKEN;
 const TELEGRAM_CHAT_ID = process.env.TELEGRAM_CHAT_ID;
 
 let events = [];
 
-// Handle incoming TradingView alerts
+// Incoming TradingView alerts
 app.post("/incoming", (req, res) => {
   events.push({ data: req.body, time: Date.now() });
   console.log("✅ Webhook received:", req.body);
   res.sendStatus(200);
 });
 
-// Every 5 seconds, check number of alerts received in last 45 seconds
+// Aggregation logic: every 5 seconds, check last 45 seconds
 setInterval(async () => {
   const now = Date.now();
-
-  // Keep only events from the last 45 seconds
+  // Keep only events in the last 45 seconds
   events = events.filter(e => now - e.time < 45000);
 
   if (events.length >= 3) {
@@ -39,15 +37,12 @@ setInterval(async () => {
         }),
       });
       console.log("📩 Telegram alert sent:", message);
-
-      // Reset events after sending
-      events = [];
+      events = []; // reset after sending
     } catch (err) {
       console.error("❌ Telegram error:", err);
     }
   }
 }, 5000); // check every 5 seconds
 
-// Listen on Render's default port
 const PORT = process.env.PORT || 10000;
 app.listen(PORT, () => console.log(`Running on port ${PORT}`));
