@@ -28,18 +28,15 @@ setInterval(async () => {
       .join(", ")}`;
 
     try {
-      const telegramRes = await fetch(`https://api.telegram.org/bot${BOT_TOKEN}/sendMessage`, {
-  method: "POST",
-  headers: { "Content-Type": "application/json" },
-  body: JSON.stringify({
-    chat_id: CHAT_ID,
-    text: message,
-  }),
-});
-
-const telegramText = await telegramRes.text();
-console.log("📩 Telegram API response:", telegramText);
-
+      await fetch(`https://api.telegram.org/bot${TELEGRAM_BOT_TOKEN}/sendMessage`, {
+        method: "POST",
+        headers: { "Content-Type": "application/json" },
+        body: JSON.stringify({
+          chat_id: TELEGRAM_CHAT_ID,
+          text: message,
+        }),
+      });
+      console.log("📩 Telegram alert sent:", message);
       events = []; // reset after sending
     } catch (err) {
       console.error("❌ Telegram error:", err);
