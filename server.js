@@ -8,9 +8,11 @@ const DEST_URL = process.env.DEST_URL; // Destination for aggregated webhooks
 let events = [];
 
 app.post("/incoming", (req, res) => {
+  console.log("✅ Webhook received:", JSON.stringify(req.body, null, 2));
   events.push(req.body);
   res.sendStatus(200);
 });
+
 
 setInterval(async () => {
   if (events.length === 0) return;
