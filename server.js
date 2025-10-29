@@ -46,3 +46,31 @@ setInterval(async () => {
 
 const PORT = process.env.PORT || 10000;
 app.listen(PORT, () => console.log(`Running on port ${PORT}`));
+
+// Test Telegram connectivity manually
+app.get("/test-telegram", async (req, res) => {
+  const message = "✅ Test message from Render to Telegram!";
+  try {
+    const response = await fetch(`https://api.telegram.org/bot${TELEGRAM_BOT_TOKEN}/sendMessage`, {
+      method: "POST",
+      headers: { "Content-Type": "application/json" },
+      body: JSON.stringify({
+        chat_id: TELEGRAM_CHAT_ID,
+        text: message,
+      }),
+    });
+
+    const responseBody = await response.json();
+    console.log("📩 Telegram response:", responseBody);
+
+    if (responseBody.ok) {
+      res.send("Telegram test message sent successfully!");
+    } else {
+      res.send("Failed to send message to Telegram.");
+    }
+  } catch (err) {
+    console.error("❌ Telegram test failed:", err);
+    res.status(500).send("Telegram test failed");
+  }
+});
+
