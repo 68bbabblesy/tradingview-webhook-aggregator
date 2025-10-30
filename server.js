@@ -52,7 +52,7 @@ app.get("/test-telegram", async (req, res) => {
   const message = "✅ Test message from Render to Telegram!";
   
   // Hardcode token and chat ID directly for this test (to remove any variable loading issues)
-  const TELEGRAM_BOT_TOKEN = "8167961900:AAG29I3GN7HjN2qUj6X_sqvq7n8bISk-1Ck";  // Your token
+  const TELEGRAM_BOT_TOKEN = "8167961900:AAETraxw_MFwOFdzTmg-41Wv9GwWVlPUgVA";  // Your token
   const TELEGRAM_CHAT_ID = "1075756198"; // Your chat ID
   
   try {
