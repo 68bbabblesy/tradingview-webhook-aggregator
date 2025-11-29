@@ -1,194 +1,167 @@
-import express from "express";
-import fetch from "node-fetch";
+const express = require("express");
+const bodyParser = require("body-parser");
+const axios = require("axios");
 
 const app = express();
-app.use(express.json());
+app.use(bodyParser.json());
 
-// ---------- Env (trim + defaults) ----------
-const TELEGRAM_BOT_TOKEN = (process.env.TELEGRAM_BOT_TOKEN || "").trim();
-const TELEGRAM_CHAT_ID   = (process.env.TELEGRAM_CHAT_ID || "").trim();
-const WINDOW_SECONDS_DEF = Number((process.env.WINDOW_SECONDS || "45").trim());
-const CHECK_MS           = Number((process.env.CHECK_MS || "1000").trim());
-const ALERT_SECRET       = (process.env.ALERT_SECRET || "").trim();
-const COOLDOWN_SECONDS   = Number((process.env.COOLDOWN_SECONDS || "60").trim());
+// =========================
+// TELEGRAM CONFIG
+// =========================
+const BOT1 = process.env.TELEGRAM_BOT_TOKEN;
+const CHAT1 = process.env.TELEGRAM_CHAT_ID;
 
-// RULES is a JSON array. Example below in step 2.
-let RULES = [];
-try {
-  const raw = (process.env.RULES || "").trim();
-  RULES = raw ? JSON.parse(raw) : [];
-} catch (e) {
-  console.error("❌ Failed to parse RULES JSON:", e);
-  RULES = [];
+const BOT2 = process.env.TELEGRAM_BOT_TOKEN_2;
+const CHAT2 = process.env.TELEGRAM_CHAT_ID_2;
+
+const TG1 = `https://api.telegram.org/bot${BOT1}/sendMessage`;
+const TG2 = `https://api.telegram.org/bot${BOT2}/sendMessage`;
+
+// =========================
+// CORE SETTINGS
+// =========================
+const WINDOW = parseInt(process.env.WINDOW_SECONDS || "45");     // any-3-in-45s
+const CHECK_MS = parseInt(process.env.CHECK_MS || "1000");        // engine pulse
+const SPECIAL_TOKENS = (process.env.SPECIAL_TOKENS || "").split(",");
+
+// =========================
+// DATA STORAGE
+// =========================
+let recent = [];         // for ANY-3-in-45s bot
+let urgentRecent = [];   // for urgent rules
+let lastP = {};          // per-symbol timestamp memory
+
+// =========================
+// HELPER FUNCTIONS
+// =========================
+function now() {
+  return Date.now();
 }
 
-// Basic validation + defaults per rule
-RULES = RULES.map((r, idx) => {
-  const name = (r.name || `rule${idx + 1}`).toString();
-  const groups = Array.isArray(r.groups) ? r.groups.map(s => String(s).trim()).filter(Boolean) : [];
-  const required = r.required ? String(r.required).trim() : null; // can be null/undefined if not required
-  const threshold = Number(r.threshold || 3);
-  const windowSeconds = Number(r.windowSeconds || WINDOW_SECONDS_DEF);
-  return { name, groups, required, threshold, windowSeconds };
-}).filter(r => r.groups.length >= 1);
-
-console.log("🔧 ENV CHECK", {
-  hasToken: !!TELEGRAM_BOT_TOKEN,
-  tokenPrefix: TELEGRAM_BOT_TOKEN ? TELEGRAM_BOT_TOKEN.slice(0, 8) : null,
-  tokenHasColon: TELEGRAM_BOT_TOKEN.includes(":"),
-  chatIdSet: !!TELEGRAM_CHAT_ID,
-  checkMs: CHECK_MS,
-  defaultWindow: WINDOW_SECONDS_DEF,
-  cooldownSec: COOLDOWN_SECONDS,
-  rules: RULES,
-});
-
-// ---------- In-memory store ----------
-// events[group] = [{ time, data }, ...]
-const events = Object.create(null);
-// cooldowns per rule name: unixSec until which we suppress repeats
-const cooldownUntil = Object.create(null);
-
-const nowMs = () => Date.now();
-const nowSec = () => Math.floor(Date.now() / 1000);
-
-// Prune a buffer to only keep events within windowMs
-function pruneOld(buf, windowMs) {
-  const cutoff = nowMs() - windowMs;
-  let i = 0;
-  while (i < buf.length && buf[i].time < cutoff) i++;
-  if (i > 0) buf.splice(0, i);
+function ageMs(t) {
+  return now() - t;
 }
 
-// Compute the maximum window across all rules so we can keep buffers big enough
-function maxRuleWindowMs() {
-  if (!RULES.length) return WINDOW_SECONDS_DEF * 1000;
-  return Math.max(...RULES.map(r => r.windowSeconds)) * 1000;
-}
-
-// ---------- Webhook ----------
-app.post("/incoming", (req, res) => {
+async function sendTelegram(url, chat, text) {
   try {
-    const body = req.body || {};
-    if (ALERT_SECRET && body.secret !== ALERT_SECRET) {
-      console.log("❌ invalid secret");
-      return res.sendStatus(401);
-    }
+    await axios.post(url, {
+      chat_id: chat,
+      text,
+      parse_mode: "HTML"
+    });
+  } catch (err) {
+    console.log("Telegram error:", err.response?.data || err.message);
+  }
+}
 
-    // Group key is required for multi-pair logic; fallback to symbol if you want
-    const key = (body.group || body.symbol || "unknown").toString();
+// =========================
+// RULE EVALUATION LOOP
+// =========================
+setInterval(() => {
+  const tNow = now();
 
-    if (!events[key]) events[key] = [];
-    events[key].push({ time: nowMs(), data: body });
+  // Purge windows
+  recent = recent.filter(a => tNow - a.ts <= WINDOW * 1000);
+  urgentRecent = urgentRecent.filter(a => tNow - a.ts <= 5 * 60 * 1000);
 
-    // Prune using the largest window across all rules
-    pruneOld(events[key], maxRuleWindowMs());
+  // ---- NORMAL BOT: ANY-3-in-45s across groups A–F ----
+  if (recent.length >= 3) {
+    const last3 = recent.slice(-3);
+    const counts = { A:0,B:0,C:0,D:0,E:0,F:0 };
 
-    console.log("📥 received", {
-      key,
-      body,
-      countNow: events[key].length,
+    last3.forEach(a => {
+      if (counts[a.group] !== undefined) counts[a.group]++;
     });
 
-    res.sendStatus(200);
-  } catch (e) {
-    console.error("❌ /incoming error:", e);
-    res.sendStatus(200);
+    const msg =
+      `🚨 Rule "ANY3" fired: 3 alerts in last ${WINDOW}s\n` +
+      `• A: ${counts.A}\n` +
+      `• B: ${counts.B}\n` +
+      `• C: ${counts.C}\n` +
+      `• D: ${counts.D}\n` +
+      `• E: ${counts.E}\n` +
+      `• F: ${counts.F}\n\n` +
+      `Recent alerts:\n` +
+      last3.map(a => 
+        `[${a.group}] symbol=${a.symbol} price=${a.price} time=${a.time}`
+      ).join("\n");
+
+    sendTelegram(TG1, CHAT1, msg);
+    recent = [];   // reset window
   }
-});
 
-// ---------- Aggregation loop ----------
-setInterval(async () => {
-  if (!RULES.length) return;
+  // ---- URGENT BOT ----
+  urgentRecent.forEach((a, i) => {
+    for (let j = i + 1; j < urgentRecent.length; j++) {
+      const b = urgentRecent[j];
+      const diff = Math.abs(a.ts - b.ts);
 
-  const byGroup = (g) => {
-    const buf = events[g] || (events[g] = []);
-    return buf;
-  };
-
-  for (const rule of RULES) {
-    const { name, groups, required, threshold, windowSeconds } = rule;
-
-    // Trim each group's buffer to this rule's window (each rule can have different windows)
-    for (const g of groups) pruneOld(byGroup(g), windowSeconds * 1000);
-
-    // Count per group and sum
-    const counts = {};
-    let total = 0;
-    for (const g of groups) {
-      const c = byGroup(g).length;
-      counts[g] = c;
-      total += c;
-    }
-    const requiredCount = required ? (counts[required] || 0) : null;
-
-    // Cooldown check
-    const cds = cooldownUntil[name] || 0;
-    const onCooldown = cds > nowSec();
-
-    const passesRequired = required ? requiredCount >= 1 : true;
-    const meetsThreshold = total >= threshold;
-
-    if (meetsThreshold && passesRequired && !onCooldown) {
-      // Build message
-      const header = `🚨 Rule "${name}" fired: ${total} alerts in last ${windowSeconds}s`;
-      const lines = [
-        header,
-        ...(required ? [`• required "${required}" count: ${requiredCount}`] : []),
-        ...groups.map(g => `• ${g} count: ${counts[g] || 0}`),
-        "",
-        "Recent alerts:",
-      ];
-
-      // Include a few recent entries per group
-      for (const g of groups) {
-        const buf = byGroup(g);
-        const tail = buf.slice(-Math.min(5, buf.length));
-        tail.forEach((e, i) => {
-          lines.push(`[${g}] #${buf.length - tail.length + i + 1} ` +
-            `symbol=${e.data.symbol ?? "?"} price=${e.data.price ?? "?"} time=${e.data.time ?? "?"}`);
-        });
+      // Rule 1: Group B, same symbol, <=20s
+      if (a.group === "B" && b.group === "B" && a.symbol === b.symbol && diff <= 20*1000) {
+        sendTelegram(TG2, CHAT2,
+          `🔥 URGENT: Group B pair in 20s\n${a.symbol}\nTimes:\n${a.time}\n${b.time}`);
       }
-      const text = lines.join("\n");
 
-      try {
-        const url = `https://api.telegram.org/bot${TELEGRAM_BOT_TOKEN}/sendMessage`;
-        const r = await fetch(url, {
-          method: "POST",
-          headers: { "Content-Type": "application/json" },
-          body: JSON.stringify({ chat_id: TELEGRAM_CHAT_ID, text }),
-        });
-        const resp = await r.text();
-        console.log("📩 telegram", name, "status", r.status, "resp:", resp.slice(0, 300));
-      } catch (err) {
-        console.error("❌ telegram error", err);
-      } finally {
-        // Clear just these groups (so this rule doesn't immediately fire again on the same events)
-        for (const g of groups) events[g] = [];
-        // Start cooldown for this rule
-        cooldownUntil[name] = nowSec() + COOLDOWN_SECONDS;
+      // Rule 2: Group E, same symbol, <=20s
+      if (a.group === "E" && b.group === "E" && a.symbol === b.symbol && diff <= 20*1000) {
+        sendTelegram(TG2, CHAT2,
+          `🔥 URGENT: Group E pair in 20s\n${a.symbol}\nTimes:\n${a.time}\n${b.time}`);
+      }
+
+      // Rule 3: ANY group A–F: same symbol, <=30s
+      if (["A","B","C","D","E","F"].includes(a.group) &&
+          a.group === b.group &&
+          a.symbol === b.symbol &&
+          diff <= 30*1000) 
+      {
+        sendTelegram(TG2, CHAT2,
+          `🔥 URGENT: Same symbol in 30s\nGroup ${a.group}\nSymbol: ${a.symbol}`);
+      }
+
+      // Rule 4: SPECIAL TOKENS list: same group, same symbol, <=4min
+      if (SPECIAL_TOKENS.includes(a.symbol) &&
+          a.group === b.group &&
+          a.symbol === b.symbol &&
+          diff <= 4*60*1000)
+      {
+        sendTelegram(TG2, CHAT2,
+          `🔥 URGENT: Special Token (${a.symbol}) repeated in 4m\nGroup ${a.group}`);
       }
     }
-  }
+  });
+
 }, CHECK_MS);
 
-// ---------- Diagnostics ----------
-app.get("/rules", (_req, res) => {
-  res.json({ rules: RULES });
+// =========================
+// RECEIVING ALERTS
+// =========================
+app.post("/incoming", (req, res) => {
+  const body = req.body || {};
+  const group = body.group;
+  const symbol = body.symbol;
+  const price = body.price;
+  const time = body.time;
+
+  if (!group || !symbol || !time) {
+    return res.json({ ok:false, error:"Missing fields" });
+  }
+
+  const ts = now();
+
+  // Normal bot groups A–F
+  if (["A","B","C","D","E","F"].includes(group)) {
+    recent.push({ group, symbol, price, time, ts });
+  }
+
+  // Urgent bot listens to everything A–Z
+  urgentRecent.push({ group, symbol, price, time, ts });
+
+  res.json({ ok:true });
 });
 
-app.get("/debug/:key", (req, res) => {
-  const key = req.params.key;
-  const buf = events[key] || [];
-  // prune with max window just for a consistent view
-  pruneOld(buf, maxRuleWindowMs());
-  res.json({ key, count: buf.length, sample: buf.slice(-5) });
-});
+// =========================
+app.get("/ping", (req, res) => res.json({ ok:true }));
+// =========================
 
-app.get("/ping", (_req, res) => {
-  res.json({ ok: true, groupsKnown: Object.keys(events), rules: RULES.map(r => r.name) });
-});
-
-// ---------- Start ----------
-const PORT = Number((process.env.PORT || "10000").trim());
-app.listen(PORT, () => console.log(`Running on :${PORT}`));
+const PORT = process.env.PORT || 10000;
+app.listen(PORT, () => console.log("Server running on", PORT));
