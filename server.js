@@ -400,37 +400,42 @@ app.post("/incoming", (req, res) => {
         }
 
         // --------------------------------------------------------------------
-        // FIX / NORMALIZE ESSENTIAL FIELDS (NEVER DROP ALERTS)
-        // --------------------------------------------------------------------
+// FIX / NORMALIZE ESSENTIAL FIELDS (NEVER DROP ALERTS)
+// --------------------------------------------------------------------
 
-        // GROUP — if missing, try fallback or infer type
-        if (!body.group || body.group === "") {
+// Capture TradingView 'kind' safely
+const kind = (body.kind || "").toString().trim();
 
-            // Rare case: TradingView sometimes sends "Group" instead of "group"
-            if (body.Group) {
-                body.group = body.Group.toString().trim();
-            }
-            // All H indicators use kind:"fib-cross"
-            else if (body.kind === "fib-cross") {
-                body.group = "H";
-            }
-            // Default fallback for missing F alerts
-            else {
-                body.group = "F";
-            }
-        }
+// GROUP — if missing, try fallback or infer type
+if (!body.group || body.group === "") {
 
-        // SYMBOL — if missing, try fallback
-        if (!body.symbol || body.symbol === "") {
-            if (body.ticker) {
-                body.symbol = body.ticker.toString().trim();
-            }
-        }
+    // Rare case: TradingView sometimes sends "Group"
+    if (body.Group) {
+        body.group = body.Group.toString().trim();
+    }
 
-        // TIME — always generate if missing
-        if (!body.time || body.time === "") {
-            body.time = nowMs();
-        }
+    // H indicators (fib script always sends kind:"fib-cross")
+    else if (kind === "fib-cross") {
+        body.group = "H";
+    }
+
+    // Default fallback → F (your special script)
+    else {
+        body.group = "F";
+    }
+}
+
+// SYMBOL — if missing, try fallback
+if (!body.symbol || body.symbol === "") {
+    if (body.ticker) {
+        body.symbol = body.ticker.toString().trim();
+    }
+}
+
+// TIME — always generate if missing
+if (!body.time || body.time === "") {
+    body.time = nowMs();
+}
 
         // Final cleaned values
         const group  = body.group.toString().trim();
