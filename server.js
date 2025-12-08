@@ -1,6 +1,5 @@
-
 // ==========================================================
-//  PART 1 — IMPORTS, CONFIG, HELPERS, NORMALIZATION, STORAGE
+//  tradingview-webhook-aggregator — CLEAN FULL SERVER
 // ==========================================================
 
 import express from "express";
@@ -18,18 +17,18 @@ const TELEGRAM_CHAT_ID_1   = (process.env.TELEGRAM_CHAT_ID || "").trim();
 const TELEGRAM_BOT_TOKEN_2 = (process.env.TELEGRAM_BOT_TOKEN_2 || "").trim();
 const TELEGRAM_CHAT_ID_2   = (process.env.TELEGRAM_CHAT_ID_2 || "").trim();
 
-// Main window (used by Bot1 aggregator)
 const WINDOW_SECONDS_DEF = Number((process.env.WINDOW_SECONDS || "45").trim());
-
 const CHECK_MS           = Number((process.env.CHECK_MS || "1000").trim());
 const ALERT_SECRET       = (process.env.ALERT_SECRET || "").trim();
 const COOLDOWN_SECONDS   = Number((process.env.COOLDOWN_SECONDS || "60").trim());
 
-// Tracking window (used by Matching & Tracking rules)
-const TRACKING_WINDOW_MS = WINDOW_SECONDS_DEF * 1000;
+// Bot2 timing
+const MATCH_WINDOW_MS = 65 * 1000;                 // 65 seconds for matching rules
+const TWO_HOURS_MS    = 2 * 60 * 60 * 1000;
+const FIVE_HOURS_MS   = 5 * 60 * 60 * 1000;
 
 // -----------------------------
-// BOT1 RULES (unchanged)
+// BOT1 RULES (same as before)
 // -----------------------------
 let RULES = [];
 try {
@@ -40,23 +39,21 @@ try {
     RULES = [];
 }
 
-// Normalize rule fields for Bot1 only
 RULES = RULES.map((r, idx) => {
     const name = (r.name || `rule${idx + 1}`).toString();
     const groups = Array.isArray(r.groups)
         ? r.groups.map(s => String(s).trim()).filter(Boolean)
         : [];
-    const threshold = Number(r.threshold || 3);
+    const threshold     = Number(r.threshold || 3);
     const windowSeconds = Number(r.windowSeconds || WINDOW_SECONDS_DEF);
     return { name, groups, threshold, windowSeconds };
 }).filter(r => r.groups.length > 0);
 
 // -----------------------------
-// TIME HELPERS
+// HELPERS
 // -----------------------------
 const nowMs  = () => Date.now();
 const nowSec = () => Math.floor(Date.now() / 1000);
-
 
 // -----------------------------
 // TELEGRAM SENDERS
@@ -79,11 +76,11 @@ async function sendToTelegram2(text) {
     });
 }
 
-// -----------------------------
-// STORAGE FOR BOT1 AGGREGATION
-// -----------------------------
-const events = {};
-const cooldownUntil = {};
+// ==========================================================
+/*  BOT1 STORAGE + HELPERS (unchanged style)               */
+// ==========================================================
+const events = {};           // per-group events for Bot1
+const cooldownUntil = {};   // cooldown per rule name
 
 function pruneOld(buf, windowMs) {
     const cutoff = nowMs() - windowMs;
@@ -98,391 +95,233 @@ function maxWindowMs() {
 }
 
 // ==========================================================
-//  BOT2 ENGINE STORAGE (tracking + matching)
+/*  BOT2 STATE (tracking + matching)                       */
 // ==========================================================
 
-// Record the *last alert* of each group for each symbol
-const lastAlert = {};  
-// Format:
-// lastAlert[symbol] = {
-//   A: {time: ms, payload: {}},
-//   B: {...},
-//   ...
-//   F: {...},
-//   G: {...},
-//   H: {...}
-// }
+// last alert per (symbol, group)
+const lastBySymbolGroup = {};   // { [symbol]: { [group]: { ts, level } } }
 
-// Track the “waiting for H/G after A–D” state:
-const trackingStart = {};  
-// trackingStart[symbol] = {
-//   startGroup: "A"|"B"|"C"|"D",
-//   startTime: ms,
-//   payload: {...}
-// }
+// Tracking1: after A–D, wait for G/H
+const trackingStart = {};       // { [symbol]: { group, ts } }
 
-// For Tracking 2 & 3: last time ANY F/G/H alert happened per symbol
-const lastBig = {};  
-// lastBig[symbol] = ms
+// Tracking2/3: last time F/G/H fired
+const lastBigTs = {};           // { [symbol]: ms }
 
-// -----------------------------
-// FIB LEVEL NORMALIZATION
-// -----------------------------
-function normalizeFibLevel(group, body) {
-    // GROUP F → always ±1.30
-    if (group === "F") {
-        return {
-            levelStr: "1.30",
-            numericLevels: [1.30, -1.30]
-        };
-    }
-
-    // GROUP G → uses fib_level
-    if (group === "G" && body.fib_level) {
-        const lv = parseFloat(body.fib_level);
-        if (!isNaN(lv)) return { levelStr: body.fib_level, numericLevels: [lv, -lv] };
-    }
-
-    // GROUP H → uses "level"
-    if (group === "H" && body.level) {
-        const lv = parseFloat(body.level);
-        if (!isNaN(lv)) return { levelStr: body.level, numericLevels: [lv, -lv] };
-    }
-
-    // Groups A–D
-    return { levelStr: null, numericLevels: [] };
-}
-
-// -----------------------------
-// SAVE ALERT TO lastAlert STRUCTURE
-// -----------------------------
-function saveAlert(symbol, group, timestamp, body) {
-    if (!lastAlert[symbol]) lastAlert[symbol] = {};
-
-    lastAlert[symbol][group] = {
-        time: timestamp,
-        payload: body
-    };
-}
-
-// -----------------------------
-// SAFE GET
-// -----------------------------
-function safeGet(symbol, group) {
-    if (!lastAlert[symbol]) return null;
-    return lastAlert[symbol][group] || null;
+// helper to record last alert
+function updateLastSymbolGroup(symbol, group, ts, level) {
+    if (!lastBySymbolGroup[symbol]) lastBySymbolGroup[symbol] = {};
+    lastBySymbolGroup[symbol][group] = { ts, level };
 }
 
 // ==========================================================
-//  PART 2 — TRACKING ENGINE (Rules 1, 2, 3)
+//  BOT2 — TRACKING RULES
 // ==========================================================
-
-// --------------------------------------
-//  TRACKING RULE 1 — A–D → first G/H
-// --------------------------------------
-function processTracking1(symbol, group, ts, body) {
+function runTrackingRules(symbol, group, ts) {
     const startGroups = ["A", "B", "C", "D"];
     const endGroups   = ["G", "H"];
+    const bigGroups   = ["F", "G", "H"];
 
-    // If alert is A–D → set tracking start
+    // TRACKING 1: A–D then first G/H
     if (startGroups.includes(group)) {
-        trackingStart[symbol] = {
-            startGroup: group,
-            startTime: ts,
-            payload: body
-        };
-        return;
-    }
-
-    // If alert is G/H AND we are tracking
-    if (endGroups.includes(group) && trackingStart[symbol]) {
+        trackingStart[symbol] = { group, ts };
+    } else if (endGroups.includes(group) && trackingStart[symbol]) {
         const start = trackingStart[symbol];
-
-        // Fire Bot2 message
         const msg =
             `📌 TRACKING 1 COMPLETE\n` +
             `Symbol: ${symbol}\n` +
-            `Start Group: ${start.startGroup}\n` +
-            `Start Time: ${new Date(start.startTime).toLocaleString()}\n` +
+            `Start Group: ${start.group}\n` +
             `End Group: ${group}\n` +
+            `Start Time: ${new Date(start.ts).toLocaleString()}\n` +
             `End Time: ${new Date(ts).toLocaleString()}`;
-
         sendToTelegram2(msg);
-
-        // Reset tracking
         delete trackingStart[symbol];
     }
-}
 
-// --------------------------------------
-//  TRACKING RULES 2 & 3 — first F/G/H after long gaps
-// --------------------------------------
-function processTracking2and3(symbol, group, ts, body) {
-    const bigGroups = ["F", "G", "H"];
-
-    if (!bigGroups.includes(group)) return;
-
-    const last = lastBig[symbol] || 0;
-    const diff = ts - last;
-
-    // First time ever
-    if (!last) {
-        lastBig[symbol] = ts;
-        return;
+    // TRACKING 2 & 3: first F/G/H after 2h / 5h
+    if (bigGroups.includes(group)) {
+        const last = lastBigTs[symbol] || 0;
+        if (last) {
+            const diff = ts - last;
+            if (diff >= FIVE_HOURS_MS) {
+                const msg =
+                    `⏱ TRACKING 3\n` +
+                    `Symbol: ${symbol}\n` +
+                    `Group: ${group}\n` +
+                    `First F/G/H in over 5 hours\n` +
+                    `Gap: ${(diff / 3600000).toFixed(2)} hours\n` +
+                    `Time: ${new Date(ts).toLocaleString()}`;
+                sendToTelegram2(msg);
+            } else if (diff >= TWO_HOURS_MS) {
+                const msg =
+                    `⏱ TRACKING 2\n` +
+                    `Symbol: ${symbol}\n` +
+                    `Group: ${group}\n` +
+                    `First F/G/H in over 2 hours\n` +
+                    `Gap: ${(diff / 3600000).toFixed(2)} hours\n` +
+                    `Time: ${new Date(ts).toLocaleString()}`;
+                sendToTelegram2(msg);
+            }
+        }
+        lastBigTs[symbol] = ts;
     }
-
-    const TWO_HOURS = 2 * 60 * 60 * 1000;
-    const FIVE_HOURS = 5 * 60 * 60 * 1000;
-
-    // RULE 3 (stronger) → 5 hours threshold
-    if (diff >= FIVE_HOURS) {
-        const msg =
-            `⏱ TRACKING 3\n` +
-            `Symbol: ${symbol}\n` +
-            `Group: ${group}\n` +
-            `First F/G/H in over 5 hours\n` +
-            `Gap: ${(diff / 3600000).toFixed(2)} hours\n` +
-            `Time: ${new Date(ts).toLocaleString()}`;
-        sendToTelegram2(msg);
-        lastBig[symbol] = ts;
-        return;
-    }
-
-    // RULE 2 → 2 hours threshold
-    if (diff >= TWO_HOURS) {
-        const msg =
-            `⏱ TRACKING 2\n` +
-            `Symbol: ${symbol}\n` +
-            `Group: ${group}\n` +
-            `First F/G/H in over 2 hours\n` +
-            `Gap: ${(diff / 3600000).toFixed(2)} hours\n` +
-            `Time: ${new Date(ts).toLocaleString()}`;
-        sendToTelegram2(msg);
-    }
-
-    // Update last timestamp
-    lastBig[symbol] = ts;
 }
 
 // ==========================================================
-//  PART 3 — MATCHING ENGINE (Rules 1, 2, 3)
+//  BOT2 — MATCHING RULES
 // ==========================================================
-
-// 65-second window (can adjust anytime)
-const MATCH_WINDOW_MS = 65 * 1000;
-
-// --------------------------------------------------
-// MATCHING RULE 1 — A–D within 65s of F/G/H
-// --------------------------------------------------
-function processMatching1(symbol, group, ts, body) {
+function runMatchingRules(symbol, group, ts, level) {
+    const last = lastBySymbolGroup[symbol] || {};
     const startGroups = ["A", "B", "C", "D"];
     const bigGroups   = ["F", "G", "H"];
+    const ghGroups    = ["G", "H"];
 
-    // CASE 1: A–D comes in → look for recent F/G/H
+    // MATCHING 1: A–D within 65s of F/G/H (both directions)
     if (startGroups.includes(group)) {
-        const candidate = ["F", "G", "H"]
-            .map(g => safeGet(symbol, g))
-            .filter(Boolean)
-            .find(x => ts - x.time <= MATCH_WINDOW_MS);
-
-        if (candidate) {
-            const msg =
-                `🔁 MATCHING 1\n` +
-                `Symbol: ${symbol}\n` +
-                `Groups: ${group} ↔ ${candidate.payload.group}\n` +
-                `Times:\n` +
-                ` - ${group}: ${new Date(ts).toLocaleString()}\n` +
-                ` - ${candidate.payload.group}: ${new Date(candidate.time).toLocaleString()}`;
-            sendToTelegram2(msg);
+        // current is A–D → look back for F/G/H
+        for (const g of bigGroups) {
+            const e = last[g];
+            if (e && ts - e.ts <= MATCH_WINDOW_MS) {
+                const msg =
+                    `🔁 MATCHING 1\n` +
+                    `Symbol: ${symbol}\n` +
+                    `Groups: ${group} ↔ ${g}\n` +
+                    `Times:\n` +
+                    ` - ${group}: ${new Date(ts).toLocaleString()}\n` +
+                    ` - ${g}: ${new Date(e.ts).toLocaleString()}`;
+                sendToTelegram2(msg);
+                break;
+            }
         }
-
-        return;
+    } else if (bigGroups.includes(group)) {
+        // current is F/G/H → look back for A–D
+        for (const g of startGroups) {
+            const e = last[g];
+            if (e && ts - e.ts <= MATCH_WINDOW_MS) {
+                const msg =
+                    `🔁 MATCHING 1\n` +
+                    `Symbol: ${symbol}\n` +
+                    `Groups: ${g} ↔ ${group}\n` +
+                    `Times:\n` +
+                    ` - ${g}: ${new Date(e.ts).toLocaleString()}\n` +
+                    ` - ${group}: ${new Date(ts).toLocaleString()}`;
+                sendToTelegram2(msg);
+                break;
+            }
+        }
     }
 
-    // CASE 2: F/G/H comes in → look for recent A–D
+    // MATCHING 2: F/G/H within 65s of each other
     if (bigGroups.includes(group)) {
-        const candidate = ["A", "B", "C", "D"]
-            .map(g => safeGet(symbol, g))
-            .filter(Boolean)
-            .find(x => ts - x.time <= MATCH_WINDOW_MS);
+        for (const g of bigGroups) {
+            if (g === group) continue;
+            const e = last[g];
+            if (e && ts - e.ts <= MATCH_WINDOW_MS) {
+                const msg =
+                    `🔁 MATCHING 2\n` +
+                    `Symbol: ${symbol}\n` +
+                    `Groups: ${g} ↔ ${group}\n` +
+                    `Times:\n` +
+                    ` - ${g}: ${new Date(e.ts).toLocaleString()}\n` +
+                    ` - ${group}: ${new Date(ts).toLocaleString()}`;
+                sendToTelegram2(msg);
+                break;
+            }
+        }
+    }
 
-        if (candidate) {
-            const msg =
-                `🔁 MATCHING 1\n` +
-                `Symbol: ${symbol}\n` +
-                `Groups: ${candidate.payload.group} ↔ ${group}\n` +
-                `Times:\n` +
-                ` - ${candidate.payload.group}: ${new Date(candidate.time).toLocaleString()}\n` +
-                ` - ${group}: ${new Date(ts).toLocaleString()}`;
-            sendToTelegram2(msg);
+    // MATCHING 3: G/H within 65s, same fib level
+    if (ghGroups.includes(group) && level) {
+        for (const g of ghGroups) {
+            const e = last[g];
+            if (!e || !e.level) continue;
+            if (ts - e.ts > MATCH_WINDOW_MS) continue;
+            if (e.level === level) {
+                const msg =
+                    `🎯 MATCHING 3 (Same Level)\n` +
+                    `Symbol: ${symbol}\n` +
+                    `Level: ${level}\n` +
+                    `Groups: ${g} ↔ ${group}\n` +
+                    `Times:\n` +
+                    ` - ${g}: ${new Date(e.ts).toLocaleString()}\n` +
+                    ` - ${group}: ${new Date(ts).toLocaleString()}`;
+                sendToTelegram2(msg);
+                break;
+            }
         }
     }
 }
 
-// --------------------------------------------------
-// MATCHING RULE 2 — F/G/H ↔ F/G/H within 65 seconds
-// --------------------------------------------------
-function processMatching2(symbol, group, ts, body) {
-    const bigGroups = ["F", "G", "H"];
-    if (!bigGroups.includes(group)) return;
-
-    const candidate = bigGroups
-        .map(g => safeGet(symbol, g))
-        .filter(Boolean)
-        .find(x => x.payload.group !== group && ts - x.time <= MATCH_WINDOW_MS);
-
-    if (candidate) {
-        const msg =
-            `🔁 MATCHING 2\n` +
-            `Symbol: ${symbol}\n` +
-            `Groups: ${candidate.payload.group} ↔ ${group}\n` +
-            `Times:\n` +
-            ` - ${candidate.payload.group}: ${new Date(candidate.time).toLocaleString()}\n` +
-            ` - ${group}: ${new Date(ts).toLocaleString()}`;
-        sendToTelegram2(msg);
-    }
-}
-
-// --------------------------------------------------
-// MATCHING RULE 3 — G/H ↔ G/H + SAME LEVEL ±
-// --------------------------------------------------
-function processMatching3(symbol, group, ts, body) {
-    const allowed = ["G", "H"];
-    if (!allowed.includes(group)) return;
-
-    // Normalize current alert fib level
-    const { numericLevels: lvls } = normalizeFibLevel(group, body);
-    if (lvls.length === 0) return;
-
-    // Look for recent G/H alert with same level
-    const candidate = allowed
-        .map(g => safeGet(symbol, g))
-        .filter(Boolean)
-        .find(x => {
-            if (ts - x.time > MATCH_WINDOW_MS) return false;
-
-            // Normalize candidate levels
-            const norm = normalizeFibLevel(x.payload.group, x.payload);
-            const targetLvls = norm.numericLevels;
-
-            // Compare (must match ±level)
-            return (
-                targetLvls.some(v => lvls.includes(v))
-            );
-        });
-
-    if (candidate) {
-        const msg =
-            `🎯 MATCHING 3 (Same Level)\n` +
-            `Symbol: ${symbol}\n` +
-            `Levels: ±${lvls[0]}\n` +
-            `Groups: ${candidate.payload.group} ↔ ${group}\n` +
-            `Times:\n` +
-            ` - ${candidate.payload.group}: ${new Date(candidate.time).toLocaleString()}\n` +
-            ` - ${group}: ${new Date(ts).toLocaleString()}`;
-        sendToTelegram2(msg);
-    }
-}
-
 // ==========================================================
-//  PART 4 — WEBHOOK HANDLER + BOT1 LOOP + SERVER START
+//  INCOMING WEBHOOK HANDLER
 // ==========================================================
-
-
-// --------------------------------------------------------------
-//  HANDLE INCOMING ALERTS FROM TRADINGVIEW
-// --------------------------------------------------------------
-// ============================================================================
-// HANDLE INCOMING ALERTS FROM TRADINGVIEW
-// ============================================================================
 app.post("/incoming", (req, res) => {
     try {
         const body = req.body || {};
 
-        // Secret check
+        // Optional secret
         if (ALERT_SECRET && body.secret !== ALERT_SECRET) {
             return res.sendStatus(401);
         }
 
-        // --------------------------------------------------------------------
-// FIX / NORMALIZE ESSENTIAL FIELDS (NEVER DROP ALERTS)
-// --------------------------------------------------------------------
+        const group  = (body.group  || "").toString().trim();
+        const symbol = (body.symbol || "").toString().trim();
+        const ts     = nowMs();
 
-// Capture TradingView 'kind' safely
-const kind = (body.kind || "").toString().trim();
+        if (!group || !symbol) {
+            console.log("🚫 Dropped invalid alert (missing group or symbol):", body);
+            return res.sendStatus(200);
+        }
 
-// GROUP — if missing, try fallback or infer type
-if (!body.group || body.group === "") {
+        // BOT1 storage
+        if (!events[group]) events[group] = [];
+        events[group].push({ time: ts, data: body });
+        pruneOld(events[group], maxWindowMs());
 
-    // Rare case: TradingView sometimes sends "Group"
-    if (body.Group) {
-        body.group = body.Group.toString().trim();
-    }
+        // Determine fib level for matching
+        let level = null;
+        if (group === "F") {
+            level = "1.3"; // fixed for F
+        } else if (group === "G" && body.fib_level) {
+            level = String(body.fib_level);
+        } else if (group === "H" && body.level) {
+            level = String(body.level);
+        }
 
-    // H indicators (fib script always sends kind:"fib-cross")
-    else if (kind === "fib-cross") {
-        body.group = "H";
-    }
+        console.log(`📥 Received alert | Symbol=${symbol} | Group=${group} | Level=${level || "n/a"}`);
 
-    // Default fallback → F (your special script)
-    else {
-        body.group = "F";
-    }
-}
+        // BOT2 tracking + matching (use previous state, then update)
+        runTrackingRules(symbol, group, ts);
+        runMatchingRules(symbol, group, ts, level);
+        updateLastSymbolGroup(symbol, group, ts, level);
 
-// SYMBOL — if missing, try fallback
-if (!body.symbol || body.symbol === "") {
-    if (body.ticker) {
-        body.symbol = body.ticker.toString().trim();
-    }
-}
-
-// TIME — always generate if missing
-if (!body.time || body.time === "") {
-    body.time = nowMs();
-}
-
-      // Final cleaned values (SAFE)
-const group  = (body.group || "").toString().trim();
-const symbol = (body.symbol || "").toString().trim();
-const ts     = Number(body.time);
-
-console.log(`📥 Received alert | Symbol=${symbol} | Group=${group}`);
-
-
-        // --------------------------------------------------------------------
-        // Store in memory for Matching + Tracking Engine
-        // --------------------------------------------------------------------
-
-        if (!events[symbol]) events[symbol] = [];
-        events[symbol].push({
-            ts,
-            group,
-            level: body.level || null,
-            raw: body
-        });
-
-        pruneOld(events[symbol], TRACKING_WINDOW_MS);
-
-        // --------------------------------------------------------------------
-        // Process matching + tracking rules
-        // --------------------------------------------------------------------
-        processMatchingRules(symbol);
-        processTrackingRules(symbol);
+        // Optional: original "strong signal" logic (direction/momentum)
+        try {
+            const dir = body.direction?.toLowerCase();
+            const mom = body.momentum?.toLowerCase();
+            if (dir && mom && dir === mom) {
+                const msg =
+                    `🔥 STRONG SIGNAL\n` +
+                    `Symbol: ${symbol}\n` +
+                    `Level: ${body.level || body.fib_level || "n/a"}\n` +
+                    `Direction: ${dir}\n` +
+                    `Momentum: ${mom}\n` +
+                    `Time: ${body.time || ts}`;
+                sendToTelegram2(msg);
+            }
+        } catch (e) {
+            console.error("Strong-signal logic error:", e);
+        }
 
         return res.sendStatus(200);
-
     } catch (err) {
         console.error("❌ /incoming error:", err);
         return res.sendStatus(200);
     }
 });
 
-
-
-// --------------------------------------------------------------
-//  BOT1 AGGREGATION LOOP  (unchanged)
-// --------------------------------------------------------------
+// ==========================================================
+//  BOT1 AGGREGATION LOOP  (original behaviour)
+// ==========================================================
 setInterval(async () => {
     if (!RULES.length) return;
 
@@ -534,17 +373,15 @@ setInterval(async () => {
     }
 }, CHECK_MS);
 
-
-// --------------------------------------------------------------
-//  SIMPLE /PING ENDPOINT
-// --------------------------------------------------------------
+// ==========================================================
+//  /PING ENDPOINT
+// ==========================================================
 app.get("/ping", (req, res) => {
     res.json({ ok: true, rules: RULES.map(r => r.name) });
 });
 
-
-// --------------------------------------------------------------
+// ==========================================================
 //  START SERVER
-// --------------------------------------------------------------
+// ==========================================================
 const PORT = Number((process.env.PORT || "10000").trim());
 app.listen(PORT, () => console.log(`🚀 Server running on port ${PORT}`));
