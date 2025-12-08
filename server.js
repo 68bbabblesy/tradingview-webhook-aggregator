@@ -1,16 +1,16 @@
-// ============================================================================
-//  TRADINGVIEW WEBHOOK AGGREGATOR — FINAL STABLE VERSION
-//  With full Matching + Tracking + Group F normalization
-// ============================================================================
-
+// ==========================================================
+//  IMPORTS & SETUP
+// ==========================================================
 import express from "express";
+import bodyParser from "body-parser";
+import fetch from "node-fetch";
 
 const app = express();
-app.use(express.json());
+app.use(bodyParser.json());
 
-// ============================================================================
+// ==========================================================
 //  ENVIRONMENT VARIABLES
-// ============================================================================
+// ==========================================================
 const TELEGRAM_BOT_TOKEN_1 = (process.env.TELEGRAM_BOT_TOKEN || "").trim();
 const TELEGRAM_CHAT_ID_1   = (process.env.TELEGRAM_CHAT_ID || "").trim();
 
@@ -22,161 +22,106 @@ const CHECK_MS           = Number((process.env.CHECK_MS || "1000").trim());
 const ALERT_SECRET       = (process.env.ALERT_SECRET || "").trim();
 const COOLDOWN_SECONDS   = Number((process.env.COOLDOWN_SECONDS || "60").trim());
 
-// Tracking window (for matching + tracking)
-const TRACKING_WINDOW_MS = 3600 * 1000;
+// Tracking window (used by matching rules)
+const TRACKING_WINDOW_MS = Number(process.env.WINDOW_SECONDS || "3600") * 1000;
 
-// ============================================================================
-//  INTERNAL STATE
-// ============================================================================
-const eventsBySymbol = {};     // per-symbol alert history
-const cooldownUntil = {};      // cooldown for matching rules
+// ==========================================================
+//  DATABASE (in-memory)
+// ==========================================================
+const events = {};  // events[group] = [ { time, data }, ... ]
 
-// ============================================================================
-//  UTILITIES
-// ============================================================================
-const nowMs  = () => Date.now();
-const nowSec = () => Math.floor(Date.now() / 1000);
+function nowMs() { return Date.now(); }
 
-function pruneOld(arr, maxAgeMs) {
-    const cutoff = nowMs() - maxAgeMs;
-    while (arr.length && arr[0].ts < cutoff) arr.shift();
+function maxWindowMs() {
+    return (WINDOW_SECONDS_DEF || 45) * 1000;
 }
 
-function normalizeLevel(rawLevel, group) {
-    if (!rawLevel) {
-        if (group === "F") return "1.3"; // default fallback
-        return null;
+function pruneOld(list, windowMs) {
+    const cutoff = nowMs() - windowMs;
+    while (list.length && list[0].time < cutoff) list.shift();
+}
+
+// ==========================================================
+//  SEND MESSAGE TO TELEGRAM (BOTH BOTS)
+// ==========================================================
+async function sendTelegram(botToken, chatId, text) {
+    if (!botToken || !chatId) return;
+
+    const url = `https://api.telegram.org/bot${botToken}/sendMessage`;
+
+    try {
+        await fetch(url, {
+            method: "POST",
+            headers: { "Content-Type": "application/json" },
+            body: JSON.stringify({ chat_id: chatId, text })
+        });
+    } catch (e) {
+        console.error("Telegram error:", e);
+    }
+}
+
+// ==========================================================
+//  NORMALIZE / FIX INCOMING ALERT BODY
+// ==========================================================
+function normalizeAlert(body) {
+    const fixed = { ...body };
+
+    // some alerts send numbers as strings — normalize
+    if ("fib_level" in fixed) {
+        let v = fixed.fib_level;
+        if (typeof v === "string") {
+            v = v.trim();
+            if (v === "") fixed.fib_level = null;
+            else fixed.fib_level = Number(v);
+        }
     }
 
-    let lv = rawLevel.toString().trim();
-
-    // Strip "+" and normalize minus signs
-    lv = lv.replace("+", "");
-
-    // Convert 1.3 variations to exactly "1.3"
-    if (Math.abs(Number(lv) - 1.3) < 0.0001) return lv.startsWith("-") ? "-1.3" : "1.3";
-
-    // Convert 1.29 variations
-    if (Math.abs(Number(lv) - 1.29) < 0.0001) return lv.startsWith("-") ? "-1.29" : "1.29";
-
-    // Convert 0.7 variations
-    if (Math.abs(Number(lv) - 0.7) < 0.0001) return lv.startsWith("-") ? "-0.7" : "0.7";
-
-    return lv; // allow other levels if needed
+    return fixed;
 }
 
-function inferGroupIfMissing(body) {
-    if (body.group && body.group.trim() !== "") return body.group.trim();
-
-    if (body.kind === "fib-cross") return "H";
-    return "F"; // default fallback for F alerts
-}
-
-// ============================================================================
-//  WEBHOOK HANDLER — THE HEART OF THE SYSTEM
-// ============================================================================
-app.post("/incoming", async (req, res) => {
+// ==========================================================
+//  INCOMING WEBHOOK HANDLER
+// ==========================================================
+app.post("/incoming", (req, res) => {
     try {
-        const body = req.body || {};
+        let body = req.body || {};
 
-        // ----------------------------------------------------------
         // Optional secret check
-        // ----------------------------------------------------------
         if (ALERT_SECRET && body.secret !== ALERT_SECRET) {
             return res.sendStatus(401);
         }
 
-        // ----------------------------------------------------------
-        // NORMALIZE / FIX MISSING FIELDS
-        // ----------------------------------------------------------
-        body.group  = inferGroupIfMissing(body);
-        body.symbol = body.symbol || body.ticker || null;
-        body.time   = body.time || nowMs();
+        // Fix / normalize the alert payload
+        body = normalizeAlert(body);
 
-        // Still missing both? Then drop it.
-        if (!body.group || !body.symbol) {
+        const group  = (body.group  || "").toString().trim();
+        const symbol = (body.symbol || "").toString().trim();
+
+        if (!group || !symbol) {
             console.log("🚫 Dropped invalid alert (missing group or symbol):", body);
             return res.sendStatus(200);
         }
 
-        // ----------------------------------------------------------
-        // FIX & NORMALIZE FIB LEVELS
-        // ----------------------------------------------------------
-        body.fib_level = normalizeLevel(body.fib_level, body.group);
+        console.log(`📩 Received alert | Symbol=${symbol} | Group=${group} | Level=${body.fib_level}`);
 
-        // ----------------------------------------------------------
-        // LOG RECEIVED ALERT
-        // ----------------------------------------------------------
-        console.log(
-            `📥 Received alert | Symbol=${body.symbol} | Group=${body.group} | Level=${body.fib_level ?? "n/a"}`
-        );
+        // Store the event
+        const ts = nowMs();
+        if (!events[group]) events[group] = [];
+        events[group].push({ time: ts, data: body });
+        pruneOld(events[group], maxWindowMs());
 
-        // ----------------------------------------------------------
-        // STORE ALERT PER SYMBOL (NOT PER GROUP)
-        // ----------------------------------------------------------
-        const symbol = body.symbol;
-
-        if (!eventsBySymbol[symbol]) eventsBySymbol[symbol] = [];
-        eventsBySymbol[symbol].push({
-            ts: Number(body.time),
-            group: body.group,
-            level: body.fib_level,
-            raw: body
-        });
-
-        pruneOld(eventsBySymbol[symbol], TRACKING_WINDOW_MS);
-
-        // ----------------------------------------------------------
-        // CALL MATCHING + TRACKING RULES
-        // ----------------------------------------------------------
-        processMatching(symbol);
-        processTracking(symbol);
-
-        return res.sendStatus(200);
-
-    } catch (err) {
-        console.error("❌ /incoming error:", err);
-        return res.sendStatus(200);
+        res.sendStatus(200);
+    } catch (e) {
+        console.error("❌ /incoming error:", e);
+        res.sendStatus(500);
     }
 });
 
-// ============================================================================
-//  MATCHING RULES (your logic goes here)
-// ============================================================================
-function processMatching(symbol) {
-    const list = eventsBySymbol[symbol];
-    if (!list) return;
-
-    // R1, R2, R3 logic here
-    // (Same structure we previously implemented — no changes needed)
-}
-
-// ============================================================================
-//  TRACKING RULES (your logic goes here)
-// ============================================================================
-function processTracking(symbol) {
-    const list = eventsBySymbol[symbol];
-    if (!list) return;
-
-    // Tracking 1, 2, 3 logic here
-}
-
-// ============================================================================
-//  BOT1 AGGREGATION (unchanged except for new storage model)
-// ============================================================================
-setInterval(() => {
-    // Bot1 logic remains unchanged
-}, CHECK_MS);
-
-// ============================================================================
-//  HEALTH CHECK
-// ============================================================================
-app.get("/ping", (req, res) => {
-    res.json({ ok: true });
-});
-
-// ============================================================================
+// ==========================================================
 //  START SERVER
-// ============================================================================
-const PORT = Number((process.env.PORT || "10000").trim());
-app.listen(PORT, () => console.log(`🚀 Server running on port ${PORT}`));
+// ==========================================================
+const PORT = process.env.PORT || 10000;
+app.listen(PORT, () => {
+    console.log(`🚀 Server running on port ${PORT}`);
+    console.log("==> Your service is live ✨");
+});
