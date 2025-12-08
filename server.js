@@ -437,12 +437,13 @@ if (!body.time || body.time === "") {
     body.time = nowMs();
 }
 
-        // Final cleaned values
-        const group  = body.group.toString().trim();
-        const symbol = body.symbol.toString().trim();
-        const ts     = Number(body.time);
+      // Final cleaned values (SAFE)
+const group  = (body.group || "").toString().trim();
+const symbol = (body.symbol || "").toString().trim();
+const ts     = Number(body.time);
 
-        console.log(`📥 Received alert | Symbol=${symbol} | Group=${group}`);
+console.log(`📥 Received alert | Symbol=${symbol} | Group=${group}`);
+
 
         // --------------------------------------------------------------------
         // Store in memory for Matching + Tracking Engine
