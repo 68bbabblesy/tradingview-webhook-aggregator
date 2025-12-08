@@ -387,6 +387,9 @@ function processMatching3(symbol, group, ts, body) {
 // --------------------------------------------------------------
 //  HANDLE INCOMING ALERTS FROM TRADINGVIEW
 // --------------------------------------------------------------
+// ============================================================================
+// HANDLE INCOMING ALERTS FROM TRADINGVIEW
+// ============================================================================
 app.post("/incoming", (req, res) => {
     try {
         const body = req.body || {};
@@ -396,82 +399,74 @@ app.post("/incoming", (req, res) => {
             return res.sendStatus(401);
         }
 
-        // Extract essentials
-const group  = (body.group || "").toString().trim();
-const symbol = (body.symbol || "").toString().trim();
-const ts     = nowMs();
+        // --------------------------------------------------------------------
+        // FIX / NORMALIZE ESSENTIAL FIELDS (NEVER DROP ALERTS)
+        // --------------------------------------------------------------------
 
-// Reject ONLY if group or symbol is missing
-if (!body.group || !body.symbol) {
-    console.log("🚫 Dropped invalid alert:", body);
-    return res.sendStatus(200);
-}
+        // GROUP — if missing, try fallback or infer type
+        if (!body.group || body.group === "") {
 
-// If time is missing or empty, we generate one
-if (!body.time || body.time === "") {
-    body.time = nowMs();
-}
+            // Rare case: TradingView sometimes sends "Group" instead of "group"
+            if (body.Group) {
+                body.group = body.Group.toString().trim();
+            }
+            // All H indicators use kind:"fib-cross"
+            else if (body.kind === "fib-cross") {
+                body.group = "H";
+            }
+            // Default fallback for missing F alerts
+            else {
+                body.group = "F";
+            }
+        }
 
+        // SYMBOL — if missing, try fallback
+        if (!body.symbol || body.symbol === "") {
+            if (body.ticker) {
+                body.symbol = body.ticker.toString().trim();
+            }
+        }
 
+        // TIME — always generate if missing
+        if (!body.time || body.time === "") {
+            body.time = nowMs();
+        }
 
-        // Save to Bot1 structures
-        if (!events[group]) events[group] = [];
-        events[group].push({ time: ts, data: body });
-        pruneOld(events[group], maxWindowMs());
+        // Final cleaned values
+        const group  = body.group.toString().trim();
+        const symbol = body.symbol.toString().trim();
+        const ts     = Number(body.time);
 
         console.log(`📥 Received alert | Symbol=${symbol} | Group=${group}`);
 
-        // Save last seen alert for matching/tracking
-        saveAlert(symbol, group, ts, body);
+        // --------------------------------------------------------------------
+        // Store in memory for Matching + Tracking Engine
+        // --------------------------------------------------------------------
 
-        // ---------------------------------
-        // BOT2 ENGINE PROCESSING
-        // ---------------------------------
+        if (!events[symbol]) events[symbol] = [];
+        events[symbol].push({
+            ts,
+            group,
+            level: body.level || null,
+            raw: body
+        });
 
-        // 1. Tracking Rule 1 (A–D → G/H)
-        processTracking1(symbol, group, ts, body);
+        pruneOld(events[symbol], TRACKING_WINDOW_MS);
 
-        // 2. Tracking Rules 2 & 3 (First F/G/H after long gaps)
-        processTracking2and3(symbol, group, ts, body);
-
-        // 3. Matching Rule 1 (A–D ↔ F/G/H)
-        processMatching1(symbol, group, ts, body);
-
-        // 4. Matching Rule 2 (F/G/H ↔ F/G/H)
-        processMatching2(symbol, group, ts, body);
-
-        // 5. Matching Rule 3 (G/H ↔ G/H with same level)
-        processMatching3(symbol, group, ts, body);
-
-        // ---------------------------------
-        // ORIGINAL STRONG SIGNAL LOGIC (kept)
-        // ---------------------------------
-        try {
-            const dir = body.direction?.toLowerCase();
-            const mom = body.momentum?.toLowerCase();
-
-            if (dir && mom && dir === mom) {
-                const message =
-                    `🔥 STRONG SIGNAL\n` +
-                    `Symbol: ${symbol}\n` +
-                    `Level: ${body.level || body.fib_level || "n/a"}\n` +
-                    `Direction: ${dir}\n` +
-                    `Momentum: ${mom}\n` +
-                    `Time: ${body.time}`;
-                sendToTelegram2(message);
-                console.log("➡️ Sent to Bot2 (strong signal)");
-            }
-        } catch (err) {
-            console.error("Bot2 strong-signal error:", err);
-        }
+        // --------------------------------------------------------------------
+        // Process matching + tracking rules
+        // --------------------------------------------------------------------
+        processMatchingRules(symbol);
+        processTrackingRules(symbol);
 
         return res.sendStatus(200);
 
     } catch (err) {
-        console.error("❌ /incoming handler error:", err);
+        console.error("❌ /incoming error:", err);
         return res.sendStatus(200);
     }
 });
+
 
 
 // --------------------------------------------------------------
