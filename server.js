@@ -18,10 +18,15 @@ const TELEGRAM_CHAT_ID_1   = (process.env.TELEGRAM_CHAT_ID || "").trim();
 const TELEGRAM_BOT_TOKEN_2 = (process.env.TELEGRAM_BOT_TOKEN_2 || "").trim();
 const TELEGRAM_CHAT_ID_2   = (process.env.TELEGRAM_CHAT_ID_2 || "").trim();
 
+// Main window (used by Bot1 aggregator)
 const WINDOW_SECONDS_DEF = Number((process.env.WINDOW_SECONDS || "45").trim());
+
 const CHECK_MS           = Number((process.env.CHECK_MS || "1000").trim());
 const ALERT_SECRET       = (process.env.ALERT_SECRET || "").trim();
 const COOLDOWN_SECONDS   = Number((process.env.COOLDOWN_SECONDS || "60").trim());
+
+// Tracking window (used by Matching & Tracking rules)
+const TRACKING_WINDOW_MS = WINDOW_SECONDS_DEF * 1000;
 
 // -----------------------------
 // BOT1 RULES (unchanged)
