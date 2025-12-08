@@ -50,7 +50,8 @@ RULES = RULES.map((r, idx) => {
 // TIME HELPERS
 // -----------------------------
 const nowMs  = () => Date.now();
-const nowSec = () => Math.floor(Date.now() / 1000());
+const nowSec = () => Math.floor(Date.now() / 1000);
+
 
 // -----------------------------
 // TELEGRAM SENDERS
