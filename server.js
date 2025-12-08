@@ -397,14 +397,21 @@ app.post("/incoming", (req, res) => {
         }
 
         // Extract essentials
-        const group  = (body.group || "").toString().trim();
-        const symbol = (body.symbol || "").toString().trim();
-        const ts     = nowMs();
+const group  = (body.group || "").toString().trim();
+const symbol = (body.symbol || "").toString().trim();
+const ts     = nowMs();
 
-       if (!body.group || !body.symbol || !body.time) {
-       console.log("🚫 Dropped invalid alert:", body);
-      return res.sendStatus(200);
-      }
+// Reject ONLY if group or symbol is missing
+if (!body.group || !body.symbol) {
+    console.log("🚫 Dropped invalid alert:", body);
+    return res.sendStatus(200);
+}
+
+// If time is missing or empty, we generate one
+if (!body.time || body.time === "") {
+    body.time = nowMs();
+}
+
 
 
         // Save to Bot1 structures
