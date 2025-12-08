@@ -401,10 +401,11 @@ app.post("/incoming", (req, res) => {
         const symbol = (body.symbol || "").toString().trim();
         const ts     = nowMs();
 
-        if (!group || !symbol) {
-            console.error("❌ Invalid alert (missing group or symbol):", body);
-            return res.sendStatus(200);
-        }
+       if (!body.group || !body.symbol || !body.time) {
+       console.log("🚫 Dropped invalid alert:", body);
+      return res.sendStatus(200);
+      }
+
 
         // Save to Bot1 structures
         if (!events[group]) events[group] = [];
