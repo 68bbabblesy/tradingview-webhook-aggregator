@@ -354,25 +354,19 @@ function processMatching3(symbol, group, ts, body) {
     const allowed = ["G", "H"];
     if (!allowed.includes(group)) return;
 
-    // Normalize current alert fib level
-    const { numericLevels: lvls } = normalizeFibLevel(group, body);
+    // Use normalized levels (always numericLevels)
+    const lvls = body.numericLevels || [];
     if (lvls.length === 0) return;
 
-    // Look for recent G/H alert with same level
     const candidate = allowed
         .map(g => safeGet(symbol, g))
         .filter(Boolean)
+        // DO NOT compare alert with itself
+        .filter(x => x.time !== ts)
+        .filter(x => Math.abs(ts - x.time) <= MATCH_WINDOW_MS)
         .find(x => {
-            if (ts - x.time > MATCH_WINDOW_MS) return false;
-
-            // Normalize candidate levels
-            const norm = normalizeFibLevel(x.payload.group, x.payload);
-            const targetLvls = norm.numericLevels;
-
-            // Compare (must match ±level)
-            return (
-                targetLvls.some(v => lvls.includes(v))
-            );
+            const candLvls = x.payload.numericLevels || [];
+            return candLvls.some(v => lvls.includes(v));
         });
 
     if (candidate) {
@@ -434,7 +428,16 @@ setTimeout(() => recentHashes.delete(hash), 5 * 60 * 1000);
         console.log(`📥 Received alert | Symbol=${symbol} | Group=${group}`);
 
         // Save last seen alert for matching/tracking
-        saveAlert(symbol, group, ts, body);
+       // Normalize fib/level for consistent matching
+const norm = normalizeFibLevel(group, body);
+
+// Inject normalized level into stored payload to avoid H↔H phantom matching
+body.levelStr = norm.levelStr;
+body.numericLevels = norm.numericLevels;
+
+// Save last alert with normalized level values
+saveAlert(symbol, group, ts, body);
+
 
         // ---------------------------------
         // BOT2 ENGINE PROCESSING
