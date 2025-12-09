@@ -80,6 +80,12 @@ async function sendToTelegram2(text) {
 const events = {};
 const cooldownUntil = {};
 
+// Prevent duplicate alerts (anti-phantom fix)
+const recentHashes = new Set();
+function alertHash(symbol, group, ts) {
+    return `${symbol}-${group}-${Math.floor(ts / 1000)}`;
+}
+
 function pruneOld(buf, windowMs) {
     const cutoff = nowMs() - windowMs;
     let i = 0;
@@ -324,7 +330,9 @@ function processMatching2(symbol, group, ts, body) {
     const candidate = bigGroups
         .map(g => safeGet(symbol, g))
         .filter(Boolean)
-        .find(x => x.payload.group !== group && ts - x.time <= MATCH_WINDOW_MS);
+        .filter(x => x.payload.group !== group)   // no same-group matches
+        .filter(x => Math.abs(ts - x.time) <= MATCH_WINDOW_MS)
+        .sort((a, b) => b.time - a.time)[0];      // pick most recent valid
 
     if (candidate) {
         const msg =
@@ -337,6 +345,7 @@ function processMatching2(symbol, group, ts, body) {
         sendToTelegram2(msg);
     }
 }
+
 
 // --------------------------------------------------
 // MATCHING RULE 3 — G/H ↔ G/H + SAME LEVEL ±
@@ -399,7 +408,18 @@ app.post("/incoming", (req, res) => {
         // Extract essentials
         const group  = (body.group || "").toString().trim();
         const symbol = (body.symbol || "").toString().trim();
-        const ts     = nowMs();
+        const ts = nowMs();
+
+// Prevent processing same alert twice within 1 second (TV duplicate bug)
+const hash = alertHash(symbol, group, ts);
+if (recentHashes.has(hash)) {
+    return res.sendStatus(200); // Skip duplicate
+}
+recentHashes.add(hash);
+
+// Auto-clean duplicates set every 5 minutes
+setTimeout(() => recentHashes.delete(hash), 5 * 60 * 1000);
+
 
         if (!group || !symbol) {
             console.error("❌ Invalid alert (missing group or symbol):", body);
