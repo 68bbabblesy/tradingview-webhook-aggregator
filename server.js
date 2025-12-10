@@ -354,33 +354,43 @@ function processMatching3(symbol, group, ts, body) {
     const allowed = ["G", "H"];
     if (!allowed.includes(group)) return;
 
-    // Use normalized levels (always numericLevels)
-    const lvls = body.numericLevels || [];
+    // Normalize current alert fib level
+    const { numericLevels: lvls } = normalizeFibLevel(group, body);
     if (lvls.length === 0) return;
 
+    // Look for recent **other** G/H alert with same level
     const candidate = allowed
         .map(g => safeGet(symbol, g))
         .filter(Boolean)
-        // DO NOT compare alert with itself
-        .filter(x => x.time !== ts)
-        .filter(x => Math.abs(ts - x.time) <= MATCH_WINDOW_MS)
         .find(x => {
-            const candLvls = x.payload.numericLevels || [];
-            return candLvls.some(v => lvls.includes(v));
+            // ❌ Don't match the alert with itself
+            if (x.payload.group === group && x.time === ts) return false;
+
+            // Too old → ignore
+            if (ts - x.time > MATCH_WINDOW_MS) return false;
+
+            // Normalize candidate levels
+            const norm = normalizeFibLevel(x.payload.group, x.payload);
+            const targetLvls = norm.numericLevels;
+
+            // Compare (must match ±level)
+            return targetLvls.some(v => lvls.includes(v));
         });
 
-    if (candidate) {
-        const msg =
-            `🎯 MATCHING 3 (Same Level)\n` +
-            `Symbol: ${symbol}\n` +
-            `Levels: ±${lvls[0]}\n` +
-            `Groups: ${candidate.payload.group} ↔ ${group}\n` +
-            `Times:\n` +
-            ` - ${candidate.payload.group}: ${new Date(candidate.time).toLocaleString()}\n` +
-            ` - ${group}: ${new Date(ts).toLocaleString()}`;
-        sendToTelegram2(msg);
+    if (!candidate) return;
+
+    const msg =
+        `🎯 MATCHING 3 (Same Level)\n` +
+        `Symbol: ${symbol}\n` +
+        `Levels: ±${lvls[0]}\n` +
+        `Groups: ${candidate.payload.group} ↔ ${group}\n` +
+        `Times:\n` +
+        ` - ${candidate.payload.group}: ${new Date(candidate.time).toLocaleString()}\n` +
+        ` - ${group}: ${new Date(ts).toLocaleString()}`;
+    sendToTelegram2(msg);
     }
 }
+
 
 // ==========================================================
 //  PART 4 — WEBHOOK HANDLER + BOT1 LOOP + SERVER START
