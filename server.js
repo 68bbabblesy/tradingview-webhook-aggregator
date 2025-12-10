@@ -389,7 +389,6 @@ function processMatching3(symbol, group, ts, body) {
         ` - ${group}: ${new Date(ts).toLocaleString()}`;
     sendToTelegram2(msg);
     }
-}
 
 
 // ==========================================================
