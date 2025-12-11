@@ -1,9 +1,50 @@
+// ==========================================================
+//  PART 1 — IMPORTS, CONFIG, HELPERS, NORMALIZATION, STORAGE
+// ==========================================================
+
 import express from "express";
 import fetch from "node-fetch";
+import fs from "fs";
 
 const app = express();
 app.use(express.json());
 
+// -----------------------------
+// PERSISTENCE (State File)
+// -----------------------------
+const STATE_FILE = "./state.json";
+
+function loadState() {
+    try {
+        if (fs.existsSync(STATE_FILE)) {
+            const raw = fs.readFileSync(STATE_FILE, "utf8");
+            return JSON.parse(raw);
+        }
+    } catch {}
+    return { lastAlert: {}, trackingStart: {}, lastBig: {}, cooldownUntil: {} };
+}
+
+function saveState() {
+    try {
+        fs.writeFileSync(
+            STATE_FILE,
+            JSON.stringify(
+                { lastAlert, trackingStart, lastBig, cooldownUntil },
+                null,
+                2
+            )
+        );
+    } catch (err) {
+        console.error("❌ Failed to save state:", err);
+    }
+}
+
+// Load previous state
+const persisted = loadState();
+
+// -----------------------------
+// ENVIRONMENT VARIABLES
+// -----------------------------
 const TELEGRAM_BOT_TOKEN_1 = (process.env.TELEGRAM_BOT_TOKEN || "").trim();
 const TELEGRAM_CHAT_ID_1   = (process.env.TELEGRAM_CHAT_ID || "").trim();
 
@@ -15,6 +56,9 @@ const CHECK_MS           = Number((process.env.CHECK_MS || "1000").trim());
 const ALERT_SECRET       = (process.env.ALERT_SECRET || "").trim();
 const COOLDOWN_SECONDS   = Number((process.env.COOLDOWN_SECONDS || "60").trim());
 
+// -----------------------------
+// BOT1 RULES (unchanged)
+// -----------------------------
 let RULES = [];
 try {
     const raw = (process.env.RULES || "").trim();
@@ -28,9 +72,15 @@ RULES = RULES.map((r, idx) => ({
     windowSeconds: Number(r.windowSeconds || WINDOW_SECONDS_DEF)
 })).filter(r => r.groups.length);
 
+// -----------------------------
+// TIME HELPERS
+// -----------------------------
 const nowMs  = () => Date.now();
 const nowSec = () => Math.floor(Date.now() / 1000);
 
+// -----------------------------
+// TELEGRAM SENDERS
+// -----------------------------
 async function sendToTelegram1(text) {
     if (!TELEGRAM_BOT_TOKEN_1 || !TELEGRAM_CHAT_ID_1) return;
     await fetch(`https://api.telegram.org/bot${TELEGRAM_BOT_TOKEN_1}/sendMessage`, {
@@ -49,8 +99,12 @@ async function sendToTelegram2(text) {
     });
 }
 
+// -----------------------------
+// STORAGE FOR BOT1 AGGREGATION
+// -----------------------------
+
 const events = {};
-const cooldownUntil = {};
+const cooldownUntil = persisted.cooldownUntil || {};
 
 const recentHashes = new Set();
 function alertHash(symbol, group, ts) {
@@ -69,10 +123,18 @@ function maxWindowMs() {
     return Math.max(...RULES.map(r => r.windowSeconds)) * 1000;
 }
 
-const lastAlert = {};
-const trackingStart = {};
-const lastBig = {};
+// ==========================================================
+//  BOT2 ENGINE STORAGE (tracking + matching)
+// ==========================================================
 
+// RESTORED FROM DISK (persistence)
+const lastAlert     = persisted.lastAlert     || {};
+const trackingStart = persisted.trackingStart || {};
+const lastBig       = persisted.lastBig       || {};
+
+// -----------------------------
+// FIB LEVEL NORMALIZATION
+// -----------------------------
 function normalizeFibLevel(group, body) {
     if (group === "F") return { levelStr: "1.30", numericLevels: [1.30, -1.30] };
 
@@ -94,49 +156,79 @@ function saveAlert(symbol, group, ts, body) {
     lastAlert[symbol][group] = { time: ts, payload: body };
 }
 
+// -----------------------------
+// SAFE GET
+// -----------------------------
 function safeGet(symbol, group) {
     return lastAlert[symbol]?.[group] || null;
 }
-function formatLevel(group, payload) {
-    if (!payload || !payload.numericLevels || payload.numericLevels.length === 0)
-        return ""; // A–D have no levels
 
-    const lvl = Math.abs(payload.numericLevels[0]); // always positive
-    return ` (±${lvl})`;
+function formatLevel(group, payload) {
+    // No payload or no numericLevels => no level (A–D etc.)
+    if (!payload || !payload.numericLevels || payload.numericLevels.length === 0) {
+        return "";
+    }
+
+    // Prefer the raw level string coming from TradingView – this keeps the sign.
+    let raw = "";
+    if (typeof payload.level === "string" && payload.level.trim() !== "") {
+        raw = payload.level.trim();
+    } else if (typeof payload.fib_level === "string" && payload.fib_level.trim() !== "") {
+        raw = payload.fib_level.trim();
+    } else if (typeof payload.levelStr === "string" && payload.levelStr.trim() !== "") {
+        raw = payload.levelStr.trim();
+    }
+
+    // If for some reason we still don't have anything, fall back to numericLevels[0].
+    if (!raw) {
+        return ` (${payload.numericLevels[0]})`;
+    }
+
+    // Make sure positive numbers have an explicit '+' sign for clarity.
+    const n = Number(raw);
+    if (!Number.isNaN(n)) {
+        if (n > 0 && !raw.startsWith("+")) {
+            raw = `+${raw}`;
+        }
+        // negative values already have '-' from TradingView
+    }
+
+    return ` (${raw})`;
 }
 
 
+// ==========================================================
+//  TRACKING ENGINE
+// ==========================================================
 function processTracking1(symbol, group, ts, body) {
     const startGroups = ["A", "B", "C", "D"];
     const endGroups = ["G", "H"];
 
-    // Start condition
     if (startGroups.includes(group)) {
         trackingStart[symbol] = { startGroup: group, startTime: ts, payload: body };
+        saveState();
         return;
     }
 
-    // End condition
     if (endGroups.includes(group) && trackingStart[symbol]) {
         const start = trackingStart[symbol];
 
-        const endLevel = formatLevel(group, body); // H/G levels
-        const startLevel = formatLevel(start.startGroup, start.payload); // A–D => ""
+        const endLevel = formatLevel(group, body);
+        const startLevel = formatLevel(start.startGroup, start.payload);
 
-        const msg =
+        sendToTelegram2(
             `📌 TRACKING 1 COMPLETE\n` +
             `Symbol: ${symbol}\n` +
             `Start Group: ${start.startGroup}${startLevel}\n` +
             `Start Time: ${new Date(start.startTime).toLocaleString()}\n` +
             `End Group: ${group}${endLevel}\n` +
-            `End Time: ${new Date(ts).toLocaleString()}`;
-
-        sendToTelegram2(msg);
+            `End Time: ${new Date(ts).toLocaleString()}`
+        );
 
         delete trackingStart[symbol];
+        saveState();
     }
 }
-
 
 function processTracking2and3(symbol, group, ts, body) {
     const big = ["F", "G", "H"];
@@ -145,46 +237,39 @@ function processTracking2and3(symbol, group, ts, body) {
     const last = lastBig[symbol] || 0;
     const diff = ts - last;
 
-    // First ever occurrence
     if (!last) {
         lastBig[symbol] = ts;
+        saveState();
         return;
     }
 
     const TWO = 2 * 60 * 60 * 1000;
     const FIVE = 5 * 60 * 60 * 1000;
 
-    const lvl = formatLevel(group, body); // add level for F/G/H
+    const lvl = formatLevel(group, body);
 
-    // TRACKING 3 (5 hours)
     if (diff >= FIVE) {
-        const msg =
-            `⏱ TRACKING 3\n` +
-            `Symbol: ${symbol}\n` +
-            `Group: ${group}${lvl}\n` +
-            `First F/G/H in over 5 hours\n` +
-            `Gap: ${(diff / 3600000).toFixed(2)} hours\n` +
-            `Time: ${new Date(ts).toLocaleString()}`;
-        sendToTelegram2(msg);
-
+        sendToTelegram2(
+            `⏱ TRACKING 3\nSymbol: ${symbol}\nGroup: ${group}${lvl}\nFirst F/G/H in over 5 hours\nGap: ${(diff/3600000).toFixed(2)} hours\nTime: ${new Date(ts).toLocaleString()}`
+        );
         lastBig[symbol] = ts;
+        saveState();
         return;
     }
 
-    // TRACKING 2 (2 hours)
     if (diff >= TWO) {
-        const msg =
-            `⏱ TRACKING 2\n` +
-            `Symbol: ${symbol}\n` +
-            `Group: ${group}${lvl}\n` +
-            `First F/G/H in over 2 hours\n` +
-            `Gap: ${(diff / 3600000).toFixed(2)} hours\n` +
-            `Time: ${new Date(ts).toLocaleString()}`;
-        sendToTelegram2(msg);
+        sendToTelegram2(
+            `⏱ TRACKING 2\nSymbol: ${symbol}\nGroup: ${group}${lvl}\nFirst F/G/H in over 2 hours\nGap: ${(diff/3600000).toFixed(2)} hours\nTime: ${new Date(ts).toLocaleString()}`
+        );
     }
 
     lastBig[symbol] = ts;
+    saveState();
 }
+
+// ==========================================================
+//  MATCHING ENGINE
+// ==========================================================
 
 const MATCH_WINDOW_MS = 65 * 1000;
 
@@ -199,10 +284,7 @@ function processMatching1(symbol, group, ts, body) {
 
         if (candidate) {
             sendToTelegram2(
-                `🔁 MATCHING 1\nSymbol: ${symbol}\n` +
-                `Groups: ${group} ↔ ${candidate.payload.group}\nTimes:\n` +
-                ` - ${group}: ${new Date(ts).toLocaleString()}\n` +
-                ` - ${candidate.payload.group}: ${new Date(candidate.time).toLocaleString()}`
+                `🔁 MATCHING 1\nSymbol: ${symbol}\nGroups: ${group} ↔ ${candidate.payload.group}\nTimes:\n - ${group}: ${new Date(ts).toLocaleString()}\n - ${candidate.payload.group}: ${new Date(candidate.time).toLocaleString()}`
             );
         }
         return;
@@ -215,10 +297,7 @@ function processMatching1(symbol, group, ts, body) {
 
         if (candidate) {
             sendToTelegram2(
-                `🔁 MATCHING 1\nSymbol: ${symbol}\n` +
-                `Groups: ${candidate.payload.group} ↔ ${group}\nTimes:\n` +
-                ` - ${candidate.payload.group}: ${new Date(candidate.time).toLocaleString()}\n` +
-                ` - ${group}: ${new Date(ts).toLocaleString()}`
+                `🔁 MATCHING 1\nSymbol: ${symbol}\nGroups: ${candidate.payload.group} ↔ ${group}\nTimes:\n - ${candidate.payload.group}: ${new Date(candidate.time).toLocaleString()}\n - ${group}: ${new Date(ts).toLocaleString()}`
             );
         }
     }
@@ -238,12 +317,7 @@ function processMatchingAD2(symbol, group, ts) {
     if (!candidate) return;
 
     sendToTelegram2(
-        `🔁 AD-2 Divergence\n` +
-        `Symbol: ${symbol}\n` +
-        `Groups: ${candidate.payload.group} ↔ ${group}\n` +
-        `Times:\n` +
-        ` - ${candidate.payload.group}: ${new Date(candidate.time).toLocaleString()}\n` +
-        ` - ${group}: ${new Date(ts).toLocaleString()}`
+        `🔁 AD-2 Divergence\nSymbol: ${symbol}\nGroups: ${candidate.payload.group} ↔ ${group}\nTimes:\n - ${candidate.payload.group}: ${new Date(candidate.time).toLocaleString()}\n - ${group}: ${new Date(ts).toLocaleString()}`
     );
 }
 
@@ -268,13 +342,7 @@ function processMatching2(symbol, group, ts, body) {
     if (!candidate) return;
 
     sendToTelegram2(
-        `🔁 MATCHING 2\n` +
-        `Symbol: ${symbol}\n` +
-        `Levels: ±${lvls[0]}\n` +
-        `Groups: ${candidate.payload.group} ↔ ${group}\n` +
-        `Times:\n` +
-        ` - ${candidate.payload.group}: ${new Date(candidate.time).toLocaleString()}\n` +
-        ` - ${group}: ${new Date(ts).toLocaleString()}`
+        `🔁 MATCHING 2\nSymbol: ${symbol}\nLevels: ±${lvls[0]}\nGroups: ${candidate.payload.group} ↔ ${group}\nTimes:\n - ${candidate.payload.group}: ${new Date(candidate.time).toLocaleString()}\n - ${group}: ${new Date(ts).toLocaleString()}`
     );
 }
 
@@ -298,22 +366,20 @@ function processMatching3(symbol, group, ts, body) {
     if (!candidate) return;
 
     sendToTelegram2(
-        `🎯 MATCHING 3 (Same Level)\n` +
-        `Symbol: ${symbol}\n` +
-        `Levels: ±${lvls[0]}\n` +
-        `Groups: ${candidate.payload.group} ↔ ${group}\n` +
-        `Times:\n` +
-        ` - ${candidate.payload.group}: ${new Date(candidate.time).toLocaleString()}\n` +
-        ` - ${group}: ${new Date(ts).toLocaleString()}`
+        `🎯 MATCHING 3 (Same Level)\nSymbol: ${symbol}\nLevels: ±${lvls[0]}\nGroups: ${candidate.payload.group} ↔ ${group}\nTimes:\n - ${candidate.payload.group}: ${new Date(candidate.time).toLocaleString()}\n - ${group}: ${new Date(ts).toLocaleString()}`
     );
 }
+
+// ==========================================================
+//  WEBHOOK HANDLER
+// ==========================================================
 
 app.post("/incoming", (req, res) => {
     try {
         const body = req.body || {};
         if (ALERT_SECRET && body.secret !== ALERT_SECRET) return res.sendStatus(401);
 
-        const group = (body.group || "").trim();
+        const group  = (body.group || "").trim();
         const symbol = (body.symbol || "").trim();
         const ts = nowMs();
 
@@ -333,6 +399,7 @@ app.post("/incoming", (req, res) => {
         body.numericLevels = norm.numericLevels;
 
         saveAlert(symbol, group, ts, body);
+        saveState();
 
         processTracking1(symbol, group, ts, body);
         processTracking2and3(symbol, group, ts, body);
@@ -341,28 +408,28 @@ app.post("/incoming", (req, res) => {
         processMatching2(symbol, group, ts, body);
         processMatching3(symbol, group, ts, body);
 
+        // Strong signal (unchanged)
         try {
             const dir = body.direction?.toLowerCase();
             const mom = body.momentum?.toLowerCase();
             if (dir && mom && dir === mom) {
                 sendToTelegram2(
-                    `🔥 STRONG SIGNAL\n` +
-                    `Symbol: ${symbol}\n` +
-                    `Level: ${body.level || body.fib_level || "n/a"}\n` +
-                    `Direction: ${dir}\n` +
-                    `Momentum: ${mom}\n` +
-                    `Time: ${body.time}`
+                    `🔥 STRONG SIGNAL\nSymbol: ${symbol}\nLevel: ${body.level || body.fib_level || "n/a"}\nDirection: ${dir}\nMomentum: ${mom}\nTime: ${body.time}`
                 );
             }
         } catch {}
 
         res.sendStatus(200);
 
-    } catch {
+    } catch (err) {
+        console.error("❌ /incoming error:", err);
         res.sendStatus(200);
     }
 });
 
+// ==========================================================
+//  BOT1 LOOP (unchanged)
+// ==========================================================
 setInterval(async () => {
     if (!RULES.length) return;
 
@@ -398,6 +465,7 @@ setInterval(async () => {
             await sendToTelegram1(lines.join("\n"));
             for (const g of groups) events[g] = [];
             cooldownUntil[name] = nowSec() + COOLDOWN_SECONDS;
+            saveState();
         }
     }
 }, CHECK_MS);
@@ -406,5 +474,9 @@ app.get("/ping", (req, res) => {
     res.json({ ok: true, rules: RULES.map(r => r.name) });
 });
 
+// ==========================================================
+//  START SERVER
+// ==========================================================
 const PORT = Number((process.env.PORT || "10000").trim());
 app.listen(PORT, () => console.log(`🚀 Server running on port ${PORT}`));
+
