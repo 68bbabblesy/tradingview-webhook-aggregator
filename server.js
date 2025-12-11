@@ -213,8 +213,17 @@ function processTracking1(symbol, group, ts, body) {
     if (endGroups.includes(group) && trackingStart[symbol]) {
         const start = trackingStart[symbol];
 
-        const endLevel = formatLevel(group, body);
-        const startLevel = formatLevel(start.startGroup, start.payload);
+        // use raw signed level if TradingView sent it
+function getSignedLevel(payload) {
+    if (!payload) return "";
+    if (payload.level) return ` (${payload.level})`;     // H signals
+    if (payload.fib_level) return ` (${payload.fib_level})`; // G signals
+    return "";
+}
+
+const startLevel = getSignedLevel(start.payload); // A–D = "" automatically
+const endLevel   = getSignedLevel(body);          // H/G = true signed level
+
 
         sendToTelegram2(
             `📌 TRACKING 1 COMPLETE\n` +
