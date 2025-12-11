@@ -99,6 +99,81 @@ async function sendToTelegram2(text) {
     });
 }
 
+// ==========================================================
+//  BOT3 — TRACKING 4 (H level switching tracking)
+// ==========================================================
+
+// Telegram sender for Bot 3
+async function sendToTelegram3(text) {
+    const token = (process.env.TELEGRAM_BOT_TOKEN_3 || "").trim();
+    const chat  = (process.env.TELEGRAM_CHAT_ID_3 || "").trim();
+    if (!token || !chat) return;
+
+    await fetch(`https://api.telegram.org/bot${token}/sendMessage`, {
+        method: "POST",
+        headers: { "Content-Type": "application/json" },
+        body: JSON.stringify({ chat_id: chat, text })
+    });
+}
+
+// Stores last absolute H-level per symbol
+const tracking4 = {};
+// tracking4[symbol] = { absLevel, rawLevel, time }
+
+// Format helper for level text
+function formatLevelBot3(level) {
+    const lv = Number(level);
+    if (isNaN(lv)) return "";
+    return lv > 0 ? `+${lv}` : `${lv}`;
+}
+
+// TRACKING 4 ENGINE
+function processTracking4(symbol, group, ts, body) {
+    if (group !== "H") return;
+
+    const raw = parseFloat(body.level);
+    if (isNaN(raw)) return;
+
+    const absLevel = Math.abs(raw);
+
+    // First time: store and exit
+    if (!tracking4[symbol]) {
+        tracking4[symbol] = {
+            absLevel,
+            rawLevel: raw,
+            time: ts
+        };
+        return;
+    }
+
+    const prev = tracking4[symbol];
+
+    // No change in absolute level → ignore
+    if (prev.absLevel === absLevel) return;
+
+    // Compute time gap  
+    const diffMs = ts - prev.time;
+    const diffMin = Math.floor(diffMs / 60000);
+    const diffSec = Math.floor((diffMs % 60000) / 1000);
+
+    const msg =
+        `🔄 TRACKING 4 SWITCH\n` +
+        `Symbol: ${symbol}\n` +
+        `From: H (${formatLevelBot3(prev.rawLevel)})\n` +
+        `To:   H (${formatLevelBot3(raw)})\n` +
+        `Gap: ${diffMin}m ${diffSec}s\n` +
+        `Time: ${new Date(ts).toLocaleString()}`;
+
+    sendToTelegram3(msg);
+
+    // Update stored state
+    tracking4[symbol] = {
+        absLevel,
+        rawLevel: raw,
+        time: ts
+    };
+}
+
 // -----------------------------
 // STORAGE FOR BOT1 AGGREGATION
 // -----------------------------
@@ -416,6 +491,8 @@ app.post("/incoming", (req, res) => {
         processMatchingAD2(symbol, group, ts);
         processMatching2(symbol, group, ts, body);
         processMatching3(symbol, group, ts, body);
+		processTracking4(symbol, group, ts, body);
+
 
         // Strong signal (unchanged)
         try {
