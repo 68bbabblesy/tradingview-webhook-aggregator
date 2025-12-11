@@ -97,29 +97,46 @@ function saveAlert(symbol, group, ts, body) {
 function safeGet(symbol, group) {
     return lastAlert[symbol]?.[group] || null;
 }
+function formatLevel(group, payload) {
+    if (!payload || !payload.numericLevels || payload.numericLevels.length === 0)
+        return ""; // A–D have no levels
+
+    const lvl = Math.abs(payload.numericLevels[0]); // always positive
+    return ` (±${lvl})`;
+}
+
 
 function processTracking1(symbol, group, ts, body) {
     const startGroups = ["A", "B", "C", "D"];
     const endGroups = ["G", "H"];
 
+    // Start condition
     if (startGroups.includes(group)) {
         trackingStart[symbol] = { startGroup: group, startTime: ts, payload: body };
         return;
     }
 
+    // End condition
     if (endGroups.includes(group) && trackingStart[symbol]) {
         const start = trackingStart[symbol];
-        sendToTelegram2(
+
+        const endLevel = formatLevel(group, body); // H/G levels
+        const startLevel = formatLevel(start.startGroup, start.payload); // A–D => ""
+
+        const msg =
             `📌 TRACKING 1 COMPLETE\n` +
             `Symbol: ${symbol}\n` +
-            `Start Group: ${start.startGroup}\n` +
+            `Start Group: ${start.startGroup}${startLevel}\n` +
             `Start Time: ${new Date(start.startTime).toLocaleString()}\n` +
-            `End Group: ${group}\n` +
-            `End Time: ${new Date(ts).toLocaleString()}`
-        );
+            `End Group: ${group}${endLevel}\n` +
+            `End Time: ${new Date(ts).toLocaleString()}`;
+
+        sendToTelegram2(msg);
+
         delete trackingStart[symbol];
     }
 }
+
 
 function processTracking2and3(symbol, group, ts, body) {
     const big = ["F", "G", "H"];
@@ -128,6 +145,7 @@ function processTracking2and3(symbol, group, ts, body) {
     const last = lastBig[symbol] || 0;
     const diff = ts - last;
 
+    // First ever occurrence
     if (!last) {
         lastBig[symbol] = ts;
         return;
@@ -136,18 +154,33 @@ function processTracking2and3(symbol, group, ts, body) {
     const TWO = 2 * 60 * 60 * 1000;
     const FIVE = 5 * 60 * 60 * 1000;
 
+    const lvl = formatLevel(group, body); // add level for F/G/H
+
+    // TRACKING 3 (5 hours)
     if (diff >= FIVE) {
-        sendToTelegram2(
-            `⏱ TRACKING 3\nSymbol: ${symbol}\nGroup: ${group}\nFirst F/G/H in over 5 hours\nGap: ${(diff/3600000).toFixed(2)} hours\nTime: ${new Date(ts).toLocaleString()}`
-        );
+        const msg =
+            `⏱ TRACKING 3\n` +
+            `Symbol: ${symbol}\n` +
+            `Group: ${group}${lvl}\n` +
+            `First F/G/H in over 5 hours\n` +
+            `Gap: ${(diff / 3600000).toFixed(2)} hours\n` +
+            `Time: ${new Date(ts).toLocaleString()}`;
+        sendToTelegram2(msg);
+
         lastBig[symbol] = ts;
         return;
     }
 
+    // TRACKING 2 (2 hours)
     if (diff >= TWO) {
-        sendToTelegram2(
-            `⏱ TRACKING 2\nSymbol: ${symbol}\nGroup: ${group}\nFirst F/G/H in over 2 hours\nGap: ${(diff/3600000).toFixed(2)} hours\nTime: ${new Date(ts).toLocaleString()}`
-        );
+        const msg =
+            `⏱ TRACKING 2\n` +
+            `Symbol: ${symbol}\n` +
+            `Group: ${group}${lvl}\n` +
+            `First F/G/H in over 2 hours\n` +
+            `Gap: ${(diff / 3600000).toFixed(2)} hours\n` +
+            `Time: ${new Date(ts).toLocaleString()}`;
+        sendToTelegram2(msg);
     }
 
     lastBig[symbol] = ts;
