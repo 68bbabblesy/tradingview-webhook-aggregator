@@ -173,6 +173,50 @@ function processTracking4(symbol, group, ts, body) {
         time: ts
     };
 }
+function processTracking5(symbol, group, ts, body) {
+    const allowed = ["G", "P"];
+    if (!allowed.includes(group)) return;
+
+    const { numericLevels } = normalizeFibLevel(group, body);
+    if (!numericLevels.length) return;
+
+    const currentLevel = numericLevels[0];
+    const prev = lastGPLevel[symbol];
+
+    // First occurrence → start tracking only
+    if (!prev) {
+        lastGPLevel[symbol] = {
+            level: currentLevel,
+            time: ts,
+            group
+        };
+        return;
+    }
+
+    // Same level → ignore
+    if (prev.level === currentLevel) return;
+
+    const gapMs = ts - prev.time;
+    const gapMin = Math.floor(gapMs / 60000);
+    const gapSec = Math.floor((gapMs % 60000) / 1000);
+
+    const msg =
+        `🔄 TRACKING 5 SWITCH\n` +
+        `Symbol: ${symbol}\n` +
+        `From: ${prev.group} (${prev.level})\n` +
+        `To: ${group} (${currentLevel})\n` +
+        `Gap: ${gapMin}m ${gapSec}s\n` +
+        `Time: ${new Date(ts).toLocaleString()}`;
+
+    sendToTelegram3(msg);
+
+    // Update state
+    lastGPLevel[symbol] = {
+        level: currentLevel,
+        time: ts,
+        group
+    };
+}
 
 // -----------------------------
 // STORAGE FOR BOT1 AGGREGATION
@@ -206,6 +250,18 @@ function maxWindowMs() {
 const lastAlert     = persisted.lastAlert     || {};
 const trackingStart = persisted.trackingStart || {};
 const lastBig       = persisted.lastBig       || {};
+
+// Tracking 4 (H level switch)
+const lastHLevel = {};
+
+// Tracking 5 (G ↔ P level switch)
+const lastGPLevel = {};
+
+// Cross-level switch (H ↔ G ↔ P)
+const lastCrossLevel = {}; // symbol → { group, level, time }
+
+
+
 
 // -----------------------------
 // FIB LEVEL NORMALIZATION
@@ -351,6 +407,51 @@ function processTracking2and3(symbol, group, ts, body) {
     saveState();
 }
 
+function processCrossSwitch1(symbol, group, ts, body) {
+    const allowed = ["H", "G", "P"];
+    if (!allowed.includes(group)) return;
+
+    const { numericLevels } = normalizeFibLevel(group, body);
+    if (!numericLevels.length) return;
+
+    const currentLevel = numericLevels[0];
+    const prev = lastCrossLevel[symbol];
+
+    // First sighting
+    if (!prev) {
+        lastCrossLevel[symbol] = {
+            group,
+            level: currentLevel,
+            time: ts
+        };
+        return;
+    }
+
+    // Same group + same level → ignore
+    if (prev.group === group && prev.level === currentLevel) return;
+
+    const gapMs = ts - prev.time;
+    const gapMin = Math.floor(gapMs / 60000);
+    const gapSec = Math.floor((gapMs % 60000) / 1000);
+
+    const msg =
+        `🔀 CROSS SWITCH 1\n` +
+        `Symbol: ${symbol}\n` +
+        `From: ${prev.group} (${prev.level})\n` +
+        `To: ${group} (${currentLevel})\n` +
+        `Gap: ${gapMin}m ${gapSec}s\n` +
+        `Time: ${new Date(ts).toLocaleString()}`;
+
+    sendToTelegram3(msg);
+
+    lastCrossLevel[symbol] = {
+        group,
+        level: currentLevel,
+        time: ts
+    };
+}
+
+
 // ==========================================================
 //  MATCHING ENGINE
 // ==========================================================
@@ -492,6 +593,8 @@ app.post("/incoming", (req, res) => {
         processMatching2(symbol, group, ts, body);
         processMatching3(symbol, group, ts, body);
 		processTracking4(symbol, group, ts, body);
+		processTracking5(symbol, group, ts, body);
+
 
 
         // Strong signal (unchanged)
