@@ -1,220 +1,215 @@
 import express from "express";
 import fetch from "node-fetch";
+import fs from "fs";
 
 const app = express();
 app.use(express.json());
 
-// ==========================================================
-// ENV
-// ==========================================================
-const BOT1_TOKEN = process.env.TELEGRAM_BOT_TOKEN || "";
-const BOT1_CHAT  = process.env.TELEGRAM_CHAT_ID || "";
-
-const BOT2_TOKEN = process.env.TELEGRAM_BOT_TOKEN_2 || "";
-const BOT2_CHAT  = process.env.TELEGRAM_CHAT_ID_2 || "";
-
-const WINDOW_SECONDS = Number(process.env.WINDOW_SECONDS || 45);
+// =====================
+// CONFIG
+// =====================
+const PORT = Number(process.env.PORT || 10000);
 const CHECK_MS = Number(process.env.CHECK_MS || 1000);
+const WINDOW_SECONDS_DEF = Number(process.env.WINDOW_SECONDS || 45);
 const COOLDOWN_SECONDS = Number(process.env.COOLDOWN_SECONDS || 60);
+const ALERT_SECRET = (process.env.ALERT_SECRET || "").trim();
 
-// ==========================================================
-// HELPERS
-// ==========================================================
-const nowMs = () => Date.now();
-const nowSec = () => Math.floor(Date.now() / 1000);
+// =====================
+// TELEGRAM
+// =====================
+const BOT1_TOKEN = process.env.TELEGRAM_BOT_TOKEN;
+const BOT1_CHAT  = process.env.TELEGRAM_CHAT_ID;
 
-async function send(token, chat, text) {
-  if (!token || !chat) return;
-  await fetch(`https://api.telegram.org/bot${token}/sendMessage`, {
-    method: "POST",
-    headers: { "Content-Type": "application/json" },
-    body: JSON.stringify({ chat_id: chat, text })
-  });
+const BOT2_TOKEN = process.env.TELEGRAM_BOT_TOKEN_2;
+const BOT2_CHAT  = process.env.TELEGRAM_CHAT_ID_2;
+
+async function tg(token, chat, text) {
+    if (!token || !chat) return;
+    await fetch(`https://api.telegram.org/bot${token}/sendMessage`, {
+        method: "POST",
+        headers: { "Content-Type": "application/json" },
+        body: JSON.stringify({ chat_id: chat, text })
+    });
 }
 
-// ==========================================================
-// BOT 1 — AGGREGATION (FIXED)
-// ==========================================================
+// =====================
+// BOT 1 — AGGREGATOR
+// =====================
 let RULES = [];
 try {
-  RULES = JSON.parse(process.env.RULES || "[]");
-} catch {
-  RULES = [];
-}
+    RULES = JSON.parse(process.env.RULES || "[]");
+} catch {}
 
 RULES = RULES.map((r, i) => ({
-  name: r.name || `rule${i + 1}`,
-  groups: r.groups || [],
-  threshold: Number(r.threshold || 3),
-  windowSeconds: Number(r.windowSeconds || WINDOW_SECONDS)
+    name: r.name || `rule${i+1}`,
+    groups: r.groups,
+    threshold: r.threshold,
+    windowSeconds: r.windowSeconds || WINDOW_SECONDS_DEF
 }));
 
 const events = {};
 const cooldownUntil = {};
 
-function prune(buf, windowMs) {
-  const cutoff = nowMs() - windowMs;
-  while (buf.length && buf[0].time < cutoff) buf.shift();
+const nowMs = () => Date.now();
+const nowSec = () => Math.floor(Date.now() / 1000);
+
+function pruneOld(buf, windowMs) {
+    const cutoff = nowMs() - windowMs;
+    while (buf.length && buf[0].time < cutoff) buf.shift();
 }
 
-// ==========================================================
-// BOT 2 — STORAGE
-// ==========================================================
+function normalizeLevel(group, body) {
+    if (group === "H" && body.level) return body.level;
+    if (group === "G" && body.fib_level) return body.fib_level;
+    return "";
+}
+
+// =====================
+// BOT 2 — TRACKING (OLD FORMAT)
+// =====================
 const lastAlert = {};
 const trackingStart = {};
 const lastBig = {};
 
-// ==========================================================
-// NORMALIZE
-// ==========================================================
-function normalize(group, body) {
-  if (group === "H" && body.level) {
-    const n = Number(body.level);
-    if (!isNaN(n)) return [n, -n];
-  }
-  if (group === "G" && body.fib_level) {
-    const n = Number(body.fib_level);
-    if (!isNaN(n)) return [n, -n];
-  }
-  if (group === "F") return [1.3, -1.3];
-  return [];
-}
-
 function saveAlert(symbol, group, ts, body) {
-  if (!lastAlert[symbol]) lastAlert[symbol] = {};
-  lastAlert[symbol][group] = { time: ts, payload: body };
+    if (!lastAlert[symbol]) lastAlert[symbol] = {};
+    lastAlert[symbol][group] = { time: ts, payload: body };
 }
 
-function get(symbol, group) {
-  return lastAlert[symbol]?.[group];
+function safeGet(symbol, group) {
+    return lastAlert[symbol]?.[group];
 }
 
-// ==========================================================
-// BOT 2 — TRACKING
-// ==========================================================
-function tracking1(symbol, group, ts, body) {
-  const start = ["A","B","C","D"];
-  const end = ["G","H"];
+function processTracking1(symbol, group, ts, body) {
+    const startGroups = ["A","B","C","D"];
+    const endGroups = ["G","H"];
 
-  if (start.includes(group)) {
-    trackingStart[symbol] = { group, ts, body };
-    return;
-  }
+    if (startGroups.includes(group)) {
+        trackingStart[symbol] = { group, time: ts };
+        return;
+    }
 
-  if (end.includes(group) && trackingStart[symbol]) {
-    const s = trackingStart[symbol];
-    send(
-      BOT2_TOKEN,
-      BOT2_CHAT,
-      `📌 TRACKING 1\nSymbol: ${symbol}\n${s.group} → ${group}\n${new Date(s.ts).toLocaleString()} → ${new Date(ts).toLocaleString()}`
-    );
-    delete trackingStart[symbol];
-  }
+    if (endGroups.includes(group) && trackingStart[symbol]) {
+        const s = trackingStart[symbol];
+        const lvl = normalizeLevel(group, body);
+
+        tg(BOT2_TOKEN, BOT2_CHAT,
+            `📌 TRACKING 1 COMPLETE\n` +
+            `Symbol: ${symbol}\n` +
+            `Start Group: ${s.group}\n` +
+            `Start Time: ${new Date(s.time).toLocaleString()}\n` +
+            `End Group: ${group}${lvl ? ` (${lvl})` : ""}\n` +
+            `End Time: ${new Date(ts).toLocaleString()}`
+        );
+
+        delete trackingStart[symbol];
+    }
 }
 
-function tracking2and3(symbol, group, ts) {
-  if (!["F","G","H"].includes(group)) return;
+function processTracking2and3(symbol, group, ts, body) {
+    if (!["F","G","H"].includes(group)) return;
 
-  const prev = lastBig[symbol];
-  lastBig[symbol] = ts;
+    const last = lastBig[symbol] || 0;
+    const diff = ts - last;
 
-  if (!prev) return;
+    const TWO = 2 * 3600000;
+    const FIVE = 5 * 3600000;
 
-  const diff = ts - prev;
-  const hrs = diff / 3600000;
+    const lvl = normalizeLevel(group, body);
 
-  if (hrs >= 5) {
-    send(
-      BOT2_TOKEN,
-      BOT2_CHAT,
-      `⏱ TRACKING 3\nSymbol: ${symbol}\nFirst F/G/H in ${hrs.toFixed(2)}h`
-    );
-  } else if (hrs >= 2) {
-    send(
-      BOT2_TOKEN,
-      BOT2_CHAT,
-      `⏱ TRACKING 2\nSymbol: ${symbol}\nFirst F/G/H in ${hrs.toFixed(2)}h`
-    );
-  }
+    if (last && diff >= FIVE) {
+        tg(BOT2_TOKEN, BOT2_CHAT,
+            `⏱ TRACKING 3\n` +
+            `Symbol: ${symbol}\n` +
+            `Group: ${group}${lvl ? ` (${lvl})` : ""}\n` +
+            `First F/G/H in over 5 hours\n` +
+            `Gap: ${(diff/3600000).toFixed(2)} hours\n` +
+            `Time: ${new Date(ts).toLocaleString()}`
+        );
+    } else if (last && diff >= TWO) {
+        tg(BOT2_TOKEN, BOT2_CHAT,
+            `⏱ TRACKING 2\n` +
+            `Symbol: ${symbol}\n` +
+            `Group: ${group}${lvl ? ` (${lvl})` : ""}\n` +
+            `First F/G/H in over 2 hours\n` +
+            `Gap: ${(diff/3600000).toFixed(2)} hours\n` +
+            `Time: ${new Date(ts).toLocaleString()}`
+        );
+    }
+
+    lastBig[symbol] = ts;
 }
 
-// ==========================================================
-// BOT 2 — MATCHING
-// ==========================================================
-const MATCH_WINDOW = 65 * 1000;
-
-function matching1(symbol, group, ts) {
-  const AD = ["A","B","C","D"];
-  const FGH = ["F","G","H"];
-
-  if (AD.includes(group)) {
-    const hit = FGH.map(g => get(symbol,g))
-      .find(x => x && ts - x.time <= MATCH_WINDOW);
-    if (hit) send(BOT2_TOKEN,BOT2_CHAT,`🔁 MATCHING 1\n${symbol}: ${group} ↔ ${hit.payload.group}`);
-  }
-
-  if (FGH.includes(group)) {
-    const hit = AD.map(g => get(symbol,g))
-      .find(x => x && ts - x.time <= MATCH_WINDOW);
-    if (hit) send(BOT2_TOKEN,BOT2_CHAT,`🔁 MATCHING 1\n${symbol}: ${hit.payload.group} ↔ ${group}`);
-  }
-}
-
-// ==========================================================
+// =====================
 // WEBHOOK
-// ==========================================================
+// =====================
 app.post("/incoming", (req, res) => {
-  const body = req.body || {};
-  const symbol = body.symbol;
-  const group = body.group;
-  const ts = nowMs();
+    try {
+        const body = req.body || {};
+        if (ALERT_SECRET && body.secret !== ALERT_SECRET) return res.sendStatus(401);
 
-  if (!symbol || !group) return res.sendStatus(200);
+        const symbol = body.symbol;
+        const group = body.group;
+        const ts = nowMs();
 
-  if (!events[group]) events[group] = [];
-  events[group].push({ time: ts, body });
+        if (!symbol || !group) return res.sendStatus(200);
 
-  saveAlert(symbol, group, ts, body);
+        // BOT 1 buffer
+        if (!events[group]) events[group] = [];
+        events[group].push({ time: ts, body });
+        pruneOld(events[group], maxWindowMs());
 
-  tracking1(symbol, group, ts, body);
-  tracking2and3(symbol, group, ts);
-  matching1(symbol, group, ts);
+        saveAlert(symbol, group, ts, body);
 
-  res.sendStatus(200);
+        processTracking1(symbol, group, ts, body);
+        processTracking2and3(symbol, group, ts, body);
+
+        res.sendStatus(200);
+    } catch {
+        res.sendStatus(200);
+    }
 });
 
-// ==========================================================
+// =====================
 // BOT 1 LOOP
-// ==========================================================
+// =====================
+function maxWindowMs() {
+    if (!RULES.length) return WINDOW_SECONDS_DEF * 1000;
+    return Math.max(...RULES.map(r => r.windowSeconds)) * 1000;
+}
+
 setInterval(async () => {
-  for (const r of RULES) {
-    const windowMs = r.windowSeconds * 1000;
-    let total = 0;
-    const counts = {};
+    for (const r of RULES) {
+        const { name, groups, threshold, windowSeconds } = r;
 
-    for (const g of r.groups) {
-      if (!events[g]) events[g] = [];
-      prune(events[g], windowMs);
-      counts[g] = events[g].length;
-      total += counts[g];
+        let total = 0;
+        const counts = {};
+
+        for (const g of groups) {
+            pruneOld(events[g] || (events[g]=[]), windowSeconds * 1000);
+            counts[g] = events[g].length;
+            total += counts[g];
+        }
+
+        if (total >= threshold && (cooldownUntil[name] || 0) <= nowSec()) {
+            const lines = [];
+            lines.push(`🚨 ${name}: ${total} alerts in ${windowSeconds}s`);
+
+            for (const g of groups) {
+                const last = events[g].slice(-5).map(e => {
+                    const lvl = normalizeLevel(g, e.body);
+                    return `[${g}] ${e.body.symbol}${lvl ? ` (${lvl})` : ""}`;
+                });
+                if (last.length) lines.push(...last);
+            }
+
+            await tg(BOT1_TOKEN, BOT1_CHAT, lines.join("\n"));
+            cooldownUntil[name] = nowSec() + COOLDOWN_SECONDS;
+        }
     }
-
-    if (total >= r.threshold && (cooldownUntil[r.name] || 0) <= nowSec()) {
-      const lines = [];
-      lines.push(`🚨 ${r.name}: ${total} alerts in ${r.windowSeconds}s`);
-      for (const g of r.groups) lines.push(`• ${g}: ${counts[g]}`);
-      lines.push("");
-      lines.push("Recent:");
-      for (const g of r.groups) {
-        events[g].forEach(e => lines.push(`[${g}] ${e.body.symbol}`));
-      }
-
-      await send(BOT1_TOKEN, BOT1_CHAT, lines.join("\n"));
-      cooldownUntil[r.name] = nowSec() + COOLDOWN_SECONDS;
-    }
-  }
 }, CHECK_MS);
 
-// ==========================================================
-const PORT = Number(process.env.PORT || 10000);
-app.listen(PORT, () => console.log("🚀 Server running"));
+// =====================
+app.listen(PORT, () => {
+    console.log(`Server running on ${PORT}`);
+});
