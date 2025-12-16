@@ -1,3 +1,7 @@
+// ==========================================================
+//  PART 1 — IMPORTS, CONFIG, HELPERS, NORMALIZATION, STORAGE
+// ==========================================================
+
 import express from "express";
 import fetch from "node-fetch";
 import fs from "fs";
@@ -5,26 +9,106 @@ import fs from "fs";
 const app = express();
 app.use(express.json());
 
-// =====================
-// CONFIG
-// =====================
-const PORT = Number(process.env.PORT || 10000);
-const CHECK_MS = Number(process.env.CHECK_MS || 1000);
-const WINDOW_SECONDS_DEF = Number(process.env.WINDOW_SECONDS || 45);
-const COOLDOWN_SECONDS = Number(process.env.COOLDOWN_SECONDS || 60);
-const ALERT_SECRET = (process.env.ALERT_SECRET || "").trim();
+// -----------------------------
+// PERSISTENCE (State File)
+// -----------------------------
+const STATE_FILE = "./state.json";
 
-// =====================
-// TELEGRAM
-// =====================
-const BOT1_TOKEN = process.env.TELEGRAM_BOT_TOKEN;
-const BOT1_CHAT  = process.env.TELEGRAM_CHAT_ID;
+function loadState() {
+    try {
+        if (fs.existsSync(STATE_FILE)) {
+            const raw = fs.readFileSync(STATE_FILE, "utf8");
+            return JSON.parse(raw);
+        }
+    } catch {}
+    return { lastAlert: {}, trackingStart: {}, lastBig: {}, cooldownUntil: {} };
+}
 
-const BOT2_TOKEN = process.env.TELEGRAM_BOT_TOKEN_2;
-const BOT2_CHAT  = process.env.TELEGRAM_CHAT_ID_2;
+function saveState() {
+    try {
+        fs.writeFileSync(
+            STATE_FILE,
+            JSON.stringify(
+                { lastAlert, trackingStart, lastBig, cooldownUntil },
+                null,
+                2
+            )
+        );
+    } catch (err) {
+        console.error("❌ Failed to save state:", err);
+    }
+}
 
-async function tg(token, chat, text) {
+// Load previous state
+const persisted = loadState();
+
+// -----------------------------
+// ENVIRONMENT VARIABLES
+// -----------------------------
+const TELEGRAM_BOT_TOKEN_1 = (process.env.TELEGRAM_BOT_TOKEN || "").trim();
+const TELEGRAM_CHAT_ID_1   = (process.env.TELEGRAM_CHAT_ID || "").trim();
+
+const TELEGRAM_BOT_TOKEN_2 = (process.env.TELEGRAM_BOT_TOKEN_2 || "").trim();
+const TELEGRAM_CHAT_ID_2   = (process.env.TELEGRAM_CHAT_ID_2 || "").trim();
+
+const WINDOW_SECONDS_DEF = Number((process.env.WINDOW_SECONDS || "45").trim());
+const CHECK_MS           = Number((process.env.CHECK_MS || "1000").trim());
+const ALERT_SECRET       = (process.env.ALERT_SECRET || "").trim();
+const COOLDOWN_SECONDS   = Number((process.env.COOLDOWN_SECONDS || "60").trim());
+
+// -----------------------------
+// BOT1 RULES (unchanged)
+// -----------------------------
+let RULES = [];
+try {
+    const raw = (process.env.RULES || "").trim();
+    RULES = raw ? JSON.parse(raw) : [];
+} catch { RULES = []; }
+
+RULES = RULES.map((r, idx) => ({
+    name: (r.name || `rule${idx + 1}`),
+    groups: Array.isArray(r.groups) ? r.groups.map(s => String(s).trim()).filter(Boolean) : [],
+    threshold: Number(r.threshold || 3),
+    windowSeconds: Number(r.windowSeconds || WINDOW_SECONDS_DEF)
+})).filter(r => r.groups.length);
+
+// -----------------------------
+// TIME HELPERS
+// -----------------------------
+const nowMs  = () => Date.now();
+const nowSec = () => Math.floor(Date.now() / 1000);
+
+// -----------------------------
+// TELEGRAM SENDERS
+// -----------------------------
+async function sendToTelegram1(text) {
+    if (!TELEGRAM_BOT_TOKEN_1 || !TELEGRAM_CHAT_ID_1) return;
+    await fetch(`https://api.telegram.org/bot${TELEGRAM_BOT_TOKEN_1}/sendMessage`, {
+        method: "POST",
+        headers: { "Content-Type": "application/json" },
+        body: JSON.stringify({ chat_id: TELEGRAM_CHAT_ID_1, text })
+    });
+}
+
+async function sendToTelegram2(text) {
+    if (!TELEGRAM_BOT_TOKEN_2 || !TELEGRAM_CHAT_ID_2) return;
+    await fetch(`https://api.telegram.org/bot${TELEGRAM_BOT_TOKEN_2}/sendMessage`, {
+        method: "POST",
+        headers: { "Content-Type": "application/json" },
+        body: JSON.stringify({ chat_id: TELEGRAM_CHAT_ID_2, text })
+    });
+}
+
+// ==========================================================
+//  BOT3 — TRACKING 4 (H level switching tracking)
+// ==========================================================
+
+// Telegram sender for Bot 3
+async function sendToTelegram3(text) {
+    const token = (process.env.TELEGRAM_BOT_TOKEN_3 || "").trim();
+    const chat  = (process.env.TELEGRAM_CHAT_ID_3 || "").trim();
     if (!token || !chat) return;
+
     await fetch(`https://api.telegram.org/bot${token}/sendMessage`, {
         method: "POST",
         headers: { "Content-Type": "application/json" },
@@ -32,184 +116,562 @@ async function tg(token, chat, text) {
     });
 }
 
-// =====================
-// BOT 1 — AGGREGATOR
-// =====================
-let RULES = [];
-try {
-    RULES = JSON.parse(process.env.RULES || "[]");
-} catch {}
+// Stores last absolute H-level per symbol
+const tracking4 = {};
+// tracking4[symbol] = { absLevel, rawLevel, time }
 
-RULES = RULES.map((r, i) => ({
-    name: r.name || `rule${i+1}`,
-    groups: r.groups,
-    threshold: r.threshold,
-    windowSeconds: r.windowSeconds || WINDOW_SECONDS_DEF
-}));
+// Format helper for level text
+function formatLevelBot3(level) {
+    const lv = Number(level);
+    if (isNaN(lv)) return "";
+    return lv > 0 ? `+${lv}` : `${lv}`;
+}
+
+// TRACKING 4 ENGINE
+function processTracking4(symbol, group, ts, body) {
+    if (group !== "H") return;
+
+    const raw = parseFloat(body.level);
+    if (isNaN(raw)) return;
+
+    const absLevel = Math.abs(raw);
+
+    // First time: store and exit
+    if (!tracking4[symbol]) {
+        tracking4[symbol] = {
+            absLevel,
+            rawLevel: raw,
+            time: ts
+        };
+        return;
+    }
+
+    const prev = tracking4[symbol];
+
+    // No change in absolute level → ignore
+    if (prev.absLevel === absLevel) return;
+
+    // Compute time gap  
+    const diffMs = ts - prev.time;
+    const diffMin = Math.floor(diffMs / 60000);
+    const diffSec = Math.floor((diffMs % 60000) / 1000);
+
+    const msg =
+        `🔄 TRACKING 4 SWITCH\n` +
+        `Symbol: ${symbol}\n` +
+        `From: H (${formatLevelBot3(prev.rawLevel)})\n` +
+        `To:   H (${formatLevelBot3(raw)})\n` +
+        `Gap: ${diffMin}m ${diffSec}s\n` +
+        `Time: ${new Date(ts).toLocaleString()}`;
+
+    sendToTelegram3(msg);
+
+    // Update stored state
+    tracking4[symbol] = {
+        absLevel,
+        rawLevel: raw,
+        time: ts
+    };
+}
+function processTracking5(symbol, group, ts, body) {
+    const allowed = ["G", "P"];
+    if (!allowed.includes(group)) return;
+
+    const { numericLevels } = normalizeFibLevel(group, body);
+    if (!numericLevels.length) return;
+
+    const currentLevel = numericLevels[0];
+    const prev = lastGPLevel[symbol];
+
+    // First occurrence → start tracking only
+    if (!prev) {
+        lastGPLevel[symbol] = {
+            level: currentLevel,
+            time: ts,
+            group
+        };
+        return;
+    }
+
+    // Same level → ignore
+    if (prev.level === currentLevel) return;
+
+    const gapMs = ts - prev.time;
+    const gapMin = Math.floor(gapMs / 60000);
+    const gapSec = Math.floor((gapMs % 60000) / 1000);
+
+    const msg =
+        `🔄 TRACKING 5 SWITCH\n` +
+        `Symbol: ${symbol}\n` +
+        `From: ${prev.group} (${prev.level})\n` +
+        `To: ${group} (${currentLevel})\n` +
+        `Gap: ${gapMin}m ${gapSec}s\n` +
+        `Time: ${new Date(ts).toLocaleString()}`;
+
+    sendToTelegram3(msg);
+
+    // Update state
+    lastGPLevel[symbol] = {
+        level: currentLevel,
+        time: ts,
+        group
+    };
+}
+
+// -----------------------------
+// STORAGE FOR BOT1 AGGREGATION
+// -----------------------------
 
 const events = {};
-const cooldownUntil = {};
+const cooldownUntil = persisted.cooldownUntil || {};
 
-const nowMs = () => Date.now();
-const nowSec = () => Math.floor(Date.now() / 1000);
+const recentHashes = new Set();
+function alertHash(symbol, group, ts) {
+    return `${symbol}-${group}-${Math.floor(ts / 1000)}`;
+}
 
 function pruneOld(buf, windowMs) {
     const cutoff = nowMs() - windowMs;
-    while (buf.length && buf[0].time < cutoff) buf.shift();
+    let i = 0;
+    while (i < buf.length && buf[i].time < cutoff) i++;
+    if (i > 0) buf.splice(0, i);
 }
 
-function normalizeLevel(group, body) {
-    if (group === "H" && body.level) return body.level;
-    if (group === "G" && body.fib_level) return body.fib_level;
-    return "";
+function maxWindowMs() {
+    if (!RULES.length) return WINDOW_SECONDS_DEF * 1000;
+    return Math.max(...RULES.map(r => r.windowSeconds)) * 1000;
 }
 
-// =====================
-// BOT 2 — TRACKING (OLD FORMAT)
-// =====================
-const lastAlert = {};
-const trackingStart = {};
-const lastBig = {};
+// ==========================================================
+//  BOT2 ENGINE STORAGE (tracking + matching)
+// ==========================================================
+
+// RESTORED FROM DISK (persistence)
+const lastAlert     = persisted.lastAlert     || {};
+const trackingStart = persisted.trackingStart || {};
+const lastBig       = persisted.lastBig       || {};
+
+// Tracking 4 (H level switch)
+const lastHLevel = {};
+
+// Tracking 5 (G ↔ P level switch)
+const lastGPLevel = {};
+
+// Cross-level switch (H ↔ G ↔ P)
+const lastCrossLevel = {}; // symbol → { group, level, time }
+
+
+
+
+// -----------------------------
+// FIB LEVEL NORMALIZATION
+// -----------------------------
+function normalizeFibLevel(group, body) {
+    if (group === "F") return { levelStr: "1.30", numericLevels: [1.30, -1.30] };
+
+    if (group === "G" && body.fib_level) {
+        const lv = parseFloat(body.fib_level);
+        if (!isNaN(lv)) return { levelStr: body.fib_level, numericLevels: [lv, -lv] };
+    }
+
+    if (group === "H" && body.level) {
+        const lv = parseFloat(body.level);
+        if (!isNaN(lv)) return { levelStr: body.level, numericLevels: [lv, -lv] };
+    }
+
+    return { levelStr: null, numericLevels: [] };
+}
 
 function saveAlert(symbol, group, ts, body) {
     if (!lastAlert[symbol]) lastAlert[symbol] = {};
     lastAlert[symbol][group] = { time: ts, payload: body };
 }
 
+// -----------------------------
+// SAFE GET
+// -----------------------------
 function safeGet(symbol, group) {
-    return lastAlert[symbol]?.[group];
+    return lastAlert[symbol]?.[group] || null;
 }
 
+function formatLevel(group, payload) {
+    // No payload or no numericLevels => no level (A–D etc.)
+    if (!payload || !payload.numericLevels || payload.numericLevels.length === 0) {
+        return "";
+    }
+
+    // Prefer the raw level string coming from TradingView – this keeps the sign.
+    let raw = "";
+    if (typeof payload.level === "string" && payload.level.trim() !== "") {
+        raw = payload.level.trim();
+    } else if (typeof payload.fib_level === "string" && payload.fib_level.trim() !== "") {
+        raw = payload.fib_level.trim();
+    } else if (typeof payload.levelStr === "string" && payload.levelStr.trim() !== "") {
+        raw = payload.levelStr.trim();
+    }
+
+    // If for some reason we still don't have anything, fall back to numericLevels[0].
+    if (!raw) {
+        return ` (${payload.numericLevels[0]})`;
+    }
+
+    // Make sure positive numbers have an explicit '+' sign for clarity.
+    const n = Number(raw);
+    if (!Number.isNaN(n)) {
+        if (n > 0 && !raw.startsWith("+")) {
+            raw = `+${raw}`;
+        }
+        // negative values already have '-' from TradingView
+    }
+
+    return ` (${raw})`;
+}
+
+
+// ==========================================================
+//  TRACKING ENGINE
+// ==========================================================
 function processTracking1(symbol, group, ts, body) {
-    const startGroups = ["A","B","C","D"];
-    const endGroups = ["G","H"];
+    const startGroups = ["A", "B", "C", "D"];
+    const endGroups = ["G", "H"];
 
     if (startGroups.includes(group)) {
-        trackingStart[symbol] = { group, time: ts };
+        trackingStart[symbol] = { startGroup: group, startTime: ts, payload: body };
+        saveState();
         return;
     }
 
     if (endGroups.includes(group) && trackingStart[symbol]) {
-        const s = trackingStart[symbol];
-        const lvl = normalizeLevel(group, body);
+        const start = trackingStart[symbol];
 
-        tg(BOT2_TOKEN, BOT2_CHAT,
+        // use raw signed level if TradingView sent it
+function getSignedLevel(payload) {
+    if (!payload) return "";
+    if (payload.level) return ` (${payload.level})`;     // H signals
+    if (payload.fib_level) return ` (${payload.fib_level})`; // G signals
+    return "";
+}
+
+const startLevel = getSignedLevel(start.payload); // A–D = "" automatically
+const endLevel   = getSignedLevel(body);          // H/G = true signed level
+
+
+        sendToTelegram2(
             `📌 TRACKING 1 COMPLETE\n` +
             `Symbol: ${symbol}\n` +
-            `Start Group: ${s.group}\n` +
-            `Start Time: ${new Date(s.time).toLocaleString()}\n` +
-            `End Group: ${group}${lvl ? ` (${lvl})` : ""}\n` +
+            `Start Group: ${start.startGroup}${startLevel}\n` +
+            `Start Time: ${new Date(start.startTime).toLocaleString()}\n` +
+            `End Group: ${group}${endLevel}\n` +
             `End Time: ${new Date(ts).toLocaleString()}`
         );
 
         delete trackingStart[symbol];
+        saveState();
     }
 }
 
 function processTracking2and3(symbol, group, ts, body) {
-    if (!["F","G","H"].includes(group)) return;
+    const big = ["F", "G", "H"];
+    if (!big.includes(group)) return;
 
     const last = lastBig[symbol] || 0;
     const diff = ts - last;
 
-    const TWO = 2 * 3600000;
-    const FIVE = 5 * 3600000;
+    if (!last) {
+        lastBig[symbol] = ts;
+        saveState();
+        return;
+    }
 
-    const lvl = normalizeLevel(group, body);
+    const TWO = 2 * 60 * 60 * 1000;
+    const FIVE = 5 * 60 * 60 * 1000;
 
-    if (last && diff >= FIVE) {
-        tg(BOT2_TOKEN, BOT2_CHAT,
-            `⏱ TRACKING 3\n` +
-            `Symbol: ${symbol}\n` +
-            `Group: ${group}${lvl ? ` (${lvl})` : ""}\n` +
-            `First F/G/H in over 5 hours\n` +
-            `Gap: ${(diff/3600000).toFixed(2)} hours\n` +
-            `Time: ${new Date(ts).toLocaleString()}`
+    const lvl = formatLevel(group, body);
+
+    if (diff >= FIVE) {
+        sendToTelegram2(
+            `⏱ TRACKING 3\nSymbol: ${symbol}\nGroup: ${group}${lvl}\nFirst F/G/H in over 5 hours\nGap: ${(diff/3600000).toFixed(2)} hours\nTime: ${new Date(ts).toLocaleString()}`
         );
-    } else if (last && diff >= TWO) {
-        tg(BOT2_TOKEN, BOT2_CHAT,
-            `⏱ TRACKING 2\n` +
-            `Symbol: ${symbol}\n` +
-            `Group: ${group}${lvl ? ` (${lvl})` : ""}\n` +
-            `First F/G/H in over 2 hours\n` +
-            `Gap: ${(diff/3600000).toFixed(2)} hours\n` +
-            `Time: ${new Date(ts).toLocaleString()}`
+        lastBig[symbol] = ts;
+        saveState();
+        return;
+    }
+
+    if (diff >= TWO) {
+        sendToTelegram2(
+            `⏱ TRACKING 2\nSymbol: ${symbol}\nGroup: ${group}${lvl}\nFirst F/G/H in over 2 hours\nGap: ${(diff/3600000).toFixed(2)} hours\nTime: ${new Date(ts).toLocaleString()}`
         );
     }
 
     lastBig[symbol] = ts;
+    saveState();
 }
 
-// =====================
-// WEBHOOK
-// =====================
+function processCrossSwitch1(symbol, group, ts, body) {
+    const allowed = ["H", "G", "P"];
+    if (!allowed.includes(group)) return;
+
+    const { numericLevels } = normalizeFibLevel(group, body);
+    if (!numericLevels.length) return;
+
+    const currentLevel = numericLevels[0];
+    const prev = lastCrossLevel[symbol];
+
+    // First sighting
+    if (!prev) {
+        lastCrossLevel[symbol] = {
+            group,
+            level: currentLevel,
+            time: ts
+        };
+        return;
+    }
+
+    // Same group + same level → ignore
+    if (prev.group === group && prev.level === currentLevel) return;
+
+    const gapMs = ts - prev.time;
+    const gapMin = Math.floor(gapMs / 60000);
+    const gapSec = Math.floor((gapMs % 60000) / 1000);
+
+    const msg =
+        `🔀 CROSS SWITCH 1\n` +
+        `Symbol: ${symbol}\n` +
+        `From: ${prev.group} (${prev.level})\n` +
+        `To: ${group} (${currentLevel})\n` +
+        `Gap: ${gapMin}m ${gapSec}s\n` +
+        `Time: ${new Date(ts).toLocaleString()}`;
+
+    sendToTelegram3(msg);
+
+    lastCrossLevel[symbol] = {
+        group,
+        level: currentLevel,
+        time: ts
+    };
+}
+
+
+// ==========================================================
+//  MATCHING ENGINE
+// ==========================================================
+
+const MATCH_WINDOW_MS = 65 * 1000;
+
+function processMatching1(symbol, group, ts, body) {
+    const AD = ["A", "B", "C", "D"];
+    const FGH = ["F", "G", "H"];
+
+    if (AD.includes(group)) {
+        const candidate = FGH.map(g => safeGet(symbol, g))
+            .filter(Boolean)
+            .find(x => ts - x.time <= MATCH_WINDOW_MS);
+
+        if (candidate) {
+            sendToTelegram2(
+                `🔁 MATCHING 1\nSymbol: ${symbol}\nGroups: ${group} ↔ ${candidate.payload.group}\nTimes:\n - ${group}: ${new Date(ts).toLocaleString()}\n - ${candidate.payload.group}: ${new Date(candidate.time).toLocaleString()}`
+            );
+        }
+        return;
+    }
+
+    if (FGH.includes(group)) {
+        const candidate = AD.map(g => safeGet(symbol, g))
+            .filter(Boolean)
+            .find(x => ts - x.time <= MATCH_WINDOW_MS);
+
+        if (candidate) {
+            sendToTelegram2(
+                `🔁 MATCHING 1\nSymbol: ${symbol}\nGroups: ${candidate.payload.group} ↔ ${group}\nTimes:\n - ${candidate.payload.group}: ${new Date(candidate.time).toLocaleString()}\n - ${group}: ${new Date(ts).toLocaleString()}`
+            );
+        }
+    }
+}
+
+function processMatchingAD2(symbol, group, ts) {
+    const AD = ["A", "B", "C", "D"];
+    if (!AD.includes(group)) return;
+
+    const candidate = AD
+        .map(g => safeGet(symbol, g))
+        .filter(Boolean)
+        .filter(x => x.payload.group !== group)
+        .filter(x => Math.abs(ts - x.time) <= MATCH_WINDOW_MS)
+        .sort((a,b) => b.time - a.time)[0];
+
+    if (!candidate) return;
+
+    sendToTelegram2(
+        `🔁 AD-2 Divergence\nSymbol: ${symbol}\nGroups: ${candidate.payload.group} ↔ ${group}\nTimes:\n - ${candidate.payload.group}: ${new Date(candidate.time).toLocaleString()}\n - ${group}: ${new Date(ts).toLocaleString()}`
+    );
+}
+
+function processMatching2(symbol, group, ts, body) {
+    const FGH = ["F", "G", "H"];
+    if (!FGH.includes(group)) return;
+
+    const { numericLevels: lvls } = normalizeFibLevel(group, body);
+    if (!lvls.length) return;
+
+    const candidate = FGH
+        .map(g => safeGet(symbol, g))
+        .filter(Boolean)
+        .filter(x => x.payload.group !== group)
+        .filter(x => {
+            const norm = normalizeFibLevel(x.payload.group, x.payload);
+            return norm.numericLevels.some(v => lvls.includes(v));
+        })
+        .filter(x => Math.abs(ts - x.time) <= MATCH_WINDOW_MS)
+        .sort((a,b) => b.time - a.time)[0];
+
+    if (!candidate) return;
+
+    sendToTelegram2(
+        `🔁 MATCHING 2\nSymbol: ${symbol}\nLevels: ±${lvls[0]}\nGroups: ${candidate.payload.group} ↔ ${group}\nTimes:\n - ${candidate.payload.group}: ${new Date(candidate.time).toLocaleString()}\n - ${group}: ${new Date(ts).toLocaleString()}`
+    );
+}
+
+function processMatching3(symbol, group, ts, body) {
+    const GH = ["G", "H"];
+    if (!GH.includes(group)) return;
+
+    const { numericLevels: lvls } = normalizeFibLevel(group, body);
+    if (!lvls.length) return;
+
+    const candidate = GH
+        .map(g => safeGet(symbol, g))
+        .filter(Boolean)
+        .filter(x => !(x.payload.group === group && x.time === ts))
+        .filter(x => ts - x.time <= MATCH_WINDOW_MS)
+        .find(x => {
+            const norm = normalizeFibLevel(x.payload.group, x.payload);
+            return norm.numericLevels.some(v => lvls.includes(v));
+        });
+
+    if (!candidate) return;
+
+    sendToTelegram2(
+        `🎯 MATCHING 3 (Same Level)\nSymbol: ${symbol}\nLevels: ±${lvls[0]}\nGroups: ${candidate.payload.group} ↔ ${group}\nTimes:\n - ${candidate.payload.group}: ${new Date(candidate.time).toLocaleString()}\n - ${group}: ${new Date(ts).toLocaleString()}`
+    );
+}
+
+// ==========================================================
+//  WEBHOOK HANDLER
+// ==========================================================
+
 app.post("/incoming", (req, res) => {
     try {
         const body = req.body || {};
         if (ALERT_SECRET && body.secret !== ALERT_SECRET) return res.sendStatus(401);
 
-        const symbol = body.symbol;
-        const group = body.group;
+        const group  = (body.group || "").trim();
+        const symbol = (body.symbol || "").trim();
         const ts = nowMs();
 
-        if (!symbol || !group) return res.sendStatus(200);
+        const hash = alertHash(symbol, group, ts);
+        if (recentHashes.has(hash)) return res.sendStatus(200);
+        recentHashes.add(hash);
+        setTimeout(() => recentHashes.delete(hash), 300000);
 
-        // BOT 1 buffer
+        if (!group || !symbol) return res.sendStatus(200);
+
         if (!events[group]) events[group] = [];
-        events[group].push({ time: ts, body });
+        events[group].push({ time: ts, data: body });
         pruneOld(events[group], maxWindowMs());
 
+        const norm = normalizeFibLevel(group, body);
+        body.levelStr = norm.levelStr;
+        body.numericLevels = norm.numericLevels;
+
         saveAlert(symbol, group, ts, body);
+        saveState();
 
         processTracking1(symbol, group, ts, body);
         processTracking2and3(symbol, group, ts, body);
+        processMatching1(symbol, group, ts, body);
+        processMatchingAD2(symbol, group, ts);
+        processMatching2(symbol, group, ts, body);
+        processMatching3(symbol, group, ts, body);
+		processTracking4(symbol, group, ts, body);
+		processTracking5(symbol, group, ts, body);
+
+
+
+        // Strong signal (unchanged)
+        try {
+            const dir = body.direction?.toLowerCase();
+            const mom = body.momentum?.toLowerCase();
+            if (dir && mom && dir === mom) {
+                sendToTelegram2(
+                    `🔥 STRONG SIGNAL\nSymbol: ${symbol}\nLevel: ${body.level || body.fib_level || "n/a"}\nDirection: ${dir}\nMomentum: ${mom}\nTime: ${body.time}`
+                );
+            }
+        } catch {}
 
         res.sendStatus(200);
-    } catch {
+
+    } catch (err) {
+        console.error("❌ /incoming error:", err);
         res.sendStatus(200);
     }
 });
 
-// =====================
-// BOT 1 LOOP
-// =====================
-function maxWindowMs() {
-    if (!RULES.length) return WINDOW_SECONDS_DEF * 1000;
-    return Math.max(...RULES.map(r => r.windowSeconds)) * 1000;
-}
-
+// ==========================================================
+//  BOT1 LOOP (unchanged)
+// ==========================================================
 setInterval(async () => {
+    if (!RULES.length) return;
+
+    const access = g => (events[g] || (events[g] = []));
+
     for (const r of RULES) {
         const { name, groups, threshold, windowSeconds } = r;
 
-        let total = 0;
-        const counts = {};
+        for (const g of groups) pruneOld(access(g), windowSeconds * 1000);
 
+        const counts = {};
+        let total = 0;
         for (const g of groups) {
-            pruneOld(events[g] || (events[g]=[]), windowSeconds * 1000);
-            counts[g] = events[g].length;
+            counts[g] = access(g).length;
             total += counts[g];
         }
 
-        if (total >= threshold && (cooldownUntil[name] || 0) <= nowSec()) {
+        const cd = cooldownUntil[name] || 0;
+        if (total >= threshold && cd <= nowSec()) {
             const lines = [];
-            lines.push(`🚨 ${name}: ${total} alerts in ${windowSeconds}s`);
+            lines.push(`🚨 Rule "${name}" fired: ${total} alerts in last ${windowSeconds}s`);
+            for (const g of groups) lines.push(`• ${g} count: ${counts[g]}`);
+            lines.push("");
+            lines.push("Recent alerts:");
 
             for (const g of groups) {
-                const last = events[g].slice(-5).map(e => {
-                    const lvl = normalizeLevel(g, e.body);
-                    return `[${g}] ${e.body.symbol}${lvl ? ` (${lvl})` : ""}`;
+                access(g).slice(-5).forEach(e => {
+                    const d = e.data;
+                    lines.push(`[${g}] symbol=${d.symbol} price=${d.price} time=${d.time}`);
                 });
-                if (last.length) lines.push(...last);
             }
 
-            await tg(BOT1_TOKEN, BOT1_CHAT, lines.join("\n"));
-            cooldownUntil[name] = nowSec() + COOLDOWN_SECONDS;
+            await sendToTelegram1(lines.join("\n"));
+
+// STAGING FIX: do NOT clear buffers (prevents starvation)
+if (process.env.ENV !== "staging") {
+    for (const g of groups) events[g] = [];
+}
+
+cooldownUntil[name] = nowSec() + COOLDOWN_SECONDS;
+saveState();
+
         }
     }
 }, CHECK_MS);
 
-// =====================
-app.listen(PORT, () => {
-    console.log(`Server running on ${PORT}`);
+app.get("/ping", (req, res) => {
+    res.json({ ok: true, rules: RULES.map(r => r.name) });
 });
+
+// ==========================================================
+//  START SERVER
+// ==========================================================
+const PORT = Number((process.env.PORT || "10000").trim());
+app.listen(PORT, () => console.log(`🚀 Server running on port ${PORT}`));
+
