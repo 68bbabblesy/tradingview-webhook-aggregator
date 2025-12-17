@@ -189,6 +189,77 @@ setInterval(async () => {
 }, CHECK_MS);
 
 // ==========================================================
+//  TEST-ONLY ENDPOINT (STAGING ONLY)
+//  Path: /incoming-test
+//  Groups: M / N (isolated from prod logic)
+// ==========================================================
+
+// Separate in-memory state for test shifts ONLY
+const testLastLevel = {}; 
+// testLastLevel[symbol] = { level, time }
+
+// Test Telegram sender (reuse Bot 3 or dedicated test bot)
+async function sendTestTelegram(text) {
+    const token = (process.env.TELEGRAM_BOT_TOKEN_3 || "").trim();
+    const chat  = (process.env.TELEGRAM_CHAT_ID_3 || "").trim();
+    if (!token || !chat) return;
+
+    await fetch(`https://api.telegram.org/bot${token}/sendMessage`, {
+        method: "POST",
+        headers: { "Content-Type": "application/json" },
+        body: JSON.stringify({ chat_id: chat, text })
+    });
+}
+
+app.post("/incoming-test", (req, res) => {
+    try {
+        const body = req.body || {};
+
+        const symbol = (body.symbol || "").trim();
+        const group  = (body.group || "").trim(); // expect M or N
+        const level  = Number(body.level);
+
+        if (!symbol || !["M", "N"].includes(group) || isNaN(level)) {
+            return res.sendStatus(200);
+        }
+
+        const ts = Date.now();
+        const prev = testLastLevel[symbol];
+
+        // First observation → store only
+        if (!prev) {
+            testLastLevel[symbol] = { level, time: ts };
+            return res.sendStatus(200);
+        }
+
+        // Level changed → TEST SHIFT
+        if (prev.level !== level) {
+            const gapMs  = ts - prev.time;
+            const gapMin = Math.floor(gapMs / 60000);
+            const gapSec = Math.floor((gapMs % 60000) / 1000);
+
+            sendTestTelegram(
+                `🧪 TEST SHIFT\n` +
+                `Symbol: ${symbol}\n` +
+                `Group: ${group}\n` +
+                `From: ${prev.level}\n` +
+                `To: ${level}\n` +
+                `Gap: ${gapMin}m ${gapSec}s\n` +
+                `Time: ${new Date(ts).toLocaleString()}`
+            );
+
+            testLastLevel[symbol] = { level, time: ts };
+        }
+
+        res.sendStatus(200);
+
+    } catch (err) {
+        console.error("❌ /incoming-test error:", err);
+        res.sendStatus(200);
+    }
+});
+
+// ==========================================================
 app.listen(PORT, () => {
   console.log("Server running on", PORT);
 });
