@@ -72,6 +72,23 @@ const CHECK_MS           = Number((process.env.CHECK_MS || "1000").trim());
 const ALERT_SECRET       = (process.env.ALERT_SECRET || "").trim();
 const COOLDOWN_SECONDS   = Number((process.env.COOLDOWN_SECONDS || "60").trim());
 
+async function forwardToShadow(payload) {
+    const url = process.env.SHADOW_URL;
+    if (!url) return;
+
+    fetch(url, {
+        method: "POST",
+        headers: {
+            "Content-Type": "application/json",
+            "X-Shadow-Forward": "true"
+        },
+        body: JSON.stringify(payload)
+    }).catch(err => {
+        console.error("⚠️ Shadow forward failed:", err.message);
+    });
+}
+
+
 // -----------------------------
 // BOT1 RULES (unchanged)
 // -----------------------------
@@ -577,7 +594,20 @@ function processMatching3(symbol, group, ts, body) {
 
 app.post("/incoming", (req, res) => {
     try {
-        const body = req.body || {};
+        
+		
+		if (!IS_MAIN && !req.headers["x-shadow-forward"]) {
+    return res.sendStatus(403);
+}
+		
+		
+		const body = req.body || {};
+		
+		if (IS_MAIN) {
+    forwardToShadow(body);
+}
+
+		
         if (ALERT_SECRET && body.secret !== ALERT_SECRET) return res.sendStatus(401);
 
         const group  = (body.group || "").trim();
