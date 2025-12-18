@@ -37,6 +37,9 @@ function loadState() {
 }
 
 function saveState() {
+    // 🔒 STAGING MUST NEVER PERSIST STATE
+    if (!IS_MAIN) return;
+
     try {
         fs.writeFileSync(
             STATE_FILE,
@@ -44,7 +47,8 @@ function saveState() {
                 { lastAlert, trackingStart, lastBig, cooldownUntil },
                 null,
                 2
-            )
+            ),
+            "utf8"
         );
     } catch (err) {
         console.error("❌ Failed to save state:", err);
