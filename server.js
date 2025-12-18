@@ -149,6 +149,21 @@ async function sendToTelegram3(text) {
     });
 }
 
+// Telegram sender for Bot 4
+async function sendToTelegram4(text) {
+    const token = (process.env.TELEGRAM_BOT_TOKEN_4 || "").trim();
+    const chat  = (process.env.TELEGRAM_CHAT_ID_4 || "").trim();
+    if (!token || !chat) return;
+
+    await fetch(`https://api.telegram.org/bot${token}/sendMessage`, {
+        method: "POST",
+        headers: { "Content-Type": "application/json" },
+        body: JSON.stringify({ chat_id: chat, text })
+    });
+}
+
+
+
 // Stores last absolute H-level per symbol
 const tracking4 = {};
 // tracking4[symbol] = { absLevel, rawLevel, time }
@@ -389,7 +404,7 @@ const startLevel = getSignedLevel(start.payload); // A–D = "" automatically
 const endLevel   = getSignedLevel(body);          // H/G = true signed level
 
 
-        sendToTelegram2(
+        sendToTelegram4(
             `📌 TRACKING 1 COMPLETE\n` +
             `Symbol: ${symbol}\n` +
             `Start Group: ${start.startGroup}${startLevel}\n` +
@@ -501,7 +516,7 @@ function processMatching1(symbol, group, ts, body) {
             .find(x => ts - x.time <= MATCH_WINDOW_MS);
 
         if (candidate) {
-            sendToTelegram2(
+            sendToTelegram4(
                 `🔁 MATCHING 1\nSymbol: ${symbol}\nGroups: ${group} ↔ ${candidate.payload.group}\nTimes:\n - ${group}: ${new Date(ts).toLocaleString()}\n - ${candidate.payload.group}: ${new Date(candidate.time).toLocaleString()}`
             );
         }
@@ -514,7 +529,7 @@ function processMatching1(symbol, group, ts, body) {
             .find(x => ts - x.time <= MATCH_WINDOW_MS);
 
         if (candidate) {
-            sendToTelegram2(
+            sendToTelegram4(
                 `🔁 MATCHING 1\nSymbol: ${symbol}\nGroups: ${candidate.payload.group} ↔ ${group}\nTimes:\n - ${candidate.payload.group}: ${new Date(candidate.time).toLocaleString()}\n - ${group}: ${new Date(ts).toLocaleString()}`
             );
         }
