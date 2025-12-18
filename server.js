@@ -162,6 +162,8 @@ async function sendToTelegram4(text) {
     });
 }
 
+sendToTelegram4("🧪 Bot4 wiring test");
+
 
 
 // Stores last absolute H-level per symbol
