@@ -6,6 +6,18 @@ import express from "express";
 import fetch from "node-fetch";
 import fs from "fs";
 
+// 🔑 SERVICE ROLE (MAIN vs STAGING)
+const IS_MAIN = process.env.SERVICE_ROLE === "main";
+
+console.log(
+  "🚦 Service role:",
+  process.env.SERVICE_ROLE,
+  "| IS_MAIN:",
+  IS_MAIN
+);
+
+
+
 const app = express();
 app.use(express.json());
 
