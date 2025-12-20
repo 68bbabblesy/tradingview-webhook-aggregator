@@ -548,7 +548,7 @@ function processMatchingAD2(symbol, group, ts) {
 
     if (!candidate) return;
 
-    sendToTelegram2(
+    sendToTelegram4(
         `🔁 AD-2 Divergence\nSymbol: ${symbol}\nGroups: ${candidate.payload.group} ↔ ${group}\nTimes:\n - ${candidate.payload.group}: ${new Date(candidate.time).toLocaleString()}\n - ${group}: ${new Date(ts).toLocaleString()}`
     );
 }
