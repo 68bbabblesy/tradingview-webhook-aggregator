@@ -162,6 +162,19 @@ async function sendToTelegram4(text) {
     });
 }
 
+// Telegram sender for Bot 5
+async function sendToTelegram5(text) {
+    const token = (process.env.TELEGRAM_BOT_TOKEN_5 || "").trim();
+    const chat  = (process.env.TELEGRAM_CHAT_ID_5 || "").trim();
+    if (!token || !chat) return;
+
+    await fetch(`https://api.telegram.org/bot${token}/sendMessage`, {
+        method: "POST",
+        headers: { "Content-Type": "application/json" },
+        body: JSON.stringify({ chat_id: chat, text })
+    });
+}
+
 
 // Stores last absolute H-level per symbol
 const tracking4 = {};
@@ -307,7 +320,13 @@ const lastGPLevel = {};
 // Cross-level switch (H ↔ G ↔ P)
 const lastCrossLevel = {}; // symbol → { group, level, time }
 
+// AD2 memory for Divergence Trio
+const recentAD2 = {};
+// recentAD2[symbol] = { time }
 
+// G/H memory for Level Correlation
+const recentGH = {};
+// recentGH[symbol] = { group, level, time }
 
 
 // -----------------------------
@@ -551,7 +570,96 @@ function processMatchingAD2(symbol, group, ts) {
     sendToTelegram4(
         `🔁 AD-2 Divergence\nSymbol: ${symbol}\nGroups: ${candidate.payload.group} ↔ ${group}\nTimes:\n - ${candidate.payload.group}: ${new Date(candidate.time).toLocaleString()}\n - ${group}: ${new Date(ts).toLocaleString()}`
     );
+	// Record AD2 for Divergence Trio
+recentAD2[symbol] = { time: ts };
 }
+
+const TRIO_WINDOW_MS = 3 * 60 * 1000; // 3 minutes
+
+function processDivergenceTrio(symbol, group, ts, body) {
+    if (!["G", "H"].includes(group)) return;
+
+    const ad2 = recentAD2[symbol];
+    if (!ad2) return;
+
+    const diffMs = ts - ad2.time;
+    if (diffMs > TRIO_WINDOW_MS) return;
+
+    // Extract signed level for G/H
+    let level = "";
+    if (group === "G" && body.fib_level) level = body.fib_level;
+    if (group === "H" && body.level) level = body.level;
+
+    if (level && !String(level).startsWith("-") && !String(level).startsWith("+")) {
+        level = `+${level}`;
+    }
+
+    const diffMin = Math.floor(diffMs / 60000);
+    const diffSec = Math.floor((diffMs % 60000) / 1000);
+
+    sendToTelegram5(
+        `🔺 DIVERGENCE TRIO\n` +
+        `Symbol: ${symbol}\n` +
+        `Trigger: ${group} (${level})\n` +
+        `Gap: ${diffMin}m ${diffSec}s\n` +
+        `Time: ${new Date(ts).toLocaleString()}`
+    );
+
+    // Prevent duplicate trio fires
+    delete recentAD2[symbol];
+}
+
+const LEVEL_CORRELATION_WINDOW_MS = 45 * 1000;
+
+function processLevelCorrelation(symbol, group, ts, body) {
+    if (!["G", "H"].includes(group)) return;
+
+    const { numericLevels } = normalizeFibLevel(group, body);
+    if (!numericLevels.length) return;
+
+    const level = numericLevels[0];
+    const prev = recentGH[symbol];
+
+    // First sighting → store and wait
+    if (!prev) {
+        recentGH[symbol] = { group, level, time: ts };
+        return;
+    }
+
+    // Must be opposite group (G ↔ H)
+    if (prev.group === group) {
+        recentGH[symbol] = { group, level, time: ts };
+        return;
+    }
+
+    // Must be same level
+    if (prev.level !== level) {
+        recentGH[symbol] = { group, level, time: ts };
+        return;
+    }
+
+    // Must be within window
+    const diffMs = Math.abs(ts - prev.time);
+    if (diffMs > LEVEL_CORRELATION_WINDOW_MS) {
+        recentGH[symbol] = { group, level, time: ts };
+        return;
+    }
+
+    const diffSec = Math.floor(diffMs / 1000);
+
+    sendToTelegram5(
+        `🎯 LEVEL CORRELATION\n` +
+        `Symbol: ${symbol}\n` +
+        `Groups: ${prev.group} ↔ ${group}\n` +
+        `Level: ${level > 0 ? "+" : ""}${level}\n` +
+        `Gap: ${diffSec}s\n` +
+        `Time: ${new Date(ts).toLocaleString()}`
+    );
+
+    // Prevent duplicate fires
+    delete recentGH[symbol];
+}
+
 
 function processMatching2(symbol, group, ts, body) {
     const FGH = ["F", "G", "H"];
@@ -650,6 +758,9 @@ app.post("/incoming", (req, res) => {
         processTracking2and3(symbol, group, ts, body);
         processMatching1(symbol, group, ts, body);
         processMatchingAD2(symbol, group, ts);
+		processDivergenceTrio(symbol, group, ts, body);
+		processLevelCorrelation(symbol, group, ts, body);
+
         processMatching2(symbol, group, ts, body);
         processMatching3(symbol, group, ts, body);
 		processTracking4(symbol, group, ts, body);
