@@ -335,15 +335,12 @@ const recentGH = {};
 function normalizeFibLevel(group, body) {
     if (group === "F") return { levelStr: "1.30", numericLevels: [1.30, -1.30] };
 
-    if (group === "G" && body.fib_level) {
-        const lv = parseFloat(body.fib_level);
-        if (!isNaN(lv)) return { levelStr: body.fib_level, numericLevels: [lv, -lv] };
+ if ((group === "G" || group === "H") && body.level) {
+    const lv = parseFloat(body.level);
+    if (!isNaN(lv)) {
+        return { levelStr: body.level, numericLevels: [lv, -lv] };
     }
-
-    if (group === "H" && body.level) {
-        const lv = parseFloat(body.level);
-        if (!isNaN(lv)) return { levelStr: body.level, numericLevels: [lv, -lv] };
-    }
+}
 
     return { levelStr: null, numericLevels: [] };
 }
@@ -586,9 +583,8 @@ function processDivergenceTrio(symbol, group, ts, body) {
     if (diffMs > TRIO_WINDOW_MS) return;
 
     // Extract signed level for G/H
-    let level = "";
-    if (group === "G" && body.fib_level) level = body.fib_level;
-    if (group === "H" && body.level) level = body.level;
+   let level = body.level || "";
+
 
     if (level && !String(level).startsWith("-") && !String(level).startsWith("+")) {
         level = `+${level}`;
