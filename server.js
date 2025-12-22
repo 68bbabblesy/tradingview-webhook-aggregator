@@ -729,8 +729,14 @@ app.post("/incoming", (req, res) => {
     forwardToShadow(body);
 }
 
+
 		
-        if (ALERT_SECRET && body.secret !== ALERT_SECRET) return res.sendStatus(401);
+        if (IS_MAIN) {
+    if (ALERT_SECRET && body.secret !== ALERT_SECRET) {
+        return res.sendStatus(401);
+    }
+}
+
 
         const group  = (body.group || "").trim();
         const symbol = (body.symbol || "").trim();
@@ -760,6 +766,7 @@ app.post("/incoming", (req, res) => {
         processMatchingAD2(symbol, group, ts);
 		processDivergenceTrio(symbol, group, ts, body);
 		processLevelCorrelation(symbol, group, ts, body);
+       sendToTelegram5("🧪 Bot5 wiring alive");
 
         processMatching2(symbol, group, ts, body);
         processMatching3(symbol, group, ts, body);
