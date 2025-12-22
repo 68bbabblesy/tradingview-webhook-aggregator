@@ -766,7 +766,7 @@ app.post("/incoming", (req, res) => {
         processMatchingAD2(symbol, group, ts);
 		processDivergenceTrio(symbol, group, ts, body);
 		processLevelCorrelation(symbol, group, ts, body);
-       sendToTelegram5("🧪 Bot5 wiring alive");
+       
 
         processMatching2(symbol, group, ts, body);
         processMatching3(symbol, group, ts, body);
