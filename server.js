@@ -175,6 +175,20 @@ async function sendToTelegram5(text) {
     });
 }
 
+// Telegram sender for Bot 6
+async function sendToTelegram6(text) {
+    const token = (process.env.TELEGRAM_BOT_TOKEN_6 || "").trim();
+    const chat  = (process.env.TELEGRAM_CHAT_ID_6 || "").trim();
+    if (!token || !chat) return;
+
+    await fetch(`https://api.telegram.org/bot${token}/sendMessage`, {
+        method: "POST",
+        headers: { "Content-Type": "application/json" },
+        body: JSON.stringify({ chat_id: chat, text })
+    });
+}
+
+
 
 // Stores last absolute H-level per symbol
 const tracking4 = {};
@@ -327,6 +341,10 @@ const recentAD2 = {};
 // G/H memory for Level Correlation
 const recentGH = {};
 // recentGH[symbol] = { group, level, time }
+
+
+// AD2 global burst tracking for BIG MARKET MOVE
+const recentAD2Global = [];
 
 
 // -----------------------------
@@ -569,9 +587,42 @@ function processMatchingAD2(symbol, group, ts) {
     );
 	// Record AD2 for Divergence Trio
 recentAD2[symbol] = { time: ts };
+
+// Global AD2 burst tracking for BIG MARKET MOVE
+processBigMarketMove(ts);
+
+
 }
 
 const TRIO_WINDOW_MS = 3 * 60 * 1000; // 3 minutes
+
+const BIG_MOVE_WINDOW_MS = 45 * 1000;
+const BIG_MOVE_THRESHOLD = 3;
+
+function processBigMarketMove(ts) {
+    // Add timestamp
+    recentAD2Global.push(ts);
+
+    // Keep only recent timestamps
+    const cutoff = ts - BIG_MOVE_WINDOW_MS;
+    while (recentAD2Global.length && recentAD2Global[0] < cutoff) {
+        recentAD2Global.shift();
+    }
+
+    if (recentAD2Global.length < BIG_MOVE_THRESHOLD) return;
+
+    sendToTelegram6(
+        `🚨 BIG MARKET MOVE\n` +
+        `AD2 divergences: ${recentAD2Global.length}\n` +
+        `Window: 45 seconds\n` +
+        `Time: ${new Date(ts).toLocaleString()}`
+    );
+
+    // Reset after firing (once per burst)
+    recentAD2Global.length = 0;
+}
+
+
 
 function processDivergenceTrio(symbol, group, ts, body) {
     if (!["G", "H"].includes(group)) return;
@@ -762,7 +813,8 @@ app.post("/incoming", (req, res) => {
         processMatchingAD2(symbol, group, ts);
 		processDivergenceTrio(symbol, group, ts, body);
 		processLevelCorrelation(symbol, group, ts, body);
-       
+       sendToTelegram6("🧪 Bot6 wiring alive");
+
 
         processMatching2(symbol, group, ts, body);
         processMatching3(symbol, group, ts, body);
