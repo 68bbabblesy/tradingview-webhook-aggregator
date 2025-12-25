@@ -342,6 +342,11 @@ const recentAD2 = {};
 const recentGH = {};
 // recentGH[symbol] = { group, level, time }
 
+// Divergence Monitor memory (A–D same group within 1h)
+const divergenceMonitor = {};
+// divergenceMonitor[symbol][group] = lastTime
+
+
 
 // AD2 global burst tracking for BIG MARKET MOVE
 const recentAD2Global = [];
@@ -531,6 +536,47 @@ function processCrossSwitch1(symbol, group, ts, body) {
         time: ts
     };
 }
+
+const DIVERGENCE_MONITOR_WINDOW_MS = 60 * 60 * 1000; // 1 hour
+
+function processDivergenceMonitor(symbol, group, ts) {
+    const AD = ["A", "B", "C", "D"];
+    if (!AD.includes(group)) return;
+
+    if (!divergenceMonitor[symbol]) {
+        divergenceMonitor[symbol] = {};
+    }
+
+    const lastTime = divergenceMonitor[symbol][group];
+
+    // First sighting → store and wait
+    if (!lastTime) {
+        divergenceMonitor[symbol][group] = ts;
+        return;
+    }
+
+    const diffMs = ts - lastTime;
+
+    // Outside 1h window → reset timer
+    if (diffMs > DIVERGENCE_MONITOR_WINDOW_MS) {
+        divergenceMonitor[symbol][group] = ts;
+        return;
+    }
+
+    const diffMin = Math.floor(diffMs / 60000);
+
+    sendToTelegram6(
+        `📊 DIVERGENCE MONITOR\n` +
+        `Symbol: ${symbol}\n` +
+        `Group: ${group}\n` +
+        `Second alert within ${diffMin} minutes\n` +
+        `Time: ${new Date(ts).toLocaleString()}`
+    );
+
+    // Consume pair → reset for next cycle
+    delete divergenceMonitor[symbol][group];
+}
+
 
 
 // ==========================================================
@@ -813,7 +859,9 @@ app.post("/incoming", (req, res) => {
         processMatchingAD2(symbol, group, ts);
 		processDivergenceTrio(symbol, group, ts, body);
 		processLevelCorrelation(symbol, group, ts, body);
-    
+       processDivergenceMonitor(symbol, group, ts);
+
+
 
         processMatching2(symbol, group, ts, body);
         processMatching3(symbol, group, ts, body);
