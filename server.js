@@ -540,7 +540,8 @@ function processCrossSwitch1(symbol, group, ts, body) {
 const DIVERGENCE_MONITOR_WINDOW_MS = 60 * 60 * 1000; // 1 hour
 
 function processDivergenceMonitor(symbol, group, ts) {
-    const AD = ["A", "B", "C", "D"];
+   const AD = ["A", "B", "C", "D", "Q", "R"];
+
     if (!AD.includes(group)) return;
 
     if (!divergenceMonitor[symbol]) {
@@ -586,7 +587,8 @@ function processDivergenceMonitor(symbol, group, ts) {
 const MATCH_WINDOW_MS = 65 * 1000;
 
 function processMatching1(symbol, group, ts, body) {
-    const AD = ["A", "B", "C", "D"];
+     const AD = ["A", "B", "C", "D", "Q", "R"];
+
     const FGH = ["F", "G", "H"];
 
     if (AD.includes(group)) {
@@ -616,7 +618,8 @@ function processMatching1(symbol, group, ts, body) {
 }
 
 function processMatchingAD2(symbol, group, ts) {
-    const AD = ["A", "B", "C", "D"];
+    const AD = ["A", "B", "C", "D", "Q", "R"];
+
     if (!AD.includes(group)) return;
 
     const candidate = AD
