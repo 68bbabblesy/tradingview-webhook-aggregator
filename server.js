@@ -87,10 +87,11 @@ async function sendToTelegram7(text) {
     });
 }
 
-function computeConfidenceScore({ startGroup, endGroup, level, durationMin }) {
+function computeConfidenceScore({ startGroup, endGroup, signedLevel, durationMin }) {
     let score = 0;
     const reasons = [];
 
+    // --- Tracking duration ---
     if (durationMin <= 60) {
         score += 3;
         reasons.push("+3 Tracking ≤ 60m");
@@ -102,18 +103,25 @@ function computeConfidenceScore({ startGroup, endGroup, level, durationMin }) {
         reasons.push("−2 Tracking > 90m");
     }
 
+    // --- Bias determination ---
     let bias = "NONE";
 
-    if (endGroup === "H" && level === 1.29) {
+    if (endGroup === "H" && signedLevel === 1.29) {
         score += 2;
-        bias = "HOLD";
-        reasons.push("+2 H @ 1.29");
+        bias = "LONG";
+        reasons.push("+2 H @ +1.29 (bullish acceptance)");
     }
 
-    if (endGroup === "G" && level === 0) {
+    if (endGroup === "H" && signedLevel === -1.29) {
+        score += 2;
+        bias = "SHORT";
+        reasons.push("+2 H @ -1.29 (bearish acceptance)");
+    }
+
+    if (endGroup === "G" && signedLevel === 0) {
         score += 2;
         bias = "FADE";
-        reasons.push("+2 G @ 0");
+        reasons.push("+2 G @ 0 (rejection)");
     }
 
     if (startGroup === "B") {
@@ -127,6 +135,7 @@ function computeConfidenceScore({ startGroup, endGroup, level, durationMin }) {
 
     return { score, label, bias, reasons };
 }
+
 
 
 async function forwardToShadow(payload) {
@@ -514,34 +523,39 @@ const endLevel   = getSignedLevel(body);          // H/G = true signed level
 try {
     const durationMin = Math.floor((ts - start.startTime) / 60000);
 
-    const signed = parseFloat(
-        body.level !== undefined ? body.level :
-        body.fib_level !== undefined ? body.fib_level :
-        NaN
-    );
+    const signedLevel = parseFloat(
+    body.level !== undefined ? body.level :
+    body.fib_level !== undefined ? body.fib_level :
+    NaN
+);
 
-    const level =
-        signed === 1.29 || signed === -1.29 ? 1.29 :
-        signed === 0 || signed === -0 ? 0 :
-        null;
+if (![1.29, -1.29, 0].includes(signedLevel)) return;
+
 
     if (level !== null) {
         const scored = computeConfidenceScore({
-            startGroup: start.startGroup,
-            endGroup: group,
-            level,
-            durationMin
-        });
+    startGroup: start.startGroup,
+    endGroup: group,
+    signedLevel,
+    durationMin
+});
+
 
         // SUPPRESS LOW CONFIDENCE
         if (scored.score >= 3) {
-            const confEmoji = scored.label === "HIGH" ? "🟢" : "🟡";
-            const biasEmoji = scored.bias === "HOLD" ? "📈" : "📉";
+         const confEmoji = scored.label === "HIGH" ? "🟢" : "🟡";
+const biasEmoji =
+    scored.bias === "LONG"  ? "📈" :
+    scored.bias === "SHORT" ? "📉" :
+    scored.bias === "FADE"  ? "↩️" :
+    "🧭";
 
             const msg =
                 `${confEmoji} TRACKING 1 DECISION\n` +
                 `Symbol: ${symbol}\n` +
-                `Bias: ${biasEmoji} ${scored.bias}\n` +
+              `Bias: ${biasEmoji} ${scored.bias}\n` +
+               `Level: ${signedLevel}\n` +
+
                 `Score: ${scored.score} (${scored.label})\n` +
                 `Start: ${start.startGroup}\n` +
                 `End: ${group} (${level})\n` +
