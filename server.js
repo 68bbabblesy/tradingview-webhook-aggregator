@@ -343,7 +343,7 @@ const recentGH = {};
 // recentGH[symbol] = { group, level, time }
 
 // Divergence Monitor memory (A–D same group within 1h)
-const divergenceMonitor = {};
+const divergenceSetMonitor = {};
 // divergenceMonitor[symbol][group] = lastTime
 
 
