@@ -536,47 +536,73 @@ function processCrossSwitch1(symbol, group, ts, body) {
         time: ts
     };
 }
+const DIVERGENCE_SET_WINDOW_MS = 60 * 60 * 1000; // 60 minutes
 
-const DIVERGENCE_MONITOR_WINDOW_MS = 60 * 60 * 1000; // 1 hour
+function adPair(group) {
+    if (group === "A" || group === "C") return "AC";
+    if (group === "B" || group === "D") return "BD";
+    return null;
+}
 
 function processDivergenceMonitor(symbol, group, ts) {
-   const AD = ["A", "B", "C", "D", "Q", "R"];
+    const GH = ["G", "H"];
+    const pair = adPair(group);
 
-    if (!AD.includes(group)) return;
-
-    if (!divergenceMonitor[symbol]) {
-        divergenceMonitor[symbol] = {};
+    if (!divergenceSetMonitor[symbol]) {
+        divergenceSetMonitor[symbol] = {};
     }
 
-    const lastTime = divergenceMonitor[symbol][group];
+    /* -----------------------------
+       STEP 1: A–D starts a SET
+    ----------------------------- */
+    if (pair) {
+        if (!divergenceSetMonitor[symbol][pair]) {
+            divergenceSetMonitor[symbol][pair] = {
+                awaitingGH: false,
+                lastSetTime: null
+            };
+        }
 
-    // First sighting → store and wait
-    if (!lastTime) {
-        divergenceMonitor[symbol][group] = ts;
+        divergenceSetMonitor[symbol][pair].awaitingGH = true;
         return;
     }
 
-    const diffMs = ts - lastTime;
+    /* -----------------------------
+       STEP 2: G/H completes a SET
+    ----------------------------- */
+    if (!GH.includes(group)) return;
 
-    // Outside 1h window → reset timer
-    if (diffMs > DIVERGENCE_MONITOR_WINDOW_MS) {
-        divergenceMonitor[symbol][group] = ts;
-        return;
+    for (const pairKey of ["AC", "BD"]) {
+        const state = divergenceSetMonitor[symbol][pairKey];
+        if (!state || !state.awaitingGH) continue;
+
+        state.awaitingGH = false;
+
+        // First SET
+        if (!state.lastSetTime) {
+            state.lastSetTime = ts;
+            return;
+        }
+
+        const diffMs = ts - state.lastSetTime;
+
+        if (diffMs <= DIVERGENCE_SET_WINDOW_MS) {
+            const diffMin = Math.floor(diffMs / 60000);
+
+            sendToTelegram6(
+                `📊 DIVERGENCE MONITOR (PAIR SET)\n` +
+                `Symbol: ${symbol}\n` +
+                `Pair: ${pairKey}\n` +
+                `Second set within ${diffMin} minutes\n` +
+                `Time: ${new Date(ts).toLocaleString()}`
+            );
+        }
+
+        // Reset window starting point
+        state.lastSetTime = ts;
     }
-
-    const diffMin = Math.floor(diffMs / 60000);
-
-    sendToTelegram6(
-        `📊 DIVERGENCE MONITOR\n` +
-        `Symbol: ${symbol}\n` +
-        `Group: ${group}\n` +
-        `Second alert within ${diffMin} minutes\n` +
-        `Time: ${new Date(ts).toLocaleString()}`
-    );
-
-    // Consume pair → reset for next cycle
-    delete divergenceMonitor[symbol][group];
 }
+
 
 
 
