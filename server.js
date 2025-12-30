@@ -343,7 +343,7 @@ const recentGH = {};
 // recentGH[symbol] = { group, level, time }
 
 // Divergence Monitor memory (A–D same group within 1h)
-const divergenceSetMonitor = {};
+const divergenceMonitor = {};
 // divergenceMonitor[symbol][group] = lastTime
 
 
@@ -548,22 +548,22 @@ function processDivergenceMonitor(symbol, group, ts) {
     const GH = ["G", "H"];
     const pair = adPair(group);
 
-    if (!divergenceSetMonitor[symbol]) {
-        divergenceSetMonitor[symbol] = {};
+    if (!divergenceMonitor[symbol]) {
+        divergenceMonitor[symbol] = {};
     }
 
     /* -----------------------------
        STEP 1: A–D starts a SET
     ----------------------------- */
     if (pair) {
-        if (!divergenceSetMonitor[symbol][pair]) {
-            divergenceSetMonitor[symbol][pair] = {
+        if (!divergenceMonitor[symbol][pair]) {
+            divergenceMonitor[symbol][pair] = {
                 awaitingGH: false,
                 lastSetTime: null
             };
         }
 
-        divergenceSetMonitor[symbol][pair].awaitingGH = true;
+        divergenceMonitor[symbol][pair].awaitingGH = true;
         return;
     }
 
@@ -573,7 +573,7 @@ function processDivergenceMonitor(symbol, group, ts) {
     if (!GH.includes(group)) return;
 
     for (const pairKey of ["AC", "BD"]) {
-        const state = divergenceSetMonitor[symbol][pairKey];
+        const state = divergenceMonitor[symbol][pairKey];
         if (!state || !state.awaitingGH) continue;
 
         state.awaitingGH = false;
