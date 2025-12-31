@@ -472,8 +472,14 @@ const endLevel   = getSignedLevel(body);          // H/G = true signed level
         const endLevelNum7 = Number(body.level || body.fib_level || 0);
         processBot7(symbol, start, group, endLevelNum, ts);
 
-        const endLevelNum7 = Number(body.level || body.fib_level || 0);
-        bot7FromTracking1(symbol, start, group, endLevelNum7, ts);
+       bot7FromTracking1(
+  symbol,
+  start,
+  group,
+  Number(body.level || body.fib_level || 0),
+  ts
+);
+
 
         delete trackingStart[symbol];
         saveState();
