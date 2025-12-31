@@ -189,21 +189,6 @@ async function sendToTelegram6(text) {
 }
 
 
-// Telegram sender for Bot 7 (Bias + Setup)
-async function sendToTelegram7(text) {
-    const token = (process.env.TELEGRAM_BOT_TOKEN_7 || "").trim();
-    const chat  = (process.env.TELEGRAM_CHAT_ID_7 || "").trim();
-    if (!token || !chat) return;
-
-    await fetch(`https://api.telegram.org/bot${token}/sendMessage`, {
-        method: "POST",
-        headers: { "Content-Type": "application/json" },
-        body: JSON.stringify({ chat_id: chat, text })
-    });
-}
-
-
-
 
 // Stores last absolute H-level per symbol
 const tracking4 = {};
@@ -254,8 +239,6 @@ function processTracking4(symbol, group, ts, body) {
         `Time: ${new Date(ts).toLocaleString()}`;
 
     sendToTelegram3(msg);
-    bot7Ignition(symbol, group, prev.level || 0, currentLevel || 0, gapMs, ts);
-    bot7Ignition(symbol, group, prev.rawLevel || 0, raw || 0, diffMs, ts);
 
     // Update stored state
     tracking4[symbol] = {
@@ -467,13 +450,6 @@ const endLevel   = getSignedLevel(body);          // H/G = true signed level
             `End Group: ${group}${endLevel}\n` +
             `End Time: ${new Date(ts).toLocaleString()}`
         );
-
-        // BOT 7 v2 hook
-        const endLevelNum7 = Number(body.level || body.fib_level || 0);
-        processBot7(symbol, start, group, endLevelNum, ts);
-
-        const endLevelNum7 = Number(body.level || body.fib_level || 0);
-        bot7FromTracking1(symbol, start, group, endLevelNum7, ts);
 
         delete trackingStart[symbol];
         saveState();
@@ -856,159 +832,6 @@ function processMatching3(symbol, group, ts, body) {
     );
 }
 
-
-
-const bot7Bias = {}; // symbol → { bias, time }
-
-function scoreBot7Context(startGroup, durationMin, endGroup, endLevel) {
-    let score = 0;
-
-    if (durationMin <= 45) score += 2;
-    else if (durationMin <= 90) score += 1;
-
-    if (startGroup === "B") score += 1;
-    if (startGroup === "C") score -= 1;
-
-    if (endGroup === "H" && Math.abs(endLevel) === 1.29) score += 3;
-    else if (endGroup === "G") score += 2;
-
-    return score;
-}
-
-function processBot7(symbol, start, endGroup, endLevel, endTime) {
-    const durationMin = Math.floor((endTime - start.startTime) / 60000);
-    const score = scoreBot7Context(start.startGroup, durationMin, endGroup, endLevel);
-
-    // Tier A — Directional Bias
-    if (endGroup === "H" && Math.abs(endLevel) === 1.29) {
-        const bias = endLevel > 0 ? "LONG" : "SHORT";
-        bot7Bias[symbol] = { bias, time: endTime };
-
-        sendToTelegram7(
-            `📌 BIAS SET: ${bias}
-` +
-            `Symbol: ${symbol}
-` +
-            `Reason: H @ ${endLevel > 0 ? "+" : ""}${endLevel}
-` +
-            `Duration: ${durationMin}m
-` +
-            `Plan: only look ${bias.toLowerCase()}s for next 1–3h`
-        );
-        return;
-    }
-
-    // Tier B — Tradable Setups
-    if (score < 3) return;
-
-    let setupType = "VWAP CONTEXT";
-    if (endGroup === "G") setupType = "VWAP REJECTION SETUP";
-    if (endGroup === "H") setupType = "VWAP RECLAIM SETUP";
-
-    sendToTelegram7(
-        `⚡ SETUP: ${setupType}
-` +
-        `Symbol: ${symbol}
-` +
-        `Context: ${start.startGroup} → ${endGroup}
-` +
-        `Duration: ${durationMin}m | Score: ${score}
-` +
-        `Action: wait for VWAP confirmation candle`
-    );
-}
-
-
-
-// ==========================================================
-//  BOT 7 v3 — IGNITION + STRUCTURE SCANNER
-// ==========================================================
-
-const BOT7 = {
-  IGNITION_GAP_MS: 20 * 60 * 1000,
-  AD_CONTEXT_MS: 60 * 60 * 1000,
-  COOLDOWN_MS: 45 * 60 * 1000
-};
-
-const bot7LastFire = {};
-const bot7ADContext = {};
-
-// Track A–D context lightly
-function bot7NoteAD(symbol, group, ts) {
-  if (!["A","B","C","D","Q","R"].includes(group)) return;
-  const st = bot7ADContext[symbol] || { last: 0, hasB: false };
-  st.last = ts;
-  if (group === "B") st.hasB = true;
-  bot7ADContext[symbol] = st;
-}
-
-function bot7CanFire(symbol, ts) {
-  return !bot7LastFire[symbol] || (ts - bot7LastFire[symbol]) > BOT7.COOLDOWN_MS;
-}
-
-function bot7Mark(symbol, ts) {
-  bot7LastFire[symbol] = ts;
-}
-
-function bot7Confidence(score) {
-  if (score >= 8) return "HIGH";
-  if (score >= 6) return "MED";
-  return "LOW";
-}
-
-function bot7Ignition(symbol, group, fromLevel, toLevel, gapMs, ts) {
-  if (!bot7CanFire(symbol, ts)) return;
-  if (Math.abs(fromLevel) !== 0 || Math.abs(toLevel) !== 1.29) return;
-  if (gapMs > BOT7.IGNITION_GAP_MS) return;
-
-  const dir = toLevel > 0 ? "LONG" : "SHORT";
-  let score = 6;
-
-  const ctx = bot7ADContext[symbol];
-  if (ctx && ts - ctx.last <= BOT7.AD_CONTEXT_MS) score++;
-  if (ctx && ctx.hasB) score++;
-
-  sendToTelegram7(
-    "🚀 IGNITION " + dir + " (" + bot7Confidence(score) + ")
-" +
-    "Symbol: " + symbol + "
-" +
-    "Switch: " + group + " " + fromLevel + " → " + toLevel + "
-" +
-    "Plan: enter break / first pullback; expect continuation"
-  );
-
-  bot7Mark(symbol, ts);
-}
-
-function bot7FromTracking1(symbol, start, endGroup, endLevel, ts) {
-  let score = 0;
-  const durMin = Math.floor((ts - start.startTime) / 60000);
-
-  if (durMin <= 45) score += 2;
-  else if (durMin <= 90) score += 1;
-
-  if (start.startGroup === "B") score += 2;
-  if (start.startGroup === "A" || start.startGroup === "D") score += 1;
-
-  const absEnd = Math.abs(endLevel);
-  if (endGroup === "H" && absEnd === 1.29) score += 4;
-  if (endGroup === "G" && absEnd === 1.29) score += 3;
-
-  if (score < 6) return;
-
-  sendToTelegram7(
-    "📌 STRUCTURE SETUP (" + bot7Confidence(score) + ")
-" +
-    "Symbol: " + symbol + "
-" +
-    "Path: " + start.startGroup + " → " + endGroup + " @" + endLevel + "
-" +
-    "Duration: " + durMin + "m"
-  );
-}
-
-
 // ==========================================================
 //  WEBHOOK HANDLER
 // ==========================================================
@@ -1047,8 +870,6 @@ app.post("/incoming", (req, res) => {
         setTimeout(() => recentHashes.delete(hash), 300000);
 
         if (!group || !symbol) return res.sendStatus(200);
-
-        bot7NoteAD(symbol, group, ts);
 
         if (!events[group]) events[group] = [];
         events[group].push({ time: ts, data: body });
