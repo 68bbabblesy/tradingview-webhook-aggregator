@@ -469,11 +469,11 @@ const endLevel   = getSignedLevel(body);          // H/G = true signed level
         );
 
         // BOT 7 v2 hook
-        const endLevelNum = Number(body.level || body.fib_level || 0);
+        const endLevelNum7 = Number(body.level || body.fib_level || 0);
         processBot7(symbol, start, group, endLevelNum, ts);
 
-        const endLevelNum = Number(body.level || body.fib_level || 0);
-        bot7FromTracking1(symbol, start, group, endLevelNum, ts);
+        const endLevelNum7 = Number(body.level || body.fib_level || 0);
+        bot7FromTracking1(symbol, start, group, endLevelNum7, ts);
 
         delete trackingStart[symbol];
         saveState();
