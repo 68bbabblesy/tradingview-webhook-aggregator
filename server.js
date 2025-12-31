@@ -254,12 +254,8 @@ function processTracking4(symbol, group, ts, body) {
         `Time: ${new Date(ts).toLocaleString()}`;
 
     sendToTelegram3(msg);
-
-    // BOT 7 v3: ignition check (G/P 0 → ±1.29)
-    bot7Ignition(symbol, group, prev.level, currentLevel, gapMs, ts);
-
-    // BOT 7 v3: ignition check (H 0 → ±1.29)
-    bot7Ignition(symbol, 'H', prev.rawLevel, raw, diffMs, ts);
+    bot7Ignition(symbol, group, prev.level || 0, currentLevel || 0, gapMs, ts);
+    bot7Ignition(symbol, group, prev.rawLevel || 0, raw || 0, diffMs, ts);
 
     // Update stored state
     tracking4[symbol] = {
@@ -472,9 +468,13 @@ const endLevel   = getSignedLevel(body);          // H/G = true signed level
             `End Time: ${new Date(ts).toLocaleString()}`
         );
 
-        // BOT 7 v3 hook (Tracking1)
+        // BOT 7 v2 hook
+        const endLevelNum = Number(body.level || body.fib_level || 0);
+        processBot7(symbol, start, group, endLevelNum, ts);
+
         const endLevelNum = Number(body.level || body.fib_level || 0);
         bot7FromTracking1(symbol, start, group, endLevelNum, ts);
+
         delete trackingStart[symbol];
         saveState();
     }
@@ -857,156 +857,156 @@ function processMatching3(symbol, group, ts, body) {
 }
 
 
-// ==========================================================
-//  BOT 7 v3 — MONEY-MAKER SCANNER (Ignition + Tracking1)
-//  Focus: 0 → ±1.29 switches (Tracking 4/5) + A–D context + Tracking1
-// ==========================================================
 
-const BOT7 = {
-    IGNITION_GAP_MS: 20 * 60 * 1000,      // 20 minutes
-    AD_CONTEXT_MS:   60 * 60 * 1000,      // 60 minutes
-    COOLDOWN_MS:     45 * 60 * 1000       // per-symbol cooldown
-};
+const bot7Bias = {}; // symbol → { bias, time }
 
-const bot7LastIgnition = {}; // symbol → last ignition timestamp
-const bot7RecentAD = {};     // symbol → { lastTime, groups:Set (serialized), lastBTime }
-
-function bot7NoteAD(symbol, group, ts) {
-    if (!["A","B","C","D","Q","R"].includes(group)) return;
-
-    const st = bot7RecentAD[symbol] || { lastTime: 0, groups: [], lastBTime: 0 };
-    st.lastTime = ts;
-
-    // Keep a small unique list of recent groups (as strings)
-    const gset = new Set(st.groups);
-    gset.add(group);
-    st.groups = Array.from(gset).slice(-8);
-
-    if (group === "B") st.lastBTime = ts;
-
-    bot7RecentAD[symbol] = st;
-}
-
-function bot7HasRecentAD(symbol, ts) {
-    const st = bot7RecentAD[symbol];
-    if (!st) return { any: false, hasB: false, groups: [] };
-
-    const any = (ts - st.lastTime) <= BOT7.AD_CONTEXT_MS;
-    const hasB = st.lastBTime && (ts - st.lastBTime) <= BOT7.AD_CONTEXT_MS;
-    return { any, hasB, groups: st.groups || [] };
-}
-
-function bot7CooldownOK(symbol, ts) {
-    const last = bot7LastIgnition[symbol] || 0;
-    return (ts - last) >= BOT7.COOLDOWN_MS;
-}
-
-function bot7MarkIgnition(symbol, ts) {
-    bot7LastIgnition[symbol] = ts;
-}
-
-function bot7Confidence(score) {
-    if (score >= 8) return "HIGH";
-    if (score >= 6) return "MED";
-    return "LOW";
-}
-
-function bot7FmtSigned(n) {
-    const v = Number(n);
-    if (Number.isNaN(v)) return String(n || "");
-    return v > 0 ? `+${v}` : `${v}`;
-}
-
-// ---------- IGNITION (Tracking 4 / 5) ----------
-// Trigger when abs level expands from 0 → 1.29 quickly.
-function bot7Ignition(symbol, group, fromLevel, toLevel, gapMs, ts) {
-    if (!bot7CooldownOK(symbol, ts)) return;
-
-    const fromAbs = Math.abs(Number(fromLevel));
-    const toAbs   = Math.abs(Number(toLevel));
-    if (!(fromAbs === 0 && toAbs === 1.29)) return;
-    if (gapMs > BOT7.IGNITION_GAP_MS) return;
-
-    const dir = Number(toLevel) > 0 ? "LONG" : "SHORT";
-    const ctx = bot7HasRecentAD(symbol, ts);
-
-    // Score: ignition dominates; AD context upgrades confidence
-    let score = 6;
-    if (ctx.any) score += 1;
-    if (ctx.hasB) score += 1;
-
-    const conf = bot7Confidence(score);
-    const gapMin = Math.floor(gapMs / 60000);
-    const gapSec = Math.floor((gapMs % 60000) / 1000);
-
-    sendToTelegram7(
-        `🚀 IGNITION ${dir} (${conf})\n` +
-        `Symbol: ${symbol}\n` +
-        `Switch: ${group} ${bot7FmtSigned(fromLevel)} → ${bot7FmtSigned(toLevel)}\n` +
-        `Speed: ${gapMin}m ${gapSec}s\n` +
-        (ctx.any ? `Context: AD seen (${ctx.groups.join(",")})\n` : "") +
-        `Plan: enter on break / first pullback; don't expect VWAP retest`
-    );
-
-    bot7MarkIgnition(symbol, ts);
-}
-
-// ---------- TRACKING1 (structured completion) ----------
-// More selective than ignition, but still useful when B/AD context exists.
-function bot7FromTracking1(symbol, start, endGroup, endLevel, endTime) {
-    const durationMin = Math.floor((endTime - start.startTime) / 60000);
-    const ctx = bot7HasRecentAD(symbol, endTime);
-
+function scoreBot7Context(startGroup, durationMin, endGroup, endLevel) {
     let score = 0;
 
-    // Duration
     if (durationMin <= 45) score += 2;
     else if (durationMin <= 90) score += 1;
 
-    // Start group (your months of data)
-    if (start.startGroup === "B") score += 2;
-    else if (["A","D"].includes(start.startGroup)) score += 1;
-    else if (start.startGroup === "C") score += 0;
+    if (startGroup === "B") score += 1;
+    if (startGroup === "C") score -= 1;
 
-    const absEnd = Math.abs(Number(endLevel) || 0);
+    if (endGroup === "H" && Math.abs(endLevel) === 1.29) score += 3;
+    else if (endGroup === "G") score += 2;
 
-    // End group meaning
-    if (endGroup === "H" && absEnd === 1.29) score += 5;      // acceptance at extreme
-    else if (endGroup === "G" && absEnd === 1.29) score += 4; // extreme rejection (often fast follow-through)
-    else if (endGroup === "G" && absEnd === 0) score += 2;    // balance rejection (fade)
-    else if (endGroup === "H" && absEnd === 0) score += 1;    // balance acceptance (neutral)
+    return score;
+}
 
-    if (ctx.any) score += 1;
-    if (ctx.hasB) score += 1;
+function processBot7(symbol, start, endGroup, endLevel, endTime) {
+    const durationMin = Math.floor((endTime - start.startTime) / 60000);
+    const score = scoreBot7Context(start.startGroup, durationMin, endGroup, endLevel);
 
-    // Only alert if it's genuinely worth attention
-    if (score < 6) return;
+    // Tier A — Directional Bias
+    if (endGroup === "H" && Math.abs(endLevel) === 1.29) {
+        const bias = endLevel > 0 ? "LONG" : "SHORT";
+        bot7Bias[symbol] = { bias, time: endTime };
 
-    const conf = bot7Confidence(score);
-
-    let label = "SETUP";
-    let plan = "Use VWAP + structure for entry.";
-    if (endGroup === "H" && absEnd === 1.29) {
-        label = (Number(endLevel) > 0) ? "BIAS LONG" : "BIAS SHORT";
-        plan = "Only trade in bias direction; use pullbacks & VWAP for entries.";
-    } else if (endGroup === "G" && absEnd === 1.29) {
-        label = "EXTREME REJECTION";
-        plan = "Look for fast continuation or sharp reversal; manage aggressively.";
-    } else if (endGroup === "G" && absEnd === 0) {
-        label = "FADE SETUP";
-        plan = "Treat as reaction trade; time-box; don't marry.";
+        sendToTelegram7(
+            `📌 BIAS SET: ${bias}
+` +
+            `Symbol: ${symbol}
+` +
+            `Reason: H @ ${endLevel > 0 ? "+" : ""}${endLevel}
+` +
+            `Duration: ${durationMin}m
+` +
+            `Plan: only look ${bias.toLowerCase()}s for next 1–3h`
+        );
+        return;
     }
 
+    // Tier B — Tradable Setups
+    if (score < 3) return;
+
+    let setupType = "VWAP CONTEXT";
+    if (endGroup === "G") setupType = "VWAP REJECTION SETUP";
+    if (endGroup === "H") setupType = "VWAP RECLAIM SETUP";
+
     sendToTelegram7(
-        `📌 ${label} (${conf})\n` +
-        `Symbol: ${symbol}\n` +
-        `Tracking1: ${start.startGroup} → ${endGroup}${absEnd ? " @" + bot7FmtSigned(endLevel) : ""}\n` +
-        `Duration: ${durationMin}m | Score: ${score}\n` +
-        (ctx.any ? `Context: AD (${ctx.groups.join(",")})\n` : "") +
-        `Plan: ${plan}`
+        `⚡ SETUP: ${setupType}
+` +
+        `Symbol: ${symbol}
+` +
+        `Context: ${start.startGroup} → ${endGroup}
+` +
+        `Duration: ${durationMin}m | Score: ${score}
+` +
+        `Action: wait for VWAP confirmation candle`
     );
 }
 
+
+
+// ==========================================================
+//  BOT 7 v3 — IGNITION + STRUCTURE SCANNER
+// ==========================================================
+
+const BOT7 = {
+  IGNITION_GAP_MS: 20 * 60 * 1000,
+  AD_CONTEXT_MS: 60 * 60 * 1000,
+  COOLDOWN_MS: 45 * 60 * 1000
+};
+
+const bot7LastFire = {};
+const bot7ADContext = {};
+
+// Track A–D context lightly
+function bot7NoteAD(symbol, group, ts) {
+  if (!["A","B","C","D","Q","R"].includes(group)) return;
+  const st = bot7ADContext[symbol] || { last: 0, hasB: false };
+  st.last = ts;
+  if (group === "B") st.hasB = true;
+  bot7ADContext[symbol] = st;
+}
+
+function bot7CanFire(symbol, ts) {
+  return !bot7LastFire[symbol] || (ts - bot7LastFire[symbol]) > BOT7.COOLDOWN_MS;
+}
+
+function bot7Mark(symbol, ts) {
+  bot7LastFire[symbol] = ts;
+}
+
+function bot7Confidence(score) {
+  if (score >= 8) return "HIGH";
+  if (score >= 6) return "MED";
+  return "LOW";
+}
+
+function bot7Ignition(symbol, group, fromLevel, toLevel, gapMs, ts) {
+  if (!bot7CanFire(symbol, ts)) return;
+  if (Math.abs(fromLevel) !== 0 || Math.abs(toLevel) !== 1.29) return;
+  if (gapMs > BOT7.IGNITION_GAP_MS) return;
+
+  const dir = toLevel > 0 ? "LONG" : "SHORT";
+  let score = 6;
+
+  const ctx = bot7ADContext[symbol];
+  if (ctx && ts - ctx.last <= BOT7.AD_CONTEXT_MS) score++;
+  if (ctx && ctx.hasB) score++;
+
+  sendToTelegram7(
+    "🚀 IGNITION " + dir + " (" + bot7Confidence(score) + ")
+" +
+    "Symbol: " + symbol + "
+" +
+    "Switch: " + group + " " + fromLevel + " → " + toLevel + "
+" +
+    "Plan: enter break / first pullback; expect continuation"
+  );
+
+  bot7Mark(symbol, ts);
+}
+
+function bot7FromTracking1(symbol, start, endGroup, endLevel, ts) {
+  let score = 0;
+  const durMin = Math.floor((ts - start.startTime) / 60000);
+
+  if (durMin <= 45) score += 2;
+  else if (durMin <= 90) score += 1;
+
+  if (start.startGroup === "B") score += 2;
+  if (start.startGroup === "A" || start.startGroup === "D") score += 1;
+
+  const absEnd = Math.abs(endLevel);
+  if (endGroup === "H" && absEnd === 1.29) score += 4;
+  if (endGroup === "G" && absEnd === 1.29) score += 3;
+
+  if (score < 6) return;
+
+  sendToTelegram7(
+    "📌 STRUCTURE SETUP (" + bot7Confidence(score) + ")
+" +
+    "Symbol: " + symbol + "
+" +
+    "Path: " + start.startGroup + " → " + endGroup + " @" + endLevel + "
+" +
+    "Duration: " + durMin + "m"
+  );
+}
 
 
 // ==========================================================
@@ -1046,9 +1046,8 @@ app.post("/incoming", (req, res) => {
         recentHashes.add(hash);
         setTimeout(() => recentHashes.delete(hash), 300000);
 
-        if \(!group \|\| !symbol\) return res\.sendStatus\(200\);
+        if (!group || !symbol) return res.sendStatus(200);
 
-        // BOT 7 v3: keep a lightweight memory of A–D for context
         bot7NoteAD(symbol, group, ts);
 
         if (!events[group]) events[group] = [];
