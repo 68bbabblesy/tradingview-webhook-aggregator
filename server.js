@@ -188,6 +188,17 @@ async function sendToTelegram6(text) {
     });
 }
 
+async function sendToTelegram7(text) {
+    const token = (process.env.TELEGRAM_BOT_TOKEN_7 || "").trim();
+    const chat  = (process.env.TELEGRAM_CHAT_ID_7 || "").trim();
+    if (!token || !chat) return;
+
+    await fetch(`https://api.telegram.org/bot${token}/sendMessage`, {
+        method: "POST",
+        headers: { "Content-Type": "application/json" },
+        body: JSON.stringify({ chat_id: chat, text })
+    });
+}
 
 
 // Stores last absolute H-level per symbol
@@ -240,6 +251,9 @@ function processTracking4(symbol, group, ts, body) {
 
     sendToTelegram3(msg);
 
+bot7IgnitionListener(symbol, "H", prev.rawLevel, raw, diffMs);
+
+
     // Update stored state
     tracking4[symbol] = {
         absLevel,
@@ -283,6 +297,9 @@ function processTracking5(symbol, group, ts, body) {
         `Time: ${new Date(ts).toLocaleString()}`;
 
     sendToTelegram3(msg);
+
+bot7IgnitionListener(symbol, group, prev.level, currentLevel, gapMs);
+
 
     // Update state
     lastGPLevel[symbol] = {
@@ -411,6 +428,25 @@ function formatLevel(group, payload) {
     }
 
     return ` (${raw})`;
+}
+
+function bot7IgnitionListener(symbol, group, fromLevel, toLevel, gapMs) {
+    const fromAbs = Math.abs(Number(fromLevel));
+    const toAbs   = Math.abs(Number(toLevel));
+
+    if (fromAbs !== 0) return;
+    if (toAbs !== 1.29) return;
+
+    const dir = Number(toLevel) > 0 ? "UP" : "DOWN";
+
+    sendToTelegram7(
+        "[BOT7] IGNITION\n" +
+        "Symbol: " + symbol + "\n" +
+        "Group: " + group + "\n" +
+        "Move: " + fromLevel + " → " + toLevel + "\n" +
+        "Dir: " + dir + "\n" +
+        "Gap: " + Math.floor(gapMs / 60000) + "m"
+    );
 }
 
 
