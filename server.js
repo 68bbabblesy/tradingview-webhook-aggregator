@@ -72,72 +72,6 @@ const CHECK_MS           = Number((process.env.CHECK_MS || "1000").trim());
 const ALERT_SECRET       = (process.env.ALERT_SECRET || "").trim();
 const COOLDOWN_SECONDS   = Number((process.env.COOLDOWN_SECONDS || "60").trim());
 
-// ==========================================================
-//  BOT7 — DECISION ENGINE (Score + Confidence)
-// ==========================================================
-async function sendToTelegram7(text) {
-    const token = (process.env.TELEGRAM_BOT_TOKEN_7 || "").trim();
-    const chat  = (process.env.TELEGRAM_CHAT_ID_7 || "").trim();
-    if (!token || !chat) return;
-
-    await fetch(`https://api.telegram.org/bot${token}/sendMessage`, {
-        method: "POST",
-        headers: { "Content-Type": "application/json" },
-        body: JSON.stringify({ chat_id: chat, text })
-    });
-}
-
-function computeConfidenceScore({ startGroup, endGroup, signedLevel, durationMin }) {
-    let score = 0;
-    const reasons = [];
-
-    // --- Tracking duration ---
-    if (durationMin <= 60) {
-        score += 3;
-        reasons.push("+3 Tracking ≤ 60m");
-    } else if (durationMin <= 90) {
-        score -= 1;
-        reasons.push("−1 Tracking 60–90m");
-    } else {
-        score -= 2;
-        reasons.push("−2 Tracking > 90m");
-    }
-
-    // --- Bias determination ---
-    let bias = "NONE";
-
-    if (endGroup === "H" && signedLevel === 1.29) {
-        score += 2;
-        bias = "LONG";
-        reasons.push("+2 H @ +1.29 (bullish acceptance)");
-    }
-
-    if (endGroup === "H" && signedLevel === -1.29) {
-        score += 2;
-        bias = "SHORT";
-        reasons.push("+2 H @ -1.29 (bearish acceptance)");
-    }
-
-    if (endGroup === "G" && signedLevel === 0) {
-        score += 2;
-        bias = "FADE";
-        reasons.push("+2 G @ 0 (rejection)");
-    }
-
-    if (startGroup === "B") {
-        score += 1;
-        reasons.push("+1 Start=B");
-    }
-
-    let label = "LOW";
-    if (score >= 5) label = "HIGH";
-    else if (score >= 3) label = "MEDIUM";
-
-    return { score, label, bias, reasons };
-}
-
-
-
 async function forwardToShadow(payload) {
     const url = process.env.SHADOW_URL;
     if (!url) return;
@@ -253,6 +187,21 @@ async function sendToTelegram6(text) {
         body: JSON.stringify({ chat_id: chat, text })
     });
 }
+
+
+// Telegram sender for Bot 7 (Bias + Setup)
+async function sendToTelegram7(text) {
+    const token = (process.env.TELEGRAM_BOT_TOKEN_7 || "").trim();
+    const chat  = (process.env.TELEGRAM_CHAT_ID_7 || "").trim();
+    if (!token || !chat) return;
+
+    await fetch(`https://api.telegram.org/bot${token}/sendMessage`, {
+        method: "POST",
+        headers: { "Content-Type": "application/json" },
+        body: JSON.stringify({ chat_id: chat, text })
+    });
+}
+
 
 
 
@@ -517,58 +466,9 @@ const endLevel   = getSignedLevel(body);          // H/G = true signed level
             `End Time: ${new Date(ts).toLocaleString()}`
         );
 
-// ===============================
-// BOT7 — CONFIDENCE DECISION
-// ===============================
-try {
-    const durationMin = Math.floor((ts - start.startTime) / 60000);
-
-    const signedLevel = parseFloat(
-    body.level !== undefined ? body.level :
-    body.fib_level !== undefined ? body.fib_level :
-    NaN
-);
-
-if (![1.29, -1.29, 0].includes(signedLevel)) return;
-
-
-    if (level !== null) {
-        const scored = computeConfidenceScore({
-    startGroup: start.startGroup,
-    endGroup: group,
-    signedLevel,
-    durationMin
-});
-
-
-        // SUPPRESS LOW CONFIDENCE
-        if (scored.score >= 3) {
-         const confEmoji = scored.label === "HIGH" ? "🟢" : "🟡";
-const biasEmoji =
-    scored.bias === "LONG"  ? "📈" :
-    scored.bias === "SHORT" ? "📉" :
-    scored.bias === "FADE"  ? "↩️" :
-    "🧭";
-
-            const msg =
-                `${confEmoji} TRACKING 1 DECISION\n` +
-                `Symbol: ${symbol}\n` +
-              `Bias: ${biasEmoji} ${scored.bias}\n` +
-               `Level: ${signedLevel}\n` +
-
-                `Score: ${scored.score} (${scored.label})\n` +
-                `Start: ${start.startGroup}\n` +
-                `End: ${group} (${level})\n` +
-                `Duration: ${durationMin} min\n\n` +
-                `Why:\n• ${scored.reasons.join("\n• ")}`;
-
-            sendToTelegram7(msg);
-        }
-    }
-} catch (e) {
-    console.error("BOT7 error:", e.message);
-}
-
+        // BOT 7 v2 hook
+        const endLevelNum = Number(body.level || body.fib_level || 0);
+        processBot7(symbol, start, group, endLevelNum, ts);
 
         delete trackingStart[symbol];
         saveState();
@@ -950,6 +850,72 @@ function processMatching3(symbol, group, ts, body) {
         `🎯 MATCHING 3 (Same Level)\nSymbol: ${symbol}\nLevels: ±${lvls[0]}\nGroups: ${candidate.payload.group} ↔ ${group}\nTimes:\n - ${candidate.payload.group}: ${new Date(candidate.time).toLocaleString()}\n - ${group}: ${new Date(ts).toLocaleString()}`
     );
 }
+
+
+// ==========================================================
+//  BOT 7 v2 — DAYTRADER BIAS + SETUP ENGINE
+// ==========================================================
+
+const bot7Bias = {}; // symbol → { bias, time }
+
+function scoreBot7Context(startGroup, durationMin, endGroup, endLevel) {
+    let score = 0;
+
+    if (durationMin <= 45) score += 2;
+    else if (durationMin <= 90) score += 1;
+
+    if (startGroup === "B") score += 1;
+    if (startGroup === "C") score -= 1;
+
+    if (endGroup === "H" && Math.abs(endLevel) === 1.29) score += 3;
+    else if (endGroup === "G") score += 2;
+
+    return score;
+}
+
+function processBot7(symbol, start, endGroup, endLevel, endTime) {
+    const durationMin = Math.floor((endTime - start.startTime) / 60000);
+    const score = scoreBot7Context(start.startGroup, durationMin, endGroup, endLevel);
+
+    // Tier A — Directional Bias
+    if (endGroup === "H" && Math.abs(endLevel) === 1.29) {
+        const bias = endLevel > 0 ? "LONG" : "SHORT";
+        bot7Bias[symbol] = { bias, time: endTime };
+
+        sendToTelegram7(
+            `📌 BIAS SET: ${bias}
+` +
+            `Symbol: ${symbol}
+` +
+            `Reason: H @ ${endLevel > 0 ? "+" : ""}${endLevel}
+` +
+            `Duration: ${durationMin}m
+` +
+            `Plan: only look ${bias.toLowerCase()}s for next 1–3h`
+        );
+        return;
+    }
+
+    // Tier B — Tradable Setups
+    if (score < 3) return;
+
+    let setupType = "VWAP CONTEXT";
+    if (endGroup === "G") setupType = "VWAP REJECTION SETUP";
+    if (endGroup === "H") setupType = "VWAP RECLAIM SETUP";
+
+    sendToTelegram7(
+        `⚡ SETUP: ${setupType}
+` +
+        `Symbol: ${symbol}
+` +
+        `Context: ${start.startGroup} → ${endGroup}
+` +
+        `Duration: ${durationMin}m | Score: ${score}
+` +
+        `Action: wait for VWAP confirmation candle`
+    );
+}
+
 
 // ==========================================================
 //  WEBHOOK HANDLER
