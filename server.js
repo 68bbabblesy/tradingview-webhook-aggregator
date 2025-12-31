@@ -360,7 +360,14 @@ const recentGH = {};
 // recentGH[symbol] = { group, level, time }
 
 // Divergence Monitor memory (A–D same group within 1h)
+// DIVERGENCE MONITOR v2 state
 const divergenceMonitor = {};
+// divergenceMonitor[symbol][group] = {
+//   firstTime,
+//   secondTime,
+//   armedTime
+// }
+
 // divergenceMonitor[symbol][group] = lastTime
 
 
@@ -587,62 +594,93 @@ function adPair(group) {
     return null;
 }
 
-function processDivergenceMonitor(symbol, group, ts) {
+function processDivergenceMonitor(symbol, group, ts, body) {
+    const AD = ["A", "B", "C", "D"];
     const GH = ["G", "H"];
-    const pair = adPair(group);
 
     if (!divergenceMonitor[symbol]) {
         divergenceMonitor[symbol] = {};
     }
 
-    /* -----------------------------
-       STEP 1: A–D starts a SET
-    ----------------------------- */
-    if (pair) {
-        if (!divergenceMonitor[symbol][pair]) {
-            divergenceMonitor[symbol][pair] = {
-                awaitingGH: false,
-                lastSetTime: null
+    /* --------------------------------
+       STEP 1 — Track A–D divergence
+    -------------------------------- */
+    if (AD.includes(group)) {
+        const state = divergenceMonitor[symbol][group];
+
+        if (!state) {
+            divergenceMonitor[symbol][group] = {
+                firstTime: ts,
+                secondTime: null,
+                armedTime: null
             };
-        }
-
-        divergenceMonitor[symbol][pair].awaitingGH = true;
-        return;
-    }
-
-    /* -----------------------------
-       STEP 2: G/H completes a SET
-    ----------------------------- */
-    if (!GH.includes(group)) return;
-
-    for (const pairKey of ["AC", "BD"]) {
-        const state = divergenceMonitor[symbol][pairKey];
-        if (!state || !state.awaitingGH) continue;
-
-        state.awaitingGH = false;
-
-        // First SET
-        if (!state.lastSetTime) {
-            state.lastSetTime = ts;
             return;
         }
 
-        const diffMs = ts - state.lastSetTime;
-
-        if (diffMs <= DIVERGENCE_SET_WINDOW_MS) {
-            const diffMin = Math.floor(diffMs / 60000);
-
-            sendToTelegram6(
-                `📊 DIVERGENCE MONITOR (PAIR SET)\n` +
-                `Symbol: ${symbol}\n` +
-                `Pair: ${pairKey}\n` +
-                `Second set within ${diffMin} minutes\n` +
-                `Time: ${new Date(ts).toLocaleString()}`
-            );
+        // Second A–D within 60 min → arm divergence
+        if (
+            !state.secondTime &&
+            ts - state.firstTime <= 60 * 60 * 1000
+        ) {
+            state.secondTime = ts;
+            state.armedTime = ts;
+            return;
         }
 
-        // Reset window starting point
-        state.lastSetTime = ts;
+        // Reset if too late
+        if (ts - state.firstTime > 60 * 60 * 1000) {
+            divergenceMonitor[symbol][group] = {
+                firstTime: ts,
+                secondTime: null,
+                armedTime: null
+            };
+        }
+
+        return;
+    }
+
+    /* --------------------------------
+       STEP 2 — Wait for acceptance
+    -------------------------------- */
+    if (!GH.includes(group)) return;
+
+    const level = Number(body.level ?? body.fib_level);
+    if (Math.abs(level) !== 1.29) return;
+
+    for (const adGroup of Object.keys(divergenceMonitor[symbol])) {
+        const state = divergenceMonitor[symbol][adGroup];
+        if (!state || !state.armedTime) continue;
+
+        // Acceptance must be within 60 min of second A–D
+        if (ts - state.armedTime > 60 * 60 * 1000) {
+            delete divergenceMonitor[symbol][adGroup];
+            continue;
+        }
+
+        const d1 = new Date(state.firstTime);
+        const d2 = new Date(state.secondTime);
+        const d3 = new Date(ts);
+
+        const w1 = Math.floor((state.secondTime - state.firstTime) / 60000);
+        const w2 = Math.floor((ts - state.secondTime) / 60000);
+
+        const fmt = t =>
+            new Date(t).toLocaleString("en-GB", {
+                hour: "2-digit",
+                minute: "2-digit",
+                hour12: false
+            });
+
+        sendToTelegram6(
+            `DIVERGENCE → ACCEPTANCE\n` +
+            `Symbol: ${symbol}\n` +
+            `Path: ${adGroup} → ${adGroup} → ${group} (${level > 0 ? "+" : ""}${level})\n\n` +
+            `Windows:\n` +
+            `• ${adGroup}→${adGroup}: ${w1}m  (${fmt(state.firstTime)} → ${fmt(state.secondTime)})\n` +
+            `• ${adGroup}→${group}: ${w2}m  (${fmt(state.secondTime)} → ${fmt(ts)})`
+        );
+
+        delete divergenceMonitor[symbol][adGroup];
     }
 }
 
