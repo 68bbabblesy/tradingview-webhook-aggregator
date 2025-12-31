@@ -644,8 +644,16 @@ function processDivergenceMonitor(symbol, group, ts, body) {
     -------------------------------- */
     if (!GH.includes(group)) return;
 
-    const level = Number(body.level ?? body.fib_level);
-    if (Math.abs(level) !== 1.29) return;
+   // Guard: some alerts do not carry level information
+if (!body || (body.level === undefined && body.fib_level === undefined)) {
+    return;
+}
+
+const level = Number(body.level ?? body.fib_level);
+if (!Number.isFinite(level)) return;
+
+if (Math.abs(level) !== 1.29) return;
+
 
     for (const adGroup of Object.keys(divergenceMonitor[symbol])) {
         const state = divergenceMonitor[symbol][adGroup];
