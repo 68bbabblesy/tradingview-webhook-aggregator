@@ -368,6 +368,13 @@ const divergenceMonitor = {};
 // AD2 global burst tracking for BIG MARKET MOVE
 const recentAD2Global = [];
 
+// ZERO LEVEL DIVERGENCE state
+const zeroLevelState = {};
+// zeroLevelState[symbol] = {
+//   anchor: { group: "G"|"H", time },
+//   div: { group: "A"|"B"|"C"|"D", time }
+// };
+
 
 // -----------------------------
 // FIB LEVEL NORMALIZATION
@@ -868,6 +875,81 @@ function processMatching3(symbol, group, ts, body) {
     );
 }
 
+function processZeroLevelDivergence(symbol, group, ts, body) {
+    const AD = ["A", "B", "C", "D"];
+    const GH = ["G", "H"];
+
+    // We only care about G/H or A-D
+    if (![...AD, ...GH].includes(group)) return;
+
+    // Extract numeric level safely
+    const level = Number(body.level ?? body.fib_level);
+    const isZeroGH = GH.includes(group) && level === 0;
+
+    const state = zeroLevelState[symbol];
+
+    /* --------------------------------
+       STEP 1 — First G/H @ 0 anchor
+    -------------------------------- */
+    if (isZeroGH && !state) {
+        zeroLevelState[symbol] = {
+            anchor: { group, time: ts }
+        };
+        return;
+    }
+
+    if (!state) return;
+
+    /* --------------------------------
+       STEP 2 — A–D divergence
+    -------------------------------- */
+    if (
+        AD.includes(group) &&
+        state.anchor &&
+        !state.div &&
+        ts - state.anchor.time <= 15 * 60 * 1000
+    ) {
+        state.div = { group, time: ts };
+        return;
+    }
+
+    /* --------------------------------
+       STEP 3 — Second G/H @ 0 (same side)
+    -------------------------------- */
+    if (
+        isZeroGH &&
+        state.anchor &&
+        state.div &&
+        group === state.anchor.group &&
+        ts - state.div.time <= 15 * 60 * 1000
+    ) {
+        const w1 = Math.floor((state.div.time - state.anchor.time) / 60000);
+        const w2 = Math.floor((ts - state.div.time) / 60000);
+
+        sendToTelegram6(
+            `ZERO LEVEL DIVERGENCE\n` +
+            `${symbol} | ${state.anchor.group}(0) → ${state.div.group} → ${group}(0)\n` +
+            `Windows: ${w1}m → ${w2}m`
+        );
+
+        // Reset to allow repeats
+        delete zeroLevelState[symbol];
+        return;
+    }
+
+    /* --------------------------------
+       RESET on timeout / invalid flow
+    -------------------------------- */
+    if (
+        (state.anchor && ts - state.anchor.time > 15 * 60 * 1000) ||
+        (state.div && ts - state.div.time > 15 * 60 * 1000)
+    ) {
+        delete zeroLevelState[symbol];
+    }
+}
+
+
+
 // ==========================================================
 //  WEBHOOK HANDLER
 // ==========================================================
@@ -926,6 +1008,7 @@ app.post("/incoming", (req, res) => {
 		processLevelCorrelation(symbol, group, ts, body);
        processDivergenceMonitor(symbol, group, ts);
 
+        processZeroLevelDivergence(symbol, group, ts, body);
 
 
         processMatching2(symbol, group, ts, body);
