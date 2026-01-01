@@ -111,6 +111,15 @@ RULES = RULES.map((r, idx) => ({
 const nowMs  = () => Date.now();
 const nowSec = () => Math.floor(Date.now() / 1000);
 
+// Format timestamps as UTC (GMT+0 implied)
+const fmtTime = (t) => new Date(t).toLocaleString("en-GB", { timeZone: "UTC" });
+const fmtHM   = (t) => new Date(t).toLocaleString("en-GB", { timeZone: "UTC", hour: "2-digit", minute: "2-digit", hour12: false });
+const fmtSigned = (n) => {
+    const v = Number(n);
+    if (!Number.isFinite(v)) return "";
+    return v > 0 ? `+${v}` : `${v}`;
+};
+
 // -----------------------------
 // TELEGRAM SENDERS
 // -----------------------------
@@ -247,11 +256,13 @@ function processTracking4(symbol, group, ts, body) {
         `From: H (${formatLevelBot3(prev.rawLevel)})\n` +
         `To:   H (${formatLevelBot3(raw)})\n` +
         `Gap: ${diffMin}m ${diffSec}s\n` +
-        `Time: ${new Date(ts).toLocaleString()}`;
+        `Time: ${fmtTime(prev.time)} → ${fmtTime(ts)}`;
 
     sendToTelegram3(msg);
 
-bot7IgnitionListener(symbol, "H", prev.rawLevel, raw, diffMs);
+// Bot7 context
+bot7MarkPressure(symbol, `T4 H ${formatLevelBot3(prev.rawLevel)}→${formatLevelBot3(raw)}`, ts);
+bot7IgnitionListener(symbol, "H", prev.rawLevel, raw, prev.time, ts);
 
 
     // Update stored state
@@ -294,11 +305,13 @@ function processTracking5(symbol, group, ts, body) {
         `From: ${prev.group} (${prev.level})\n` +
         `To: ${group} (${currentLevel})\n` +
         `Gap: ${gapMin}m ${gapSec}s\n` +
-        `Time: ${new Date(ts).toLocaleString()}`;
+        `Time: ${fmtTime(prev.time)} → ${fmtTime(ts)}`;
 
     sendToTelegram3(msg);
 
-bot7IgnitionListener(symbol, group, prev.level, currentLevel, gapMs);
+// Bot7 context
+bot7MarkPressure(symbol, `T5 ${prev.group} ${prev.level}→${group} ${currentLevel}`, ts);
+bot7IgnitionListener(symbol, group, prev.level, currentLevel, prev.time, ts);
 
 
     // Update state
@@ -351,6 +364,11 @@ const lastGPLevel = {};
 // Cross-level switch (H ↔ G ↔ P)
 const lastCrossLevel = {}; // symbol → { group, level, time }
 
+
+// BOT2 v2: 0 ↔ ±1.29 cycle tracker (G/H only)
+const bot2Cycle = {};
+// bot2Cycle[symbol][group] = [{ level, time }]
+
 // AD2 memory for Divergence Trio
 const recentAD2 = {};
 // recentAD2[symbol] = { time }
@@ -377,6 +395,10 @@ const recentAD2Global = [];
 
 // ZERO LEVEL DIVERGENCE state
 const zeroLevelState = {};
+
+// 1.29 LEVEL DIVERGENCE state
+const level129State = {};
+// level129State[symbol] = { anchor: { group, level, time }, div: { group, time } };
 // zeroLevelState[symbol] = {
 //   anchor: { group: "G"|"H", time },
 //   div: { group: "A"|"B"|"C"|"D", time }
@@ -444,24 +466,102 @@ function formatLevel(group, payload) {
     return ` (${raw})`;
 }
 
-function bot7IgnitionListener(symbol, group, fromLevel, toLevel, gapMs) {
-    const fromAbs = Math.abs(Number(fromLevel));
-    const toAbs   = Math.abs(Number(toLevel));
+// -----------------------------
+// BOT7 — IGNITION ZONE (non-directional)
+// -----------------------------
+const BOT7_LOOKBACK_MS = 90 * 60 * 1000;      // how far back to look for "pressure"
+const BOT7_COOLDOWN_MS = 30 * 60 * 1000;      // per-symbol cooldown to avoid spam
 
+// bot7Pressure[symbol] = [{ time, tag }]
+const bot7Pressure = {};
+const bot7LastFire = {};
+
+// Record a "pressure" event Bot7 can use as context later.
+function bot7MarkPressure(symbol, tag, ts) {
+    if (!symbol) return;
+    if (!bot7Pressure[symbol]) bot7Pressure[symbol] = [];
+    bot7Pressure[symbol].push({ time: ts, tag });
+
+    // prune old / keep small
+    const cutoff = ts - BOT7_LOOKBACK_MS;
+    bot7Pressure[symbol] = bot7Pressure[symbol]
+        .filter(e => e.time >= cutoff)
+        .slice(-25);
+}
+
+function bot7FmtClock(t) {
+    // Time only (GMT implied)
+    return new Date(t).toLocaleString("en-GB", {
+        timeZone: "UTC",
+        hour: "2-digit",
+        minute: "2-digit",
+        hour12: false
+    });
+}
+
+function bot7FmtLevel(n) {
+    const v = Number(n);
+    if (!Number.isFinite(v)) return String(n ?? "");
+    return (v > 0 ? "+" : "") + v;
+}
+
+// Called on Tracking4/Tracking5 switches.
+// Fires ONLY on 0 → ±1.29 (your "massive move" trigger),
+// but does NOT assume direction. It tells you the market is in an ignition regime.
+function bot7IgnitionListener(symbol, group, fromLevel, toLevel, fromTime, toTime) {
+    const fromNum = Number(fromLevel);
+    const toNum   = Number(toLevel);
+
+    if (!Number.isFinite(fromNum) || !Number.isFinite(toNum)) return;
+
+    const fromAbs = Math.abs(fromNum);
+    const toAbs   = Math.abs(toNum);
+
+    // ignition definition: 0 → ±1.29
     if (fromAbs !== 0) return;
     if (toAbs !== 1.29) return;
 
-    const dir = Number(toLevel) > 0 ? "UP" : "DOWN";
+    const ts = Number(toTime) || Date.now();
+
+    // per-symbol cooldown
+    if (bot7LastFire[symbol] && (ts - bot7LastFire[symbol] < BOT7_COOLDOWN_MS)) return;
+
+    // collect prior pressure (exclude the current trigger)
+    const cutoff = ts - BOT7_LOOKBACK_MS;
+    const recent = (bot7Pressure[symbol] || [])
+        .filter(e => e.time >= cutoff && e.time < ts)
+        .slice(-6);
+
+    const context = recent.length
+        ? recent
+            .slice(-3)
+            .map(e => `${e.tag} (${Math.max(1, Math.floor((ts - e.time) / 60000))}m ago)`)
+            .join(", ")
+        : "None";
+
+    const moveMins = Math.max(0, Math.floor((ts - Number(fromTime || ts)) / 60000));
 
     sendToTelegram7(
-        "[BOT7] IGNITION\n" +
-        "Symbol: " + symbol + "\n" +
-        "Group: " + group + "\n" +
-        "Move: " + fromLevel + " → " + toLevel + "\n" +
-        "Dir: " + dir + "\n" +
-        "Gap: " + Math.floor(gapMs / 60000) + "m"
+        `[BOT7] IGNITION ZONE
+` +
+        `Symbol: ${symbol}
+` +
+        `Acceptance: ${group} (${bot7FmtLevel(toNum)})
+` +
+        `Trigger: 0 → ±1.29 in ${moveMins}m
+` +
+        `Context: ${context}
+` +
+        `State: WAIT FOR BREAK
+` +
+        `RR Potential: HIGH
+` +
+        `Time: ${bot7FmtClock(ts)}`
     );
+
+    bot7LastFire[symbol] = ts;
 }
+
 
 
 // ==========================================================
@@ -576,7 +676,7 @@ function processCrossSwitch1(symbol, group, ts, body) {
         `From: ${prev.group} (${prev.level})\n` +
         `To: ${group} (${currentLevel})\n` +
         `Gap: ${gapMin}m ${gapSec}s\n` +
-        `Time: ${new Date(ts).toLocaleString()}`;
+        `Time: ${fmtTime(prev.time)} → ${fmtTime(ts)}`;
 
     sendToTelegram3(msg);
 
@@ -585,6 +685,63 @@ function processCrossSwitch1(symbol, group, ts, body) {
         level: currentLevel,
         time: ts
     };
+
+
+function processBot2Cycle(symbol, group, ts, body) {
+    const GH = ["G", "H"];
+    if (!GH.includes(group)) return;
+
+    const level = Number(body.level ?? body.fib_level);
+    if (!Number.isFinite(level)) return;
+
+    // Only track 0 and ±1.29
+    if (!(level === 0 || Math.abs(level) === 1.29)) return;
+
+    if (!bot2Cycle[symbol]) bot2Cycle[symbol] = {};
+    if (!bot2Cycle[symbol][group]) bot2Cycle[symbol][group] = [];
+
+    const seq = bot2Cycle[symbol][group];
+
+    // Reset if gap > 15 min from last event
+    if (seq.length && (ts - seq[seq.length - 1].time) > 15 * 60 * 1000) {
+        seq.length = 0;
+    }
+
+    seq.push({ level, time: ts });
+
+    // Keep last 3
+    while (seq.length > 3) seq.shift();
+
+    if (seq.length < 3) return;
+
+    const [a, b, c] = seq;
+
+    // Must alternate (no repeats like 0,0,x)
+    if (a.level === b.level || b.level === c.level) return;
+
+    // Must be only two values: 0 and one signed 1.29
+    const nonzero = [a.level, b.level, c.level].find(v => v !== 0);
+    if (!nonzero || Math.abs(nonzero) !== 1.29) return;
+
+    // All non-zero occurrences must have the same sign (handles +1.29 vs -1.29 flavour)
+    const nonzeros = [a.level, b.level, c.level].filter(v => v !== 0);
+    if (nonzeros.some(v => v !== nonzero)) return;
+
+    // Ensure the set is exactly {0, nonzero}
+    const allowed = new Set([0, nonzero]);
+    if (![a.level, b.level, c.level].every(v => allowed.has(v))) return;
+
+    const w1 = Math.floor((b.time - a.time) / 60000);
+    const w2 = Math.floor((c.time - b.time) / 60000);
+
+    sendToTelegram2(
+        `🔁 BOT2 CYCLE\n` +
+        `Symbol: ${symbol}\n` +
+        `Group: ${group}\n` +
+        `Seq: ${fmtSigned(a.level)} → ${fmtSigned(b.level)} → ${fmtSigned(c.level)}\n` +
+        `Windows: ${w1}m → ${w2}m | ${fmtTime(ts)}`
+    );
+}
 }
 const DIVERGENCE_SET_WINDOW_MS = 60 * 60 * 1000; // 60 minutes
 
@@ -624,6 +781,7 @@ function processDivergenceMonitor(symbol, group, ts, body) {
         ) {
             state.secondTime = ts;
             state.armedTime = ts;
+            bot7MarkPressure(symbol, `DivRepeat ${group}`, ts);
             return;
         }
 
@@ -701,32 +859,54 @@ if (Math.abs(level) !== 1.29) return;
 
 const MATCH_WINDOW_MS = 65 * 1000;
 
-function processMatching1(symbol, group, ts, body) {
-     const AD = ["A", "B", "C", "D", "Q", "R"];
 
+function processMatching1(symbol, group, ts, body) {
+    const AD = ["A", "B", "C", "D", "Q", "R"];
     const FGH = ["F", "G", "H"];
 
+    // Helper: only show levels for G/H (and F if present) when available
+    const labelWithLevel = (payload) => {
+        if (!payload) return "";
+        const g = payload.group;
+        if (!["G", "H", "F"].includes(g)) return g;
+        return `${g}${formatLevel(g, payload)}`;
+    };
+
     if (AD.includes(group)) {
-        const candidate = FGH.map(g => safeGet(symbol, g))
+        const candidate = FGH
+            .map(g => safeGet(symbol, g))
             .filter(Boolean)
             .find(x => ts - x.time <= MATCH_WINDOW_MS);
 
         if (candidate) {
+            const candLabel = labelWithLevel(candidate.payload);
             sendToTelegram4(
-                `🔁 MATCHING 1\nSymbol: ${symbol}\nGroups: ${group} ↔ ${candidate.payload.group}\nTimes:\n - ${group}: ${new Date(ts).toLocaleString()}\n - ${candidate.payload.group}: ${new Date(candidate.time).toLocaleString()}`
+                `🔁 MATCHING 1\n` +
+                `Symbol: ${symbol}\n` +
+                `Groups: ${group} ↔ ${candLabel}\n` +
+                `Times:\n` +
+                ` - ${group}: ${fmtTime(ts)}\n` +
+                ` - ${candLabel}: ${fmtTime(candidate.time)}`
             );
         }
         return;
     }
 
     if (FGH.includes(group)) {
-        const candidate = AD.map(g => safeGet(symbol, g))
+        const candidate = AD
+            .map(g => safeGet(symbol, g))
             .filter(Boolean)
             .find(x => ts - x.time <= MATCH_WINDOW_MS);
 
         if (candidate) {
+            const selfLabel = `${group}${formatLevel(group, body)}`;
             sendToTelegram4(
-                `🔁 MATCHING 1\nSymbol: ${symbol}\nGroups: ${candidate.payload.group} ↔ ${group}\nTimes:\n - ${candidate.payload.group}: ${new Date(candidate.time).toLocaleString()}\n - ${group}: ${new Date(ts).toLocaleString()}`
+                `🔁 MATCHING 1\n` +
+                `Symbol: ${symbol}\n` +
+                `Groups: ${candidate.payload.group} ↔ ${selfLabel}\n` +
+                `Times:\n` +
+                ` - ${candidate.payload.group}: ${fmtTime(candidate.time)}\n` +
+                ` - ${selfLabel}: ${fmtTime(ts)}`
             );
         }
     }
@@ -975,7 +1155,7 @@ function processZeroLevelDivergence(symbol, group, ts, body) {
         sendToTelegram6(
             `ZERO LEVEL DIVERGENCE\n` +
             `${symbol} | ${state.anchor.group}(0) → ${state.div.group} → ${group}(0)\n` +
-            `Windows: ${w1}m → ${w2}m`
+            `Windows: ${w1}m → ${w2}m | ${fmtTime(ts)}`
         );
 
         // Reset to allow repeats
@@ -993,6 +1173,78 @@ function processZeroLevelDivergence(symbol, group, ts, body) {
         delete zeroLevelState[symbol];
     }
 }
+
+function processLevel129Divergence(symbol, group, ts, body) {
+    const AD = ["A", "B", "C", "D"];
+    const GH = ["G", "H"];
+
+    if (![...AD, ...GH].includes(group)) return;
+
+    const level = Number(body.level ?? body.fib_level);
+    const is129GH = GH.includes(group) && Number.isFinite(level) && Math.abs(level) === 1.29;
+
+    const state = level129State[symbol];
+
+    /* --------------------------------
+       STEP 1 — First G/H @ ±1.29 anchor
+    -------------------------------- */
+    if (is129GH && !state) {
+        level129State[symbol] = {
+            anchor: { group, level, time: ts }
+        };
+        return;
+    }
+
+    if (!state) return;
+
+    /* --------------------------------
+       STEP 2 — A–D divergence
+    -------------------------------- */
+    if (
+        AD.includes(group) &&
+        state.anchor &&
+        !state.div &&
+        ts - state.anchor.time <= 15 * 60 * 1000
+    ) {
+        state.div = { group, time: ts };
+        return;
+    }
+
+    /* --------------------------------
+       STEP 3 — Second G/H @ ±1.29 (same group + same signed level)
+    -------------------------------- */
+    if (
+        is129GH &&
+        state.anchor &&
+        state.div &&
+        group === state.anchor.group &&
+        level === state.anchor.level &&
+        ts - state.div.time <= 15 * 60 * 1000
+    ) {
+        const w1 = Math.floor((state.div.time - state.anchor.time) / 60000);
+        const w2 = Math.floor((ts - state.div.time) / 60000);
+
+        sendToTelegram6(
+            `1.29 LEVEL DIVERGENCE\n` +
+            `${symbol} | ${state.anchor.group}(${fmtSigned(state.anchor.level)}) → ${state.div.group} → ${group}(${fmtSigned(level)})\n` +
+            `Windows: ${w1}m → ${w2}m | ${fmtTime(ts)}`
+        );
+
+        delete level129State[symbol];
+        return;
+    }
+
+    /* --------------------------------
+       RESET on timeout / invalid flow
+    -------------------------------- */
+    if (
+        (state.anchor && ts - state.anchor.time > 15 * 60 * 1000) ||
+        (state.div && ts - state.div.time > 15 * 60 * 1000)
+    ) {
+        delete level129State[symbol];
+    }
+}
+
 
 
 
@@ -1047,18 +1299,20 @@ app.post("/incoming", (req, res) => {
         saveState();
 
         processTracking1(symbol, group, ts, body);
-        processTracking2and3(symbol, group, ts, body);
+        // processTracking2and3(symbol, group, ts, body); // Bot2 v1 disabled
         processMatching1(symbol, group, ts, body);
         processMatchingAD2(symbol, group, ts);
 		processDivergenceTrio(symbol, group, ts, body);
 		processLevelCorrelation(symbol, group, ts, body);
-       processDivergenceMonitor(symbol, group, ts);
+       processDivergenceMonitor(symbol, group, ts, body);
 
         processZeroLevelDivergence(symbol, group, ts, body);
+        processLevel129Divergence(symbol, group, ts, body);
 
 
-        processMatching2(symbol, group, ts, body);
-        processMatching3(symbol, group, ts, body);
+        // processMatching2(symbol, group, ts, body); // Bot2 v1 disabled
+        // processMatching3(symbol, group, ts, body); // Bot2 v1 disabled
+        processBot2Cycle(symbol, group, ts, body);
 		processTracking4(symbol, group, ts, body);
 		processTracking5(symbol, group, ts, body);
 
@@ -1141,4 +1395,3 @@ app.get("/ping", (req, res) => {
 // ==========================================================
 const PORT = Number((process.env.PORT || "10000").trim());
 app.listen(PORT, () => console.log(`🚀 Server running on port ${PORT}`));
-
