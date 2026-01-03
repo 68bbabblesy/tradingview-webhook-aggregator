@@ -1269,6 +1269,9 @@ app.post("/incoming", (req, res) => {
 		
 		const body = req.body || {};
 		
+		console.log("🔥 INCOMING HIT", body.symbol, body.group, body.level);
+
+		
 		if (IS_MAIN) {
     forwardToShadow(body);
 }
