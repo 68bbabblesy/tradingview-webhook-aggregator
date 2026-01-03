@@ -223,7 +223,15 @@ function formatLevelBot3(level) {
 
 // TRACKING 4 ENGINE
 function processTracking4(symbol, group, ts, body) {
-    if (group !== "H") return;
+   console.log(
+  "[DEBUG T4]",
+  "symbol=", symbol,
+  "group=", group,
+  "level=", body?.level,
+  "ts=", new Date(ts).toISOString()
+);
+
+   if (group !== "H") return;
 
     const raw = parseFloat(body.level);
     if (isNaN(raw)) return;
