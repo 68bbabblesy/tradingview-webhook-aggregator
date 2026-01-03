@@ -652,7 +652,6 @@ function processTracking2and3(symbol, group, ts, body) {
 }
 
 function processCrossSwitch1(symbol, group, ts, body) {
-    const allowed = ["H", "G", "P"];
     if (!allowed.includes(group)) return;
 
     const { numericLevels } = normalizeFibLevel(group, body);
@@ -694,6 +693,27 @@ function processCrossSwitch1(symbol, group, ts, body) {
         time: ts
     };
 
+
+function processBot2Cycle(symbol, group, ts, body) {
+    const GH = ["G", "H"];
+    if (!GH.includes(group)) return;
+
+    const level = Number(body.level ?? body.fib_level);
+    if (!Number.isFinite(level)) return;
+
+    // Only track 0 and ±1.29
+    if (!(level === 0 || Math.abs(level) === 1.29)) return;
+
+    if (!bot2Cycle[symbol]) bot2Cycle[symbol] = {};
+    if (!bot2Cycle[symbol][group]) bot2Cycle[symbol][group] = [];
+
+    const seq = bot2Cycle[symbol][group];
+
+    // Reset if gap > 15 min from last event
+    if (seq.length && (ts - seq[seq.length - 1].time) > 15 * 60 * 1000) {
+        seq.length = 0;
+    }
+
     seq.push({ level, time: ts });
 
     // Keep last 3
@@ -715,7 +735,6 @@ function processCrossSwitch1(symbol, group, ts, body) {
     if (nonzeros.some(v => v !== nonzero)) return;
 
     // Ensure the set is exactly {0, nonzero}
-    const allowed = new Set([0, nonzero]);
     if (![a.level, b.level, c.level].every(v => allowed.has(v))) return;
 
     const w1 = Math.floor((b.time - a.time) / 60000);
@@ -1234,57 +1253,6 @@ function processLevel129Divergence(symbol, group, ts, body) {
 
 
 
-
-
-// ==========================================================
-//  BOT2 — LEVEL CYCLE ENGINE (0 ↔ ±1.29)
-// ==========================================================
-function processBot2Cycle(symbol, group, ts, body) {
-    const GH = ["G", "H"];
-    if (!GH.includes(group)) return;
-
-    const levelRaw = body.level ?? body.fib_level;
-    const level = Number(levelRaw);
-    if (!Number.isFinite(level)) return;
-
-    if (!(level === 0 || Math.abs(level) === 1.29)) return;
-
-    if (!global.bot2Cycle) global.bot2Cycle = {};
-    if (!global.bot2Cycle[symbol]) global.bot2Cycle[symbol] = {};
-    if (!global.bot2Cycle[symbol][group]) global.bot2Cycle[symbol][group] = [];
-
-    const seq = global.bot2Cycle[symbol][group];
-
-    if (seq.length && (ts - seq[seq.length - 1].time) > 15 * 60 * 1000) {
-        seq.length = 0;
-    }
-
-    seq.push({ level, time: ts });
-    while (seq.length > 3) seq.shift();
-    if (seq.length < 3) return;
-
-    const [a, b, c] = seq;
-    if (a.level === b.level || b.level === c.level) return;
-
-    const nonzero = [a.level, b.level, c.level].find(v => v !== 0);
-    if (!nonzero || Math.abs(nonzero) !== 1.29) return;
-
-    const nonzeros = [a.level, b.level, c.level].filter(v => v !== 0);
-    if (nonzeros.some(v => v !== nonzero)) return;
-
-    const w1 = Math.floor((b.time - a.time) / 60000);
-    const w2 = Math.floor((c.time - b.time) / 60000);
-
-    if (typeof sendToTelegram2 === "function") {
-        sendToTelegram2(
-            `🔁 BOT2 CYCLE\n` +
-            `Symbol: ${symbol}\n` +
-            `Group: ${group}\n` +
-            `Seq: ${a.level} → ${b.level} → ${c.level}\n` +
-            `Windows: ${w1}m → ${w2}m`
-        );
-    }
-}
 
 // ==========================================================
 //  WEBHOOK HANDLER
