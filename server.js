@@ -1,11 +1,4 @@
 
-// ===== BOT 2 SAFETY STUB =====
-function processBot2Cycle(symbol, group, ts, body) {
-  // TEMP no-op to prevent runtime crash
-  return;
-}
-// ============================
-
 // ==========================================================
 //  PART 1 — IMPORTS, CONFIG, HELPERS, NORMALIZATION, STORAGE
 // ==========================================================
@@ -157,7 +150,7 @@ async function sendToTelegram2(text) {
 async function sendToTelegram3(text) {
     const token = (process.env.TELEGRAM_BOT_TOKEN_3 || "").trim();
     const chat  = (process.env.TELEGRAM_CHAT_ID_3 || "").trim();
-    if (!token || !chat) return;
+    if (!token || !chat) { console.warn("⚠️ Bot3 telegram creds missing (TOKEN_3 / CHAT_ID_3)"); return; }
 
     await fetch(`https://api.telegram.org/bot${token}/sendMessage`, {
         method: "POST",
@@ -208,7 +201,7 @@ async function sendToTelegram6(text) {
 async function sendToTelegram7(text) {
     const token = (process.env.TELEGRAM_BOT_TOKEN_7 || "").trim();
     const chat  = (process.env.TELEGRAM_CHAT_ID_7 || "").trim();
-    if (!token || !chat) return;
+    if (!token || !chat) { console.warn("⚠️ Bot7 telegram creds missing (TOKEN_7 / CHAT_ID_7)"); return; }
 
     await fetch(`https://api.telegram.org/bot${token}/sendMessage`, {
         method: "POST",
@@ -580,6 +573,31 @@ function bot7IgnitionListener(symbol, group, fromLevel, toLevel, fromTime, toTim
 
 
 
+
+/**
+ * BOT7 helper: fire "IGNITION ZONE" on an observed 0 → ±1.29 transition
+ * even if Tracking4/5 didn't have prior state (e.g., after restart).
+ */
+const bot7LastGH = {}; // symbol -> { level, time }
+function bot7ObserveGH(symbol, group, ts, body) {
+    if (!["G","H"].includes(group)) return;
+
+    const level = Number(body.level ?? body.fib_level);
+    if (!Number.isFinite(level)) return;
+
+    if (!(level === 0 || Math.abs(level) === 1.29)) return;
+
+    const prev = bot7LastGH[symbol];
+    bot7LastGH[symbol] = { level, time: ts };
+
+    if (!prev) return;
+
+    // Detect 0 -> ±1.29 within 30 minutes
+    if (prev.level === 0 && Math.abs(level) === 1.29 && (ts - prev.time) <= 30 * 60 * 1000) {
+        bot7IgnitionListener(symbol, group, prev.level, level, prev.time, ts);
+    }
+}
+
 // ==========================================================
 //  TRACKING ENGINE
 // ==========================================================
@@ -660,6 +678,7 @@ function processTracking2and3(symbol, group, ts, body) {
 }
 
 function processCrossSwitch1(symbol, group, ts, body) {
+    const allowed = ["H", "G", "P"];
     if (!allowed.includes(group)) return;
 
     const { numericLevels } = normalizeFibLevel(group, body);
@@ -670,11 +689,7 @@ function processCrossSwitch1(symbol, group, ts, body) {
 
     // First sighting
     if (!prev) {
-        lastCrossLevel[symbol] = {
-            group,
-            level: currentLevel,
-            time: ts
-        };
+        lastCrossLevel[symbol] = { group, level: currentLevel, time: ts };
         return;
     }
 
@@ -695,13 +710,12 @@ function processCrossSwitch1(symbol, group, ts, body) {
 
     sendToTelegram3(msg);
 
-    lastCrossLevel[symbol] = {
-        group,
-        level: currentLevel,
-        time: ts
-    };
+    lastCrossLevel[symbol] = { group, level: currentLevel, time: ts };
+}
 
-
+// ==========================================================
+//  BOT2 v2 — 0 ↔ ±1.29 CYCLE (continuous, with timestamps)
+// ==========================================================
 function processBot2Cycle(symbol, group, ts, body) {
     const GH = ["G", "H"];
     if (!GH.includes(group)) return;
@@ -724,9 +738,8 @@ function processBot2Cycle(symbol, group, ts, body) {
 
     seq.push({ level, time: ts });
 
-    // Keep last 3
+    // Keep last 3 events
     while (seq.length > 3) seq.shift();
-
     if (seq.length < 3) return;
 
     const [a, b, c] = seq;
@@ -734,7 +747,7 @@ function processBot2Cycle(symbol, group, ts, body) {
     // Must alternate (no repeats like 0,0,x)
     if (a.level === b.level || b.level === c.level) return;
 
-    // Must be only two values: 0 and one signed 1.29
+    // Must be only two values: 0 and one signed ±1.29
     const nonzero = [a.level, b.level, c.level].find(v => v !== 0);
     if (!nonzero || Math.abs(nonzero) !== 1.29) return;
 
@@ -743,21 +756,24 @@ function processBot2Cycle(symbol, group, ts, body) {
     if (nonzeros.some(v => v !== nonzero)) return;
 
     // Ensure the set is exactly {0, nonzero}
-    if (![a.level, b.level, c.level].every(v => allowed.has(v))) return;
+    const allowedSet = new Set([0, nonzero]);
+    if (![a.level, b.level, c.level].every(v => allowedSet.has(v))) return;
 
-    const w1 = Math.floor((b.time - a.time) / 60000);
-    const w2 = Math.floor((c.time - b.time) / 60000);
+    const w1m = Math.floor((b.time - a.time) / 60000);
+    const w2m = Math.floor((c.time - b.time) / 60000);
 
     sendToTelegram2(
         `🔁 BOT2 CYCLE\n` +
         `Symbol: ${symbol}\n` +
         `Group: ${group}\n` +
         `Seq: ${fmtSigned(a.level)} → ${fmtSigned(b.level)} → ${fmtSigned(c.level)}\n` +
-        `Windows: ${w1}m → ${w2}m | ${fmtTime(ts)}`
+        `Windows: ${w1m}m (${fmtHM(a.time)}→${fmtHM(b.time)}) → ${w2m}m (${fmtHM(b.time)}→${fmtHM(c.time)})\n` +
+        `Time: ${fmtTime(ts)}`
     );
 }
-}
+
 const DIVERGENCE_SET_WINDOW_MS = 60 * 60 * 1000; // 60 minutes
+ = 60 * 60 * 1000; // 60 minutes
 
 function adPair(group) {
     if (group === "A" || group === "C") return "AC";
@@ -1314,6 +1330,8 @@ app.post("/incoming", (req, res) => {
 
         saveAlert(symbol, group, ts, body);
         saveState();
+
+        bot7ObserveGH(symbol, group, ts, body);
 
         processTracking1(symbol, group, ts, body);
         // processTracking2and3(symbol, group, ts, body); // Bot2 v1 disabled
