@@ -121,6 +121,8 @@ async function sendToTelegram1(text) {
         headers: { "Content-Type": "application/json" },
         body: JSON.stringify({ chat_id: TELEGRAM_CHAT_ID_1, text })
     });
+} catch (err) {
+    console.error("Telegram send failed:", err.code || err.message);
 }
 
 async function sendToTelegram2(text) {
@@ -130,6 +132,8 @@ async function sendToTelegram2(text) {
         headers: { "Content-Type": "application/json" },
         body: JSON.stringify({ chat_id: TELEGRAM_CHAT_ID_2, text })
     });
+} catch (err) {
+    console.error("Telegram send failed:", err.code || err.message);
 }
 
 // ==========================================================
@@ -147,6 +151,8 @@ async function sendToTelegram3(text) {
         headers: { "Content-Type": "application/json" },
         body: JSON.stringify({ chat_id: chat, text })
     });
+} catch (err) {
+    console.error("Telegram send failed:", err.code || err.message);
 }
 
 // Telegram sender for Bot 4
@@ -160,6 +166,8 @@ async function sendToTelegram4(text) {
         headers: { "Content-Type": "application/json" },
         body: JSON.stringify({ chat_id: chat, text })
     });
+} catch (err) {
+    console.error("Telegram send failed:", err.code || err.message);
 }
 
 // Telegram sender for Bot 5
@@ -173,6 +181,8 @@ async function sendToTelegram5(text) {
         headers: { "Content-Type": "application/json" },
         body: JSON.stringify({ chat_id: chat, text })
     });
+} catch (err) {
+    console.error("Telegram send failed:", err.code || err.message);
 }
 
 // Telegram sender for Bot 6
@@ -186,6 +196,8 @@ async function sendToTelegram6(text) {
         headers: { "Content-Type": "application/json" },
         body: JSON.stringify({ chat_id: chat, text })
     });
+} catch (err) {
+    console.error("Telegram send failed:", err.code || err.message);
 }
 
 
