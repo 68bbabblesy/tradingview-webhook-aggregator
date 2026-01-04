@@ -544,6 +544,14 @@ function adPair(group) {
     return null;
 }
 
+const DIVERGENCE_SET_WINDOW_MS = 60 * 60 * 1000; // 60 minutes
+
+function adPair(group) {
+    if (group === "A" || group === "C") return "AC";
+    if (group === "B" || group === "D") return "BD";
+    return null;
+}
+
 function processDivergenceMonitor(symbol, group, ts) {
     const GH = ["G", "H"];
     const pair = adPair(group);
@@ -551,6 +559,53 @@ function processDivergenceMonitor(symbol, group, ts) {
     if (!divergenceMonitor[symbol]) {
         divergenceMonitor[symbol] = {};
     }
+
+    /* STEP 1: A–D starts a SET */
+    if (pair) {
+        if (!divergenceMonitor[symbol][pair]) {
+            divergenceMonitor[symbol][pair] = {
+                awaitingGH: false,
+                lastSetTime: null
+            };
+        }
+
+        divergenceMonitor[symbol][pair].awaitingGH = true;
+        return;
+    }
+
+    /* STEP 2: G/H completes a SET */
+    if (!GH.includes(group)) return;
+
+    for (const pairKey of ["AC", "BD"]) {
+        const state = divergenceMonitor[symbol][pairKey];
+        if (!state || !state.awaitingGH) continue;
+
+        state.awaitingGH = false;
+
+        // First SET
+        if (!state.lastSetTime) {
+            state.lastSetTime = ts;
+            return;
+        }
+
+        const diffMs = ts - state.lastSetTime;
+
+        if (diffMs <= DIVERGENCE_SET_WINDOW_MS) {
+            const diffMin = Math.floor(diffMs / 60000);
+
+            sendToTelegram6(
+                `📊 DIVERGENCE MONITOR (PAIR SET)\n` +
+                `Symbol: ${symbol}\n` +
+                `Pair: ${pairKey}\n` +
+                `Second set within ${diffMin} minutes\n` +
+                `Time: ${new Date(ts).toLocaleString()}`
+            );
+        }
+
+        state.lastSetTime = ts;
+    }
+}
+
 
     /* -----------------------------
        STEP 1: A–D starts a SET
