@@ -1,3 +1,11 @@
+
+// ===== BOT 2 SAFETY STUB =====
+function processBot2Cycle(symbol, group, ts, body) {
+  // TEMP no-op to prevent runtime crash
+  return;
+}
+// ============================
+
 // ==========================================================
 //  PART 1 — IMPORTS, CONFIG, HELPERS, NORMALIZATION, STORAGE
 // ==========================================================
