@@ -819,19 +819,7 @@ app.post("/incoming", (req, res) => {
     processTracking4(symbol, group, ts, body);
     processTracking5(symbol, group, ts, body);
 
-    // Strong signal (unchanged)
-    try {
-      const dir = body.direction?.toLowerCase();
-      const mom = body.momentum?.toLowerCase();
-      if (dir && mom && dir === mom) {
-        sendToTelegram2(
-          `🔥 STRONG SIGNAL\nSymbol: ${symbol}\nLevel: ${
-            body.level || body.fib_level || "n/a"
-          }\nDirection: ${dir}\nMomentum: ${mom}\nTime: ${body.time}`
-        );
-      }
-    } catch {}
-
+   
     res.sendStatus(200);
   } catch (err) {
     console.error("❌ /incoming error:", err.message);
