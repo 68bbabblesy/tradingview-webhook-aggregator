@@ -188,6 +188,22 @@ async function sendToTelegram6(text) {
   });
 }
 
+async function sendToTelegram7(text) {
+  const token = (process.env.TELEGRAM_BOT_TOKEN_7 || "").trim();
+  const chat  = (process.env.TELEGRAM_CHAT_ID_7 || "").trim();
+  if (!token || !chat) return;
+
+  await fetch(
+    `https://api.telegram.org/bot${token}/sendMessage`,
+    {
+      method: "POST",
+      headers: { "Content-Type": "application/json" },
+      body: JSON.stringify({ chat_id: chat, text })
+    }
+  );
+}
+
+
 // ==========================================================
 //  BOT3 — TRACKING 4 & 5
 // ==========================================================
@@ -253,6 +269,64 @@ function processTracking5(symbol, group, ts, body) {
     return;
   }
 
+function processBot7(symbol, group, ts, body) {
+  if (!["G", "H"].includes(group)) return;
+
+  let raw;
+  if (group === "H" && body.level) raw = parseFloat(body.level);
+  if (group === "G" && body.fib_level) raw = parseFloat(body.fib_level);
+
+  if (isNaN(raw)) return;
+
+  const abs = Math.abs(raw);
+
+  const valid =
+    (group === "H" && [1.29, 1.35].includes(abs)) ||
+    (group === "G" && [1.29, 3.0].includes(abs));
+
+  if (!valid) return;
+
+  const prev = bot7LastLevel[symbol];
+
+  if (!prev) {
+    bot7LastLevel[symbol] = { group, absLevel: abs, rawLevel: raw, time: ts };
+    return;
+  }
+
+  if (prev.group !== group || prev.absLevel === abs) {
+    bot7LastLevel[symbol] = { group, absLevel: abs, rawLevel: raw, time: ts };
+    return;
+  }
+
+  const allowed =
+    (group === "H" &&
+      ((prev.absLevel === 1.29 && abs === 1.35) ||
+       (prev.absLevel === 1.35 && abs === 1.29))) ||
+    (group === "G" &&
+      ((prev.absLevel === 1.29 && abs === 3.0) ||
+       (prev.absLevel === 3.0 && abs === 1.29)));
+
+  if (!allowed) {
+    bot7LastLevel[symbol] = { group, absLevel: abs, rawLevel: raw, time: ts };
+    return;
+  }
+
+  const diffSec = Math.floor((ts - prev.time) / 1000);
+
+  sendToTelegram7(
+    `🔁 BOT7 LEVEL SWITCH\n` +
+    `Symbol: ${symbol}\n` +
+    `Group: ${group}\n` +
+    `From: ${prev.rawLevel}\n` +
+    `To: ${raw}\n` +
+    `Gap: ${diffSec}s\n` +
+    `Time: ${new Date(ts).toLocaleString()}`
+  );
+
+  bot7LastLevel[symbol] = { group, absLevel: abs, rawLevel: raw, time: ts };
+}
+
+
   if (prev.level === currentLevel) return;
 
   const gapMs = ts - prev.time;
@@ -310,6 +384,11 @@ const lastCrossLevel = {};
 const recentAD2 = {};
 // G/H memory for Level Correlation
 const recentGH = {};
+
+// BOT7 — Level Transition Monitor
+const bot7LastLevel = {};
+// bot7LastLevel[symbol] = { group, absLevel, rawLevel, time }
+
 
 // Divergence Monitor memory (pair sets)
 const divergenceMonitor = {};
@@ -818,6 +897,7 @@ app.post("/incoming", (req, res) => {
 
     processTracking4(symbol, group, ts, body);
     processTracking5(symbol, group, ts, body);
+    processBot7(symbol, group, ts, body);
 
    
     res.sendStatus(200);
