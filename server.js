@@ -361,6 +361,9 @@ function processTracking5(symbol, group, ts, body) {
 // STORAGE FOR BOT1 AGGREGATION
 // -----------------------------
 const events = {};
+// ZEBRA (Bot1 staging‑only)
+const zebraGH = {};
+// zebraGH[symbol] = { group, level, time }
 const cooldownUntil = persisted.cooldownUntil || {};
 
 const recentHashes = new Set();
@@ -875,6 +878,50 @@ app.post("/incoming", (req, res) => {
 
     if (!group || !symbol) return res.sendStatus(200);
 
+// ===============================
+// ZEBRA FILTER (Bot1 STAGING ONLY)
+// ===============================
+if (!IS_MAIN && (group === "G" || group === "H")) {
+    const levelRaw =
+        group === "G" ? body.fib_level :
+        group === "H" ? body.level :
+        null;
+
+    const lvl = Number(levelRaw);
+    if (![0, 1.29, -1.29].includes(lvl)) {
+        return res.sendStatus(200); // discard
+    }
+
+    if (!global.zebra) global.zebra = {};
+
+    const key = symbol;
+    const prev = global.zebra[key];
+
+    if (!prev) {
+        global.zebra[key] = { group, level: lvl, time: ts };
+        return res.sendStatus(200); // wait for pair
+    }
+
+    const diffMs = ts - prev.time;
+    if (diffMs > 2 * 60 * 1000) {
+        global.zebra[key] = { group, level: lvl, time: ts };
+        return res.sendStatus(200);
+    }
+
+    const validPair =
+        (prev.level === 0 && Math.abs(lvl) === 1.29) ||
+        (lvl === 0 && Math.abs(prev.level) === 1.29);
+
+    if (!validPair) {
+        global.zebra[key] = { group, level: lvl, time: ts };
+        return res.sendStatus(200);
+    }
+
+    // ✅ Zebra satisfied → allow BOTH events through
+    delete global.zebra[key];
+}
+
+
     if (!events[group]) events[group] = [];
     events[group].push({ time: ts, data: body });
     pruneOld(events[group], maxWindowMs());
@@ -895,7 +942,7 @@ app.post("/incoming", (req, res) => {
 
     processDivergenceTrio(symbol, group, ts, body);
     processLevelCorrelation(symbol, group, ts, body);
-
+   processZebra(symbol, group, ts, body);
     processDivergenceMonitor(symbol, group, ts);
 
     processMatching2(symbol, group, ts, body);
@@ -918,6 +965,45 @@ app.get("/ping", (req, res) => {
   res.json({ ok: true, role: process.env.SERVICE_ROLE, rules: RULES.map((r) => r.name) });
 });
 
+function processZebra(symbol, group, ts, body) {
+if (process.env.SERVICE_ROLE === "main") return; // STAGING ONLY
+if (!["G", "H"].includes(group)) return;
+
+
+let raw;
+if (group === "H") raw = parseFloat(body.level);
+if (group === "G") raw = parseFloat(body.fib_level);
+if (Number.isNaN(raw)) return;
+
+
+const allowed = [0, 1.29, -1.29];
+if (!allowed.includes(raw)) return;
+
+
+const prev = zebraGH[symbol];
+zebraGH[symbol] = { group, level: raw, time: ts };
+
+
+if (!prev) return;
+if (prev.group === group) return;
+
+
+const diffMs = Math.abs(ts - prev.time);
+if (diffMs > 2 * 60 * 1000) return;
+
+
+sendToTelegram1(
+`🦓 ZEBRA\n` +
+`Symbol: ${symbol}\n` +
+`Groups: ${prev.group} ↔ ${group}\n` +
+`Levels: ${prev.level} ↔ ${raw}\n` +
+`Gap: ${Math.floor(diffMs / 1000)}s`
+);
+
+
+delete zebraGH[symbol];
+}
+
 // ==========================================================
 //  BOT1 LOOP
 // ==========================================================
@@ -939,6 +1025,7 @@ setInterval(async () => {
     }
 
     const cd = cooldownUntil[name] || 0;
+	
     if (total >= threshold && cd <= nowSec()) {
       const lines = [];
       lines.push(`🚨 Rule "${name}" fired: ${total} alerts in last ${windowSeconds}s`);
