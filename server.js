@@ -203,6 +203,20 @@ async function sendToTelegram7(text) {
 }
 
 
+// Telegram sender for Bot 8 (ZEBRA)
+async function sendToTelegram8(text) {
+    const token = (process.env.TELEGRAM_BOT_TOKEN_8 || "").trim();
+    const chat  = (process.env.TELEGRAM_CHAT_ID_8 || "").trim();
+    if (!token || !chat) return;
+
+    await fetch(`https://api.telegram.org/bot${token}/sendMessage`, {
+        method: "POST",
+        headers: { "Content-Type": "application/json" },
+        body: JSON.stringify({ chat_id: chat, text })
+    });
+}
+
+
 // ==========================================================
 //  BOT7 — LEVEL TRANSITION (fresh)
 //  H: 1.29 ↔ 1.35 (and negatives)
@@ -404,6 +418,10 @@ const divergenceMonitor = {};
 
 // AD2 global burst tracking for BIG MARKET MOVE
 const recentAD2Global = [];
+
+const zebraState = {};
+// zebraState[symbol] = { level, time }
+
 
 // -----------------------------
 // FIB LEVEL NORMALIZATION (RESTORED)
@@ -966,43 +984,66 @@ app.get("/ping", (req, res) => {
 });
 
 function processZebra(symbol, group, ts, body) {
-if (process.env.SERVICE_ROLE === "main") return; // STAGING ONLY
-if (!["G", "H"].includes(group)) return;
+    // Bot8: ZEBRA (STAGING only)
+    if (IS_MAIN) return;
 
+    if (!["G", "H"].includes(group)) return;
 
-let raw;
-if (group === "H") raw = parseFloat(body.level);
-if (group === "G") raw = parseFloat(body.fib_level);
-if (Number.isNaN(raw)) return;
+    // Pull numeric level (supports both legacy G=fib_level and newer G/H=level format)
+    let raw;
+    if (group === "H") raw = parseFloat(body.level);
+    if (group === "G") raw = parseFloat(body.fib_level ?? body.level);
+    if (Number.isNaN(raw)) return;
 
+    // We only care about 0 and ±1.29 (tolerant compare)
+    const EPS0 = 1e-6;
+    const EPS129 = 1e-3;
+    const isZero = Math.abs(raw) < EPS0;
+    const is129  = Math.abs(Math.abs(raw) - 1.29) < EPS129;
+    if (!(isZero || is129)) return;
 
-const allowed = [0, 1.29, -1.29];
-if (!allowed.includes(raw)) return;
+    const prev = zebraState[symbol];
+    // store latest no matter what (so the "pair" can be G→H or H→G)
+    zebraState[symbol] = { group, level: raw, time: ts };
 
+    // Need a previous opposite-group hit
+    if (!prev) return;
+    if (prev.group === group) return;
 
-const prev = zebraGH[symbol];
-zebraGH[symbol] = { group, level: raw, time: ts };
+    const diffMs = Math.abs(ts - prev.time);
+    const WINDOW_MS = 120 * 1000; // 2 minutes
+    if (diffMs > WINDOW_MS) return;
 
+    const prevIsZero = Math.abs(prev.level) < EPS0;
+    const prevIs129  = Math.abs(Math.abs(prev.level) - 1.29) < EPS129;
 
-if (!prev) return;
-if (prev.group === group) return;
+    // Must be a 0 <-> ±1.29 pair (either direction)
+    if (!((prevIsZero && is129) || (prevIs129 && isZero))) return;
 
+    const diffSec = Math.floor(diffMs / 1000);
 
-const diffMs = Math.abs(ts - prev.time);
-if (diffMs > 2 * 60 * 1000) return;
+    const fmt = (v) => {
+        if (Math.abs(v) < EPS0) return "0";
+        const sign = v > 0 ? "+" : "-";
+        return `${sign}1.29`;
+    };
 
+    sendToTelegram8(
+        `🦓 ZEBRA
+` +
+        `Symbol: ${symbol}
+` +
+        `Pair: ${prev.group} (${fmt(prev.level)}) ↔ ${group} (${fmt(raw)})
+` +
+        `Gap: ${diffSec}s
+` +
+        `Time: ${new Date(ts).toLocaleString()}`
+    );
 
-sendToTelegram1(
-`🦓 ZEBRA\n` +
-`Symbol: ${symbol}\n` +
-`Groups: ${prev.group} ↔ ${group}\n` +
-`Levels: ${prev.level} ↔ ${raw}\n` +
-`Gap: ${Math.floor(diffMs / 1000)}s`
-);
-
-
-delete zebraGH[symbol];
+    // Prevent duplicates from the same two hits
+    delete zebraState[symbol];
 }
+
 
 // ==========================================================
 //  BOT1 LOOP
