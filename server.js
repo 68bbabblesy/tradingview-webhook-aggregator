@@ -862,6 +862,7 @@ app.post("/incoming", (req, res) => {
 
         const group  = (body.group || "").trim();
         const symbol = (body.symbol || "").trim();
+		const side = (body.side || "").toUpperCase();
         const ts = nowMs();
 
         const hash = alertHash(symbol, group, ts);
@@ -976,4 +977,3 @@ app.get("/ping", (req, res) => {
 // ==========================================================
 const PORT = Number((process.env.PORT || "10000").trim());
 app.listen(PORT, () => console.log(`🚀 Server running on port ${PORT}`));
-
