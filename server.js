@@ -975,6 +975,8 @@ if (!IS_MAIN && (group === "G" || group === "H")) {
     res.sendStatus(200);
   } catch (err) {
     console.error("❌ /incoming error:", err.message);
+	console.log("✅ ENGINES REACHED:", group, symbol);
+
     res.sendStatus(200);
   }
 });
