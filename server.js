@@ -462,9 +462,9 @@ function processTracking1(symbol, group, ts, body) {
         // Decide label
         let label = null;
         if (diffMs <= TRACKING1A_MAX_MS) {
-            label = "📌 TRACKING 1A";
+            label = "📌📌 TRACKING 1a 📌📌";
         } else {
-            label = "📌 TRACKING 1B";
+            label = "⏳⏳ TRACKING 1b ⏳⏳";
         }
 
         sendToTelegram4(
