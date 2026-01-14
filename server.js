@@ -827,7 +827,16 @@ function processMatching2(symbol, group, ts, body) {
         .filter(x => Math.abs(ts - x.time) <= MATCH_WINDOW_MS)
         .sort((a,b) => b.time - a.time)[0];
 
-    if (!candidate) return;
+    if (!candidate) {
+    sendToTelegram3(
+        `⚠️ MATCHING 2 NEAR-MISS\n` +
+        `Symbol: ${symbol}\n` +
+        `Group: ${group}\n` +
+        `Time: ${new Date(ts).toLocaleString()}`
+    );
+    return;
+}
+
 
     sendToTelegram2(
         `🔁 MATCHING 2\nSymbol: ${symbol}\nLevels: ±${lvls[0]}\nGroups: ${candidate.payload.group} ↔ ${group}\nTimes:\n - ${candidate.payload.group}: ${new Date(candidate.time).toLocaleString()}\n - ${group}: ${new Date(ts).toLocaleString()}`
@@ -851,7 +860,16 @@ function processMatching3(symbol, group, ts, body) {
             return norm.numericLevels.some(v => lvls.includes(v));
         });
 
-    if (!candidate) return;
+    if (!candidate) {
+    sendToTelegram3(
+        `⚠️ MATCHING 3 NEAR-MISS\n` +
+        `Symbol: ${symbol}\n` +
+        `Group: ${group}\n` +
+        `Time: ${new Date(ts).toLocaleString()}`
+    );
+    return;
+}
+
 
     sendToTelegram2(
         `🎯 MATCHING 3 (Same Level)\nSymbol: ${symbol}\nLevels: ±${lvls[0]}\nGroups: ${candidate.payload.group} ↔ ${group}\nTimes:\n - ${candidate.payload.group}: ${new Date(candidate.time).toLocaleString()}\n - ${group}: ${new Date(ts).toLocaleString()}`
