@@ -417,33 +417,58 @@ function formatLevel(group, payload) {
 // ==========================================================
 //  TRACKING ENGINE
 // ==========================================================
+
+const TRACKING1A_MAX_MS = 30 * 60 * 1000;   // 30 minutes
+const TRACKING1B_MAX_MS = 120 * 60 * 1000;  // 2 hours
+
 function processTracking1(symbol, group, ts, body) {
     const startGroups = ["A", "B", "C", "D"];
-    const endGroups = ["G", "H"];
+    const endGroups   = ["G", "H"];
 
+    // Start tracking
     if (startGroups.includes(group)) {
-        trackingStart[symbol] = { startGroup: group, startTime: ts, payload: body };
+        trackingStart[symbol] = {
+            startGroup: group,
+            startTime: ts,
+            payload: body
+        };
         saveState();
         return;
     }
 
+    // Complete tracking
     if (endGroups.includes(group) && trackingStart[symbol]) {
         const start = trackingStart[symbol];
+        const diffMs = ts - start.startTime;
 
-        // use raw signed level if TradingView sent it
-function getSignedLevel(payload) {
-    if (!payload) return "";
-    if (payload.level) return ` (${payload.level})`;     // H signals
-    if (payload.fib_level) return ` (${payload.fib_level})`; // G signals
-    return "";
-}
+        // Over 2 hours → silent expiry
+        if (diffMs > TRACKING1B_MAX_MS) {
+            delete trackingStart[symbol];
+            saveState();
+            return;
+        }
 
-const startLevel = getSignedLevel(start.payload); // A–D = "" automatically
-const endLevel   = getSignedLevel(body);          // H/G = true signed level
+        // Signed level helper (unchanged logic)
+        function getSignedLevel(payload) {
+            if (!payload) return "";
+            if (payload.level) return ` (${payload.level})`;
+            if (payload.fib_level) return ` (${payload.fib_level})`;
+            return "";
+        }
 
+        const startLevel = getSignedLevel(start.payload);
+        const endLevel   = getSignedLevel(body);
+
+        // Decide label
+        let label = null;
+        if (diffMs <= TRACKING1A_MAX_MS) {
+            label = "📌 TRACKING 1A";
+        } else {
+            label = "📌 TRACKING 1B";
+        }
 
         sendToTelegram4(
-            `📌 TRACKING 1 COMPLETE\n` +
+            `${label}\n` +
             `Symbol: ${symbol}\n` +
             `Start Group: ${start.startGroup}${startLevel}\n` +
             `Start Time: ${new Date(start.startTime).toLocaleString()}\n` +
@@ -455,6 +480,7 @@ const endLevel   = getSignedLevel(body);          // H/G = true signed level
         saveState();
     }
 }
+
 
 function processTracking2and3(symbol, group, ts, body) {
     const big = ["F", "G", "H"];
@@ -976,4 +1002,3 @@ app.get("/ping", (req, res) => {
 // ==========================================================
 const PORT = Number((process.env.PORT || "10000").trim());
 app.listen(PORT, () => console.log(`🚀 Server running on port ${PORT}`));
-
