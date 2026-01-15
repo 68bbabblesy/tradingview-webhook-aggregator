@@ -828,7 +828,7 @@ function processMatching2(symbol, group, ts, body) {
         .sort((a,b) => b.time - a.time)[0];
 
     if (!candidate) {
-    sendToTelegram8(
+    sendToTelegram7(
         `⚠️ MATCHING 2 NEAR-MISS\n` +
         `Symbol: ${symbol}\n` +
         `Group: ${group}\n` +
@@ -861,7 +861,7 @@ function processMatching3(symbol, group, ts, body) {
         });
 
     if (!candidate) {
-    sendToTelegram8(
+    sendToTelegram7(
         `⚠️ MATCHING 3 NEAR-MISS\n` +
         `Symbol: ${symbol}\n` +
         `Group: ${group}\n` +
