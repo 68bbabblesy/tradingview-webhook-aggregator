@@ -349,6 +349,10 @@ const lastAlert     = persisted.lastAlert     || {};
 const trackingStart = persisted.trackingStart || {};
 const lastBig       = persisted.lastBig       || {};
 
+// Tracking WXYZ after A–D (per symbol)
+const trackingWXYZ = {};
+
+
 // Tracking 4 (H level switch)
 const lastHLevel = {};
 
@@ -503,6 +507,42 @@ function processTracking1(symbol, group, ts, body) {
         delete trackingStart[symbol];
         saveState();
     }
+}
+
+function processTrackingWXYZ(symbol, group, ts) {
+    const START = ["A", "B", "C", "D"];
+    const TARGET = ["W", "X", "Y", "Z"];
+
+    // STEP 1: A–D starts (or restarts) tracking
+    if (START.includes(group)) {
+        trackingWXYZ[symbol] = {
+            startGroup: group,
+            startTime: ts
+        };
+        return;
+    }
+
+    // STEP 2: W–Z completes tracking
+    if (!TARGET.includes(group)) return;
+
+    const state = trackingWXYZ[symbol];
+    if (!state) return;
+
+    const diffMs = ts - state.startTime;
+    const diffMin = Math.floor(diffMs / 60000);
+    const diffSec = Math.floor((diffMs % 60000) / 1000);
+
+    sendToTelegram7?.(
+        `🧭 TRACKING WXYZ\n` +
+        `Symbol: ${symbol}\n` +
+        `Start Group: ${state.startGroup}\n` +
+        `Triggered By: ${group}\n` +
+        `Gap: ${diffMin}m ${diffSec}s\n` +
+        `Time: ${new Date(ts).toLocaleString()}`
+    );
+
+    // Clear tracking for this symbol
+    delete trackingWXYZ[symbol];
 }
 
 
@@ -939,6 +979,7 @@ app.post("/incoming", (req, res) => {
 		processDivergenceTrio(symbol, group, ts, body);
 		processLevelCorrelation(symbol, group, ts, body);
        processDivergenceMonitor(symbol, group, ts);
+        processTrackingWXYZ(symbol, group, ts);
 
 
 
