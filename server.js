@@ -200,6 +200,18 @@ async function sendToTelegram7(text) {
     });
 }
 
+// Telegram sender for Bot 8 (EXPERIMENTAL / TESTING)
+async function sendToTelegram8(text) {
+    const token = (process.env.TELEGRAM_BOT_TOKEN_8 || "").trim();
+    const chat  = (process.env.TELEGRAM_CHAT_ID_8 || "").trim();
+    if (!token || !chat) return;
+
+    await fetch(`https://api.telegram.org/bot${token}/sendMessage`, {
+        method: "POST",
+        headers: { "Content-Type": "application/json" },
+        body: JSON.stringify({ chat_id: chat, text })
+    });
+}
 
 
 // Stores last absolute H-level per symbol
@@ -840,7 +852,7 @@ function processMatching2(symbol, group, ts, body) {
         .sort((a,b) => b.time - a.time)[0];
 
     if (!candidate) {
-    sendToTelegram7(
+    sendToTelegram8(
         `⚠️ MATCHING 2 NEAR-MISS\n` +
         `Symbol: ${symbol}\n` +
         `Group: ${group}\n` +
@@ -873,7 +885,7 @@ function processMatching3(symbol, group, ts, body) {
         });
 
     if (!candidate) {
-    sendToTelegram7(
+    sendToTelegram8(
         `⚠️ MATCHING 3 NEAR-MISS\n` +
         `Symbol: ${symbol}\n` +
         `Group: ${group}\n` +
