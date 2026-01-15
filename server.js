@@ -6,6 +6,22 @@ import express from "express";
 import fetch from "node-fetch";
 import fs from "fs";
 
+// ======================================================
+// MULTI-HIT TRACKER STATE (A–D → W–Z)
+// ======================================================
+
+const TRACK_WINDOW_MS = 24 * 60 * 60 * 1000; // 24 hours
+
+// Per-symbol tracker memory
+const symbolTrackers = new Map();
+/*
+symbolTrackers.get(symbol) = {
+  startedAt: number,
+  seen: Set(['W','X','Y','Z'])
+}
+*/
+
+
 // 🔑 SERVICE ROLE (MAIN vs STAGING)
 const IS_MAIN = process.env.SERVICE_ROLE === "main";
 
@@ -211,6 +227,29 @@ async function sendToTelegram8(text) {
         headers: { "Content-Type": "application/json" },
         body: JSON.stringify({ chat_id: chat, text })
     });
+}
+
+// ======================================================
+// TRACKER HELPERS
+// ======================================================
+
+function resetTracker(symbol, now) {
+    symbolTrackers.set(symbol, {
+        startedAt: now,
+        seen: new Set()
+    });
+}
+
+function getTracker(symbol) {
+    return symbolTrackers.get(symbol);
+}
+
+function expireTrackerIfNeeded(symbol, now) {
+    const t = symbolTrackers.get(symbol);
+    if (!t) return;
+    if (now - t.startedAt > TRACK_WINDOW_MS) {
+        symbolTrackers.delete(symbol);
+    }
 }
 
 
@@ -958,6 +997,71 @@ app.post("/incoming", (req, res) => {
         if (recentHashes.has(hash)) return res.sendStatus(200);
         recentHashes.add(hash);
         setTimeout(() => recentHashes.delete(hash), 300000);
+		
+		// ======================================================
+// MULTI-HIT TRACKER (A–D → W–Z)
+// ======================================================
+
+const now = Date.now();
+
+// housekeeping
+expireTrackerIfNeeded(symbol, now);
+
+// -------- ARM TRACKER (A–D)
+if (["A","B","C","D"].includes(group)) {
+    resetTracker(symbol, now);
+
+    sendToTelegram8(
+        `🟡 TRACKER ARMED\n` +
+        `Symbol: ${symbol}\n` +
+        `By Group: ${group}\n` +
+        `Time: ${new Date(now).toLocaleString()}`
+    );
+
+    return res.json({ status: "tracker armed" });
+}
+
+// -------- HANDLE W–Z
+if (["W","X","Y","Z"].includes(group)) {
+    const tracker = getTracker(symbol);
+
+    // ❌ NEAR-MISS
+    if (!tracker) {
+        sendToTelegram8(
+            `⚠️ NEAR-MISS\n` +
+            `Symbol: ${symbol}\n` +
+            `Group: ${group}\n` +
+            `Reason: No active A–D\n` +
+            `Time: ${new Date(now).toLocaleString()}`
+        );
+        return res.json({ status: "near-miss" });
+    }
+
+    // ❌ DUPLICATE
+    if (tracker.seen.has(group)) {
+        sendToTelegram8(
+            `🔁 DUPLICATE IGNORED\n` +
+            `Symbol: ${symbol}\n` +
+            `Group: ${group}\n` +
+            `Time: ${new Date(now).toLocaleString()}`
+        );
+        return res.json({ status: "duplicate" });
+    }
+
+    // ✅ MATCH
+    tracker.seen.add(group);
+
+    sendToTelegram7(
+        `✅ MATCH\n` +
+        `Symbol: ${symbol}\n` +
+        `A–D → ${group}\n` +
+        `Collected: ${Array.from(tracker.seen).join(", ")}\n` +
+        `Time: ${new Date(now).toLocaleString()}`
+    );
+
+    return res.json({ status: "match" });
+}
+
 
         if (!group || !symbol) return res.sendStatus(200);
 
