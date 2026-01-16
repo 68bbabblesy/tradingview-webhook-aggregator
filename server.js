@@ -72,6 +72,17 @@ const CHECK_MS           = Number((process.env.CHECK_MS || "1000").trim());
 const ALERT_SECRET       = (process.env.ALERT_SECRET || "").trim();
 const COOLDOWN_SECONDS   = Number((process.env.COOLDOWN_SECONDS || "60").trim());
 
+// -----------------------------
+// SPECIAL SYMBOLS (BOT 8 MIRROR)
+// -----------------------------
+const SPECIAL_SYMBOLS = new Set(
+    (process.env.SPECIAL_SYMBOLS || "")
+        .split(",")
+        .map(s => s.trim())
+        .filter(Boolean)
+);
+
+
 async function forwardToShadow(payload) {
     const url = process.env.SHADOW_URL;
     if (!url) return;
@@ -211,6 +222,14 @@ async function sendToTelegram8(text) {
         headers: { "Content-Type": "application/json" },
         body: JSON.stringify({ chat_id: chat, text })
     });
+}
+// -----------------------------
+// BOT 8 MIRROR HELPER (SPECIAL SYMBOLS)
+// -----------------------------
+function mirrorToBot8IfSpecial(symbol, text) {
+    if (!symbol) return;
+    if (!SPECIAL_SYMBOLS.has(symbol)) return;
+    sendToTelegram8(text);
 }
 
 
@@ -920,29 +939,33 @@ function processJupiterSaturn(symbol, group, ts) {
         // JUPITER (≤ 5 minutes)
         if (diffMs <= JUPITER_WINDOW_MS && !firedJupiter) {
             firedJupiter = true;
-            sendToTelegram7(
-                `🟠 JUPITER\n` +
-                `Symbol: ${symbol}\n` +
-                `AD Group: ${ad.payload.group}\n` +
-                `GH Group: ${group}\n` +
-                `Gap: ${diffMin}m ${diffSec}s\n` +
-                `AD Time: ${new Date(ad.time).toLocaleString()}\n` +
-                `GH Time: ${new Date(ts).toLocaleString()}`
-            );
+           const msg =
+    `🟠 JUPITER\n` +
+    `Symbol: ${symbol}\n` +
+    `AD Group: ${ad.payload.group}\n` +
+    `GH Group: ${group}\n` +
+    `Gap: ${diffMin}m ${diffSec}s\n` +
+    `AD Time: ${new Date(ad.time).toLocaleString()}\n` +
+    `GH Time: ${new Date(ts).toLocaleString()}`;
+
+sendToTelegram7(msg);
+mirrorToBot8IfSpecial(symbol, msg);
+
         }
 
         // SATURN (≤ 50 minutes)
         if (diffMs <= SATURN_WINDOW_MS && !firedSaturn) {
             firedSaturn = true;
-            sendToTelegram7(
-                `🪐 SATURN\n` +
-                `Symbol: ${symbol}\n` +
-                `AD Group: ${ad.payload.group}\n` +
-                `GH Group: ${group}\n` +
-                `Gap: ${diffMin}m ${diffSec}s\n` +
-                `AD Time: ${new Date(ad.time).toLocaleString()}\n` +
-                `GH Time: ${new Date(ts).toLocaleString()}`
-            );
+            const msg =
+    `🪐 SATURN\n` +
+    `Symbol: ${symbol}\n` +
+    `AD Group: ${ad.payload.group}\n` +
+    `GH Group: ${group}\n` +
+    `Gap: ${diffMin}m ${diffSec}s`;
+
+sendToTelegram7(msg);
+mirrorToBot8IfSpecial(symbol, msg);
+
         }
 
         // If both fired for this G/H, stop
