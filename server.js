@@ -1018,7 +1018,7 @@ if (["A","B","C","D"].includes(group)) {
         `Time: ${new Date(now).toLocaleString()}`
     );
 
-    return res.json({ status: "tracker armed" });
+    
 }
 
 // -------- HANDLE W–Z
@@ -1034,7 +1034,7 @@ if (["W","X","Y","Z"].includes(group)) {
             `Reason: No active A–D\n` +
             `Time: ${new Date(now).toLocaleString()}`
         );
-        return res.json({ status: "near-miss" });
+        
     }
 
     // ❌ DUPLICATE
@@ -1045,7 +1045,7 @@ if (["W","X","Y","Z"].includes(group)) {
             `Group: ${group}\n` +
             `Time: ${new Date(now).toLocaleString()}`
         );
-        return res.json({ status: "duplicate" });
+       
     }
 
     // ✅ MATCH
@@ -1059,7 +1059,7 @@ if (["W","X","Y","Z"].includes(group)) {
         `Time: ${new Date(now).toLocaleString()}`
     );
 
-    return res.json({ status: "match" });
+    
 }
 
 
