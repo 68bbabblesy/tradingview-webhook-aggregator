@@ -6,22 +6,6 @@ import express from "express";
 import fetch from "node-fetch";
 import fs from "fs";
 
-// ======================================================
-// MULTI-HIT TRACKER STATE (A–D → W–Z)
-// ======================================================
-
-const TRACK_WINDOW_MS = 24 * 60 * 60 * 1000; // 24 hours
-
-// Per-symbol tracker memory
-const symbolTrackers = new Map();
-/*
-symbolTrackers.get(symbol) = {
-  startedAt: number,
-  seen: Set(['W','X','Y','Z'])
-}
-*/
-
-
 // 🔑 SERVICE ROLE (MAIN vs STAGING)
 const IS_MAIN = process.env.SERVICE_ROLE === "main";
 
@@ -229,29 +213,6 @@ async function sendToTelegram8(text) {
     });
 }
 
-// ======================================================
-// TRACKER HELPERS
-// ======================================================
-
-function resetTracker(symbol, now) {
-    symbolTrackers.set(symbol, {
-        startedAt: now,
-        seen: new Set()
-    });
-}
-
-function getTracker(symbol) {
-    return symbolTrackers.get(symbol);
-}
-
-function expireTrackerIfNeeded(symbol, now) {
-    const t = symbolTrackers.get(symbol);
-    if (!t) return;
-    if (now - t.startedAt > TRACK_WINDOW_MS) {
-        symbolTrackers.delete(symbol);
-    }
-}
-
 
 // Stores last absolute H-level per symbol
 const tracking4 = {};
@@ -387,10 +348,6 @@ function maxWindowMs() {
 const lastAlert     = persisted.lastAlert     || {};
 const trackingStart = persisted.trackingStart || {};
 const lastBig       = persisted.lastBig       || {};
-
-// Tracking WXYZ after A–D (per symbol)
-const trackingWXYZ = {};
-
 
 // Tracking 4 (H level switch)
 const lastHLevel = {};
@@ -546,42 +503,6 @@ function processTracking1(symbol, group, ts, body) {
         delete trackingStart[symbol];
         saveState();
     }
-}
-
-function processTrackingWXYZ(symbol, group, ts) {
-    const START = ["A", "B", "C", "D"];
-    const TARGET = ["W", "X", "Y", "Z"];
-
-    // STEP 1: A–D starts (or restarts) tracking
-    if (START.includes(group)) {
-        trackingWXYZ[symbol] = {
-            startGroup: group,
-            startTime: ts
-        };
-        return;
-    }
-
-    // STEP 2: W–Z completes tracking
-    if (!TARGET.includes(group)) return;
-
-    const state = trackingWXYZ[symbol];
-    if (!state) return;
-
-    const diffMs = ts - state.startTime;
-    const diffMin = Math.floor(diffMs / 60000);
-    const diffSec = Math.floor((diffMs % 60000) / 1000);
-
-    sendToTelegram7?.(
-        `🧭 TRACKING WXYZ\n` +
-        `Symbol: ${symbol}\n` +
-        `Start Group: ${state.startGroup}\n` +
-        `Triggered By: ${group}\n` +
-        `Gap: ${diffMin}m ${diffSec}s\n` +
-        `Time: ${new Date(ts).toLocaleString()}`
-    );
-
-    // Clear tracking for this symbol
-    delete trackingWXYZ[symbol];
 }
 
 
@@ -992,77 +913,11 @@ app.post("/incoming", (req, res) => {
         const group  = (body.group || "").trim();
         const symbol = (body.symbol || "").trim();
         const ts = nowMs();
-        console.log("ALERT ARRIVED", { symbol, group });
 
         const hash = alertHash(symbol, group, ts);
         if (recentHashes.has(hash)) return res.sendStatus(200);
         recentHashes.add(hash);
         setTimeout(() => recentHashes.delete(hash), 300000);
-		
-		// ======================================================
-// MULTI-HIT TRACKER (A–D → W–Z)
-// ======================================================
-
-const now = Date.now();
-
-// housekeeping
-expireTrackerIfNeeded(symbol, now);
-
-// -------- ARM TRACKER (A–D)
-if (["A","B","C","D"].includes(group)) {
-    resetTracker(symbol, now);
-
-    sendToTelegram8(
-        `🟡 TRACKER ARMED\n` +
-        `Symbol: ${symbol}\n` +
-        `By Group: ${group}\n` +
-        `Time: ${new Date(now).toLocaleString()}`
-    );
-
-    
-}
-
-// -------- HANDLE W–Z
-if (["W","X","Y","Z"].includes(group)) {
-    const tracker = getTracker(symbol);
-
-    // ❌ NEAR-MISS
-    if (!tracker) {
-        sendToTelegram8(
-            `⚠️ NEAR-MISS\n` +
-            `Symbol: ${symbol}\n` +
-            `Group: ${group}\n` +
-            `Reason: No active A–D\n` +
-            `Time: ${new Date(now).toLocaleString()}`
-        );
-        
-    }
-
-    // ❌ DUPLICATE
-    if (tracker.seen.has(group)) {
-        sendToTelegram8(
-            `🔁 DUPLICATE IGNORED\n` +
-            `Symbol: ${symbol}\n` +
-            `Group: ${group}\n` +
-            `Time: ${new Date(now).toLocaleString()}`
-        );
-       
-    }
-
-    // ✅ MATCH
-    tracker.seen.add(group);
-
-    sendToTelegram7(
-        `✅ MATCH\n` +
-        `Symbol: ${symbol}\n` +
-        `A–D → ${group}\n` +
-        `Collected: ${Array.from(tracker.seen).join(", ")}\n` +
-        `Time: ${new Date(now).toLocaleString()}`
-    );
-
-    
-}
-
 
         if (!group || !symbol) return res.sendStatus(200);
 
@@ -1084,7 +939,6 @@ if (["W","X","Y","Z"].includes(group)) {
 		processDivergenceTrio(symbol, group, ts, body);
 		processLevelCorrelation(symbol, group, ts, body);
        processDivergenceMonitor(symbol, group, ts);
-        processTrackingWXYZ(symbol, group, ts);
 
 
 
