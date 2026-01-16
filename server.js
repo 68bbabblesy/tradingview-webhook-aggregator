@@ -782,6 +782,13 @@ function processDivergenceTrio(symbol, group, ts, body) {
 }
 
 const LEVEL_CORRELATION_WINDOW_MS = 45 * 1000;
+// ==========================================================
+//  JUPITER / SATURN WINDOWS (G/H → A–D directional tracking)
+// ==========================================================
+
+const JUPITER_WINDOW_MS = 5 * 60 * 1000;    // 5 minutes
+const SATURN_WINDOW_MS  = 50 * 60 * 1000;   // 50 minutes
+
 
 function processLevelCorrelation(symbol, group, ts, body) {
     if (!["G", "H"].includes(group)) return;
@@ -883,6 +890,68 @@ function processMatching3(symbol, group, ts, body) {
 }
 
 // ==========================================================
+//  JUPITER & SATURN (Directional: G/H tracks A–D)
+// ==========================================================
+
+function processJupiterSaturn(symbol, group, ts) {
+    // ONLY G or H can trigger
+    if (!["G", "H"].includes(group)) return;
+
+    const AD = ["A", "B", "C", "D"];
+
+    // Collect all past A–D alerts for this symbol
+    const ads = AD
+        .map(g => safeGet(symbol, g))
+        .filter(Boolean)
+        .filter(x => x.time <= ts); // look BACK only
+
+    if (!ads.length) return;
+
+    let firedJupiter = false;
+    let firedSaturn  = false;
+
+    for (const ad of ads) {
+        const diffMs = ts - ad.time;
+        if (diffMs < 0) continue; // safety
+
+        const diffMin = Math.floor(diffMs / 60000);
+        const diffSec = Math.floor((diffMs % 60000) / 1000);
+
+        // JUPITER (≤ 5 minutes)
+        if (diffMs <= JUPITER_WINDOW_MS && !firedJupiter) {
+            firedJupiter = true;
+            sendToTelegram7(
+                `🟠 JUPITER\n` +
+                `Symbol: ${symbol}\n` +
+                `AD Group: ${ad.payload.group}\n` +
+                `GH Group: ${group}\n` +
+                `Gap: ${diffMin}m ${diffSec}s\n` +
+                `AD Time: ${new Date(ad.time).toLocaleString()}\n` +
+                `GH Time: ${new Date(ts).toLocaleString()}`
+            );
+        }
+
+        // SATURN (≤ 50 minutes)
+        if (diffMs <= SATURN_WINDOW_MS && !firedSaturn) {
+            firedSaturn = true;
+            sendToTelegram7(
+                `🪐 SATURN\n` +
+                `Symbol: ${symbol}\n` +
+                `AD Group: ${ad.payload.group}\n` +
+                `GH Group: ${group}\n` +
+                `Gap: ${diffMin}m ${diffSec}s\n` +
+                `AD Time: ${new Date(ad.time).toLocaleString()}\n` +
+                `GH Time: ${new Date(ts).toLocaleString()}`
+            );
+        }
+
+        // If both fired for this G/H, stop
+        if (firedJupiter && firedSaturn) break;
+    }
+}
+
+
+// ==========================================================
 //  WEBHOOK HANDLER
 // ==========================================================
 
@@ -939,14 +1008,11 @@ app.post("/incoming", (req, res) => {
 		processDivergenceTrio(symbol, group, ts, body);
 		processLevelCorrelation(symbol, group, ts, body);
        processDivergenceMonitor(symbol, group, ts);
-
-
-
         processMatching2(symbol, group, ts, body);
         processMatching3(symbol, group, ts, body);
+		processJupiterSaturn(symbol, group, ts);
 		processTracking4(symbol, group, ts, body);
 		processTracking5(symbol, group, ts, body);
-
 
 
         // Strong signal (unchanged)
