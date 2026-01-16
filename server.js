@@ -992,6 +992,7 @@ app.post("/incoming", (req, res) => {
         const group  = (body.group || "").trim();
         const symbol = (body.symbol || "").trim();
         const ts = nowMs();
+        console.log("ALERT ARRIVED", { symbol, group });
 
         const hash = alertHash(symbol, group, ts);
         if (recentHashes.has(hash)) return res.sendStatus(200);
