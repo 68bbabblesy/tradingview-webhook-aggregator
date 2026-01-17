@@ -985,7 +985,8 @@ app.post("/incoming", (req, res) => {
 		if (!IS_MAIN && !req.headers["x-shadow-forward"]) {
     return res.sendStatus(403);
 }
-		
+	console.log("📥 STAGING RECEIVED", new Date().toISOString(), body.symbol, body.group);
+	
 		
 		const body = req.body || {};
 		
