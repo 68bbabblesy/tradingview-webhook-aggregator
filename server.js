@@ -909,6 +909,47 @@ function processMatching3(symbol, group, ts, body) {
 }
 
 // ==========================================================
+//  BAZOOKA (A–D ↔ W–Z, either order, ≤ 20 minutes)
+// ==========================================================
+
+const BAZOOKA_WINDOW_MS = 20 * 60 * 1000;
+
+function processBazooka(symbol, group, ts, body) {
+    const AD = ["A", "B", "C", "D"];
+    const WZ = ["W", "X", "Y", "Z"];
+
+    // Only react to relevant groups
+    if (![...AD, ...WZ].includes(group)) return;
+
+    // Determine which side we are on
+    const isAD = AD.includes(group);
+    const ownGroups = isAD ? AD : WZ;
+    const otherGroups = isAD ? WZ : AD;
+
+    // Find any opposite-side alert within window
+    const candidate = otherGroups
+        .map(g => safeGet(symbol, g))
+        .filter(Boolean)
+        .find(x => Math.abs(ts - x.time) <= BAZOOKA_WINDOW_MS);
+
+    if (!candidate) return;
+
+    const diffMs = Math.abs(ts - candidate.time);
+    const diffMin = Math.floor(diffMs / 60000);
+    const diffSec = Math.floor((diffMs % 60000) / 1000);
+
+    const msg =
+        `💥 BAZOOKA\n` +
+        `Symbol: ${symbol}\n` +
+        `${candidate.payload.group} Time: ${new Date(candidate.time).toLocaleString()}\n` +
+        `${group} Time: ${new Date(ts).toLocaleString()}\n` +
+        `Gap: ${diffMin}m ${diffSec}s`;
+
+    sendToTelegram6(msg);
+}
+
+
+// ==========================================================
 //  JUPITER & SATURN (Directional: G/H tracks A–D)
 // ==========================================================
 
@@ -985,8 +1026,7 @@ app.post("/incoming", (req, res) => {
 		if (!IS_MAIN && !req.headers["x-shadow-forward"]) {
     return res.sendStatus(403);
 }
-	
-	
+		
 		
 		const body = req.body || {};
 		
@@ -1034,6 +1074,8 @@ app.post("/incoming", (req, res) => {
        processDivergenceMonitor(symbol, group, ts);
         processMatching2(symbol, group, ts, body);
         processMatching3(symbol, group, ts, body);
+		processBazooka(symbol, group, ts, body);
+
 		processJupiterSaturn(symbol, group, ts);
 		processTracking4(symbol, group, ts, body);
 		processTracking5(symbol, group, ts, body);
