@@ -948,6 +948,58 @@ function processBazooka(symbol, group, ts, body) {
     sendToTelegram6(msg);
 }
 
+// ==========================================================
+//  NEPTUNE (A–D ↔ X, either order)
+// ==========================================================
+
+const NEPTUNE_1_WINDOW_MS = 4 * 60 * 1000;
+const NEPTUNE_2_WINDOW_MS = 15 * 60 * 1000;
+
+function processNeptune(symbol, group, ts, body) {
+    const AD = ["A", "B", "C", "D"];
+    const X  = "X";
+
+    if (![...AD, X].includes(group)) return;
+
+    const isAD = AD.includes(group);
+
+    const adCandidate = isAD
+        ? { group, time: ts }
+        : AD.map(g => safeGet(symbol, g)).filter(Boolean)[0];
+
+    const xCandidate = group === X
+        ? { group: "X", time: ts }
+        : safeGet(symbol, X);
+
+    if (!adCandidate || !xCandidate) return;
+
+    const diffMs = Math.abs(adCandidate.time - xCandidate.time);
+    const diffMin = Math.floor(diffMs / 60000);
+    const diffSec = Math.floor((diffMs % 60000) / 1000);
+
+    if (diffMs <= NEPTUNE_1_WINDOW_MS) {
+        const msg =
+            `🌊 NEPTUNE_1\n` +
+            `Symbol: ${symbol}\n` +
+            `${adCandidate.group} Time: ${new Date(adCandidate.time).toLocaleString()}\n` +
+            `X Time: ${new Date(xCandidate.time).toLocaleString()}\n` +
+            `Gap: ${diffMin}m ${diffSec}s`;
+
+        sendToTelegram6(msg);
+    }
+
+    if (diffMs <= NEPTUNE_2_WINDOW_MS) {
+        const msg =
+            `🌊 NEPTUNE_2\n` +
+            `Symbol: ${symbol}\n` +
+            `${adCandidate.group} Time: ${new Date(adCandidate.time).toLocaleString()}\n` +
+            `X Time: ${new Date(xCandidate.time).toLocaleString()}\n` +
+            `Gap: ${diffMin}m ${diffSec}s`;
+
+        sendToTelegram6(msg);
+    }
+}
+
 
 // ==========================================================
 //  JUPITER & SATURN (Directional: G/H tracks A–D)
@@ -1075,6 +1127,7 @@ app.post("/incoming", (req, res) => {
         processMatching2(symbol, group, ts, body);
         processMatching3(symbol, group, ts, body);
 		processBazooka(symbol, group, ts, body);
+        processNeptune(symbol, group, ts, body);
 
 		processJupiterSaturn(symbol, group, ts);
 		processTracking4(symbol, group, ts, body);
