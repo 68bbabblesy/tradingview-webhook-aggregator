@@ -368,6 +368,12 @@ const lastAlert     = persisted.lastAlert     || {};
 const trackingStart = persisted.trackingStart || {};
 const lastBig       = persisted.lastBig       || {};
 
+// -----------------------------
+// ROLLING SEQUENCES (W / X)
+// -----------------------------
+const rollingWX = {}; // { symbol: { W: [ts, ts, ts], X: [ts, ts, ts] } }
+
+
 // Tracking 4 (H level switch)
 const lastHLevel = {};
 
@@ -988,6 +994,44 @@ function processNeptune(symbol, group, ts, body) {
         sendToTelegram6(msg);
     }
 
+  // ==========================================================
+//  ROLLING 3-STAGE SEQUENCE (W / X) → BOT5
+// ==========================================================
+
+function processRollingWX(symbol, group, ts) {
+    if (group !== "W" && group !== "X") return;
+
+    if (!rollingWX[symbol]) {
+        rollingWX[symbol] = { W: [], X: [] };
+    }
+
+    const buf = rollingWX[symbol][group];
+
+    buf.push(ts);
+
+    // Keep only the last 3
+    if (buf.length > 3) {
+        buf.shift();
+    }
+
+    // Fire only when we have 3
+    if (buf.length < 3) return;
+
+    const t1 = new Date(buf[0]).toLocaleString();
+    const t2 = new Date(buf[1]).toLocaleString();
+    const t3 = new Date(buf[2]).toLocaleString();
+
+    const msg =
+        `🔁 ROLLING ${group} SEQUENCE (3-STAGE)\n` +
+        `Symbol: ${symbol}\n` +
+        `1️⃣ ${t1}\n` +
+        `2️⃣ ${t2}\n` +
+        `3️⃣ ${t3}`;
+
+    sendToTelegram5(msg);
+}
+
+
     if (diffMs <= NEPTUNE_2_WINDOW_MS) {
         const msg =
             `🌊 NEPTUNE_2\n` +
@@ -1128,6 +1172,7 @@ app.post("/incoming", (req, res) => {
         processMatching3(symbol, group, ts, body);
 		processBazooka(symbol, group, ts, body);
         processNeptune(symbol, group, ts, body);
+        processRollingWX(symbol, group, ts);
 
 		processJupiterSaturn(symbol, group, ts);
 		processTracking4(symbol, group, ts, body);
