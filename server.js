@@ -1004,6 +1004,12 @@ function processWakanda(symbol, group, ts) {
         .map(g => safeGet(symbol, g))
         .filter(Boolean)
         .find(x => Math.abs(ts - x.time) <= WAKANDA_WINDOW_MS);
+console.log(
+  "WAKANDA CHECK",
+  symbol,
+  "incoming:", group, new Date(ts).toISOString(),
+  "other:", other?.payload?.group, other ? new Date(other.time).toISOString() : "NONE"
+);
 
     if (!other) return;
 
