@@ -986,7 +986,21 @@ function processNeptune(symbol, group, ts, body) {
             `Gap: ${diffMin}m ${diffSec}s`;
 
         sendToTelegram6(msg);
+    } 
+
+
+    if (diffMs <= NEPTUNE_2_WINDOW_MS) {
+        const msg =
+            `🌊 NEPTUNE_2\n` +
+            `Symbol: ${symbol}\n` +
+            `${adCandidate.group} Time: ${new Date(adCandidate.time).toLocaleString()}\n` +
+            `X Time: ${new Date(xCandidate.time).toLocaleString()}\n` +
+            `Gap: ${diffMin}m ${diffSec}s`;
+
+        sendToTelegram6(msg);
     }
+}
+
 
 // ==========================================================
 //  WAKANDA (W/X/Y/Z ↔ W/X/Y/Z, ≤ 120 seconds, either order)
@@ -1004,12 +1018,6 @@ function processWakanda(symbol, group, ts) {
         .map(g => safeGet(symbol, g))
         .filter(Boolean)
         .find(x => Math.abs(ts - x.time) <= WAKANDA_WINDOW_MS);
-console.log(
-  "WAKANDA CHECK",
-  symbol,
-  "incoming:", group, new Date(ts).toISOString(),
-  "other:", other?.payload?.group, other ? new Date(other.time).toISOString() : "NONE"
-);
 
     if (!other) return;
 
@@ -1026,19 +1034,6 @@ console.log(
         `Gap: ${diffMin}m ${diffSec}s`;
 
     sendToTelegram5(msg);
-}
-
-
-    if (diffMs <= NEPTUNE_2_WINDOW_MS) {
-        const msg =
-            `🌊 NEPTUNE_2\n` +
-            `Symbol: ${symbol}\n` +
-            `${adCandidate.group} Time: ${new Date(adCandidate.time).toLocaleString()}\n` +
-            `X Time: ${new Date(xCandidate.time).toLocaleString()}\n` +
-            `Gap: ${diffMin}m ${diffSec}s`;
-
-        sendToTelegram6(msg);
-    }
 }
 
 
