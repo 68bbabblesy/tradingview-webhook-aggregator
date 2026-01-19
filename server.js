@@ -988,6 +988,41 @@ function processNeptune(symbol, group, ts, body) {
         sendToTelegram6(msg);
     }
 
+// ==========================================================
+//  WAKANDA (W/X/Y/Z ↔ W/X/Y/Z, ≤ 120 seconds, either order)
+// ==========================================================
+
+const WAKANDA_WINDOW_MS = 120 * 1000;
+
+function processWakanda(symbol, group, ts) {
+    const WXYZ = ["W", "X", "Y", "Z"];
+    if (!WXYZ.includes(group)) return;
+
+    // Find the most recent "other" W/X/Y/Z alert within 120 seconds
+    const other = WXYZ
+        .filter(g => g !== group) // different letter only
+        .map(g => safeGet(symbol, g))
+        .filter(Boolean)
+        .find(x => Math.abs(ts - x.time) <= WAKANDA_WINDOW_MS);
+
+    if (!other) return;
+
+    const diffMs = Math.abs(ts - other.time);
+    const diffMin = Math.floor(diffMs / 60000);
+    const diffSec = Math.floor((diffMs % 60000) / 1000);
+
+    const msg =
+        `🛡️ WAKANDA\n` +
+        `Symbol: ${symbol}\n` +
+        `Pair: ${other.payload.group} ↔ ${group}\n` +
+        `${other.payload.group} Time: ${new Date(other.time).toLocaleString()}\n` +
+        `${group} Time: ${new Date(ts).toLocaleString()}\n` +
+        `Gap: ${diffMin}m ${diffSec}s`;
+
+    sendToTelegram5(msg);
+}
+
+
     if (diffMs <= NEPTUNE_2_WINDOW_MS) {
         const msg =
             `🌊 NEPTUNE_2\n` +
@@ -1127,7 +1162,8 @@ app.post("/incoming", (req, res) => {
         processMatching2(symbol, group, ts, body);
         processMatching3(symbol, group, ts, body);
 		processBazooka(symbol, group, ts, body);
-        processNeptune(symbol, group, ts, body);
+        processNeptune(symbol, group, ts, body);				
+        processWakanda(symbol, group, ts);
 
 		processJupiterSaturn(symbol, group, ts);
 		processTracking4(symbol, group, ts, body);
