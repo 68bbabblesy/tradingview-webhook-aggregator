@@ -75,8 +75,8 @@ const COOLDOWN_SECONDS   = Number((process.env.COOLDOWN_SECONDS || "60").trim())
 // -----------------------------
 // SPECIAL SYMBOLS (BOT 8 MIRROR)
 // -----------------------------
-const SPECIAL_SYMBOLS = new Set(
-    (process.env.SPECIAL_SYMBOLS || "")
+const SPECIAL_TOKENS = new Set(
+    (process.env.SPECIAL_TOKENS || "")
         .split(",")
         .map(s => s.trim())
         .filter(Boolean)
@@ -228,7 +228,7 @@ async function sendToTelegram8(text) {
 // -----------------------------
 function mirrorToBot8IfSpecial(symbol, text) {
     if (!symbol) return;
-    if (!SPECIAL_SYMBOLS.has(symbol)) return;
+    if (!SPECIAL_TOKENS.has(symbol)) return;
     sendToTelegram8(text);
 }
 
@@ -1078,7 +1078,7 @@ function processGamma(symbol, group, ts) {
         `Gap: ${diffMin}m ${diffSec}s\n` +
         `Time: ${new Date(ts).toLocaleString()}`;
 
-   sendToTelegram7(msg);
+    sendToTelegram7(msg);
 mirrorToBot8IfSpecial(symbol, msg);
 
 
