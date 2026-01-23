@@ -908,9 +908,6 @@ function processMatching3(symbol, group, ts, body) {
     );
 }
 
-const GRACE_MS = 3000; // 3-second forward grace window
-
-
 // ==========================================================
 //  BAZOOKA (A–D ↔ W–Z, either order, ≤ 20 minutes)
 // ==========================================================
@@ -919,40 +916,37 @@ const BAZOOKA_WINDOW_MS = 20 * 60 * 1000;
 
 function processBazooka(symbol, group, ts, body) {
     const AD = ["A", "B", "C", "D"];
-    const WY = ["W", "Y"];
-    const XZ = ["X", "Z"];
+    const WZ = ["W", "X", "Y", "Z"];
 
-    // ONLY start tracking on W/X/Y/Z
-    if (![...WY, ...XZ].includes(group)) return;
+    // Only react to relevant groups
+    if (![...AD, ...WZ].includes(group)) return;
 
-    // Determine allowed follow-up groups
-    const allowedAD = WY.includes(group) ? ["A", "C"] : ["B", "D"];
+    // Determine which side we are on
+    const isAD = AD.includes(group);
+    const ownGroups = isAD ? AD : WZ;
+    const otherGroups = isAD ? WZ : AD;
 
-    // Look FORWARD for ABCD, with grace window
-    const candidate = allowedAD
+    // Find any opposite-side alert within window
+    const candidate = otherGroups
         .map(g => safeGet(symbol, g))
         .filter(Boolean)
-        .find(x =>
-            x.time >= ts - GRACE_MS &&
-            x.time <= ts + BAZOOKA_WINDOW_MS
-        );
+        .find(x => Math.abs(ts - x.time) <= BAZOOKA_WINDOW_MS);
 
     if (!candidate) return;
 
-    const diffMs = candidate.time - ts;
-    const diffMin = Math.floor(Math.abs(diffMs) / 60000);
-    const diffSec = Math.floor((Math.abs(diffMs) % 60000) / 1000);
+    const diffMs = Math.abs(ts - candidate.time);
+    const diffMin = Math.floor(diffMs / 60000);
+    const diffSec = Math.floor((diffMs % 60000) / 1000);
 
     const msg =
         `💥 BAZOOKA\n` +
         `Symbol: ${symbol}\n` +
-        `${group} Time: ${new Date(ts).toLocaleString()}\n` +
         `${candidate.payload.group} Time: ${new Date(candidate.time).toLocaleString()}\n` +
+        `${group} Time: ${new Date(ts).toLocaleString()}\n` +
         `Gap: ${diffMin}m ${diffSec}s`;
 
     sendToTelegram6(msg);
 }
-
 
 // ==========================================================
 //  NEPTUNE (A–D ↔ X, either order)
@@ -962,46 +956,48 @@ const NEPTUNE_1_WINDOW_MS = 4 * 60 * 1000;
 const NEPTUNE_2_WINDOW_MS = 15 * 60 * 1000;
 
 function processNeptune(symbol, group, ts, body) {
-    const WY = ["W", "Y"];
-    const XZ = ["X", "Z"];
+    const AD = ["A", "B", "C", "D"];
+    const X  = "X";
 
-    // ONLY start on W/X/Y/Z
-    if (![...WY, ...XZ].includes(group)) return;
+    if (![...AD, X].includes(group)) return;
 
-    const allowedAD = WY.includes(group) ? ["A", "C"] : ["B", "D"];
+    const isAD = AD.includes(group);
 
-    const candidate = allowedAD
-        .map(g => safeGet(symbol, g))
-        .filter(Boolean)
-        .find(x =>
-            x.time >= ts - GRACE_MS &&
-            x.time <= ts + NEPTUNE_2_WINDOW_MS
-        );
+    const adCandidate = isAD
+        ? { group, time: ts }
+        : AD.map(g => safeGet(symbol, g)).filter(Boolean)[0];
 
-    if (!candidate) return;
+    const xCandidate = group === X
+        ? { group: "X", time: ts }
+        : safeGet(symbol, X);
 
-    const diffMs = candidate.time - ts;
-    const diffMin = Math.floor(Math.abs(diffMs) / 60000);
-    const diffSec = Math.floor((Math.abs(diffMs) % 60000) / 1000);
+    if (!adCandidate || !xCandidate) return;
+
+    const diffMs = Math.abs(adCandidate.time - xCandidate.time);
+    const diffMin = Math.floor(diffMs / 60000);
+    const diffSec = Math.floor((diffMs % 60000) / 1000);
 
     if (diffMs <= NEPTUNE_1_WINDOW_MS) {
-        sendToTelegram6(
+        const msg =
             `🌊 NEPTUNE_1\n` +
             `Symbol: ${symbol}\n` +
-            `${group} Time: ${new Date(ts).toLocaleString()}\n` +
-            `${candidate.payload.group} Time: ${new Date(candidate.time).toLocaleString()}\n` +
-            `Gap: ${diffMin}m ${diffSec}s`
-        );
-    }
+            `${adCandidate.group} Time: ${new Date(adCandidate.time).toLocaleString()}\n` +
+            `X Time: ${new Date(xCandidate.time).toLocaleString()}\n` +
+            `Gap: ${diffMin}m ${diffSec}s`;
+
+        sendToTelegram6(msg);
+    } 
+
 
     if (diffMs <= NEPTUNE_2_WINDOW_MS) {
-        sendToTelegram6(
+        const msg =
             `🌊 NEPTUNE_2\n` +
             `Symbol: ${symbol}\n` +
-            `${group} Time: ${new Date(ts).toLocaleString()}\n` +
-            `${candidate.payload.group} Time: ${new Date(candidate.time).toLocaleString()}\n` +
-            `Gap: ${diffMin}m ${diffSec}s`
-        );
+            `${adCandidate.group} Time: ${new Date(adCandidate.time).toLocaleString()}\n` +
+            `X Time: ${new Date(xCandidate.time).toLocaleString()}\n` +
+            `Gap: ${diffMin}m ${diffSec}s`;
+
+        sendToTelegram6(msg);
     }
 }
 
