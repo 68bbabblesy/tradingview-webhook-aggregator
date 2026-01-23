@@ -1073,12 +1073,13 @@ function processGamma(symbol, group, ts) {
     const diffSec = Math.floor((diffMs % 60000) / 1000);
 
     const msg =
-        `🟣 GAMMA\n` +
-        `Symbol: ${symbol}\n` +
-        `Group: ${group}\n` +
-        `Second alert within 3 minutes\n` +
-        `Gap: ${diffMin}m ${diffSec}s\n` +
-        `Time: ${new Date(ts).toLocaleString()}`;
+    `🟣 GAMMA\n` +
+    `Symbol: ${symbol}\n` +
+    `Group: ${group}\n` +
+    `First hit: ${new Date(prevTime).toLocaleString()}\n` +
+    `Second hit: ${new Date(ts).toLocaleString()}\n` +
+    `Gap: ${diffMin}m ${diffSec}s`;
+
 
     sendToTelegram7(msg);
 mirrorToBot8IfSpecial(symbol, msg);
