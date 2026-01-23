@@ -1043,7 +1043,8 @@ function processWakanda(symbol, group, ts) {
 //  GAMMA (E→E or J→J within 3 minutes)
 // ==========================================================
 
-const GAMMA_WINDOW_MS = 3 * 60 * 1000;
+const GAMMA_WINDOW_MS = 20 * 1000; // 20 seconds
+
 
 function processGamma(symbol, group, ts) {
     if (group !== "E" && group !== "J") return;
