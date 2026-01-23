@@ -389,6 +389,9 @@ const recentGH = {};
 const divergenceMonitor = {};
 // divergenceMonitor[symbol][group] = lastTime
 
+// GAMMA memory (E/J repeat within 3 minutes)
+const gammaLast = {};
+// gammaLast[symbol][group] = lastTime
 
 
 // AD2 global burst tracking for BIG MARKET MOVE
@@ -1036,6 +1039,51 @@ function processWakanda(symbol, group, ts) {
     sendToTelegram5(msg);
 }
 
+// ==========================================================
+//  GAMMA (E→E or J→J within 3 minutes)
+// ==========================================================
+
+const GAMMA_WINDOW_MS = 3 * 60 * 1000;
+
+function processGamma(symbol, group, ts) {
+    if (group !== "E" && group !== "J") return;
+
+    if (!gammaLast[symbol]) {
+        gammaLast[symbol] = {};
+    }
+
+    const prevTime = gammaLast[symbol][group];
+
+    // First occurrence → store and wait
+    if (!prevTime) {
+        gammaLast[symbol][group] = ts;
+        return;
+    }
+
+    const diffMs = ts - prevTime;
+    if (diffMs > GAMMA_WINDOW_MS) {
+        // Too late → reset start point
+        gammaLast[symbol][group] = ts;
+        return;
+    }
+
+    const diffMin = Math.floor(diffMs / 60000);
+    const diffSec = Math.floor((diffMs % 60000) / 1000);
+
+    const msg =
+        `🟣 GAMMA\n` +
+        `Symbol: ${symbol}\n` +
+        `Group: ${group}\n` +
+        `Second alert within 3 minutes\n` +
+        `Gap: ${diffMin}m ${diffSec}s\n` +
+        `Time: ${new Date(ts).toLocaleString()}`;
+
+    sendToTelegram7(msg);
+
+    // Reset so next pair requires a new first occurrence
+    delete gammaLast[symbol][group];
+}
+
 
 // ==========================================================
 //  JUPITER & SATURN (Directional: G/H tracks A–D)
@@ -1165,6 +1213,7 @@ app.post("/incoming", (req, res) => {
 		processBazooka(symbol, group, ts, body);
         processNeptune(symbol, group, ts, body);				
         processWakanda(symbol, group, ts);
+        processGamma(symbol, group, ts);
 
 		processJupiterSaturn(symbol, group, ts);
 		processTracking4(symbol, group, ts, body);
