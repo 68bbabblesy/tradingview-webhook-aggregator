@@ -1078,7 +1078,9 @@ function processGamma(symbol, group, ts) {
         `Gap: ${diffMin}m ${diffSec}s\n` +
         `Time: ${new Date(ts).toLocaleString()}`;
 
-    sendToTelegram7(msg);
+   sendToTelegram7(msg);
+mirrorToBot8IfSpecial(symbol, msg);
+
 
     // Reset so next pair requires a new first occurrence
     delete gammaLast[symbol][group];
