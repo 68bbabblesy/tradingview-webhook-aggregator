@@ -1061,6 +1061,8 @@ function processGamma(symbol, group, ts) {
     }
 
     const diffMs = ts - prevTime;
+	if (diffMs <= 0) return; // same event, do not count as second hit
+
     if (diffMs > GAMMA_WINDOW_MS) {
         // Too late → reset start point
         gammaLast[symbol][group] = ts;
