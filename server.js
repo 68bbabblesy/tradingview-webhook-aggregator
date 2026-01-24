@@ -397,6 +397,9 @@ const gammaLast = {};
 const scalpingBuf = {};
 // scalpingBuf[symbol][group] = [ts1, ts2, ...]
 
+// TANGO memory (A/B buffered within 8 minutes)
+const tangoBuf = {};
+// tangoBuf[symbol][group] = [ts1, ts2, ...]
 
 
 // AD2 global burst tracking for BIG MARKET MOVE
@@ -1148,6 +1151,60 @@ function processScalping(symbol, group, ts) {
 }
 
 // ==========================================================
+//  TANGO (A→A or B→B within 8 minutes)
+// ==========================================================
+
+const TANGO_WINDOW_MS = 8 * 60 * 1000;
+
+function processTango(symbol, group, ts) {
+    if (group !== "A" && group !== "B") return;
+
+    if (!tangoBuf[symbol]) {
+        tangoBuf[symbol] = {};
+    }
+    if (!tangoBuf[symbol][group]) {
+        tangoBuf[symbol][group] = [];
+    }
+
+    const buf = tangoBuf[symbol][group];
+
+    // Ignore exact duplicates
+    if (buf.length && ts <= buf[buf.length - 1]) return;
+
+    // Add this hit
+    buf.push(ts);
+
+    // Prune old hits
+    const cutoff = ts - TANGO_WINDOW_MS;
+    while (buf.length && buf[0] < cutoff) {
+        buf.shift();
+    }
+
+    // Need at least 2 hits
+    if (buf.length < 2) return;
+
+    const first = buf[0];
+    const second = buf[1];
+    const diffMs = second - first;
+    const diffMin = Math.floor(diffMs / 60000);
+    const diffSec = Math.floor((diffMs % 60000) / 1000);
+
+    const msg =
+        `🟠 TANGO\n` +
+        `Symbol: ${symbol}\n` +
+        `Group: ${group}\n` +
+        `First hit: ${new Date(first).toLocaleString()}\n` +
+        `Second hit: ${new Date(second).toLocaleString()}\n` +
+        `Gap: ${diffMin}m ${diffSec}s`;
+
+    sendToTelegram4(msg);
+
+    // Slide window
+    buf.shift();
+}
+
+
+// ==========================================================
 //  JUPITER & SATURN (Directional: G/H tracks A–D)
 // ==========================================================
 
@@ -1277,6 +1334,7 @@ app.post("/incoming", (req, res) => {
         processWakanda(symbol, group, ts);
         processGamma(symbol, group, ts);
         processScalping(symbol, group, ts);
+        processTango(symbol, group, ts);
 
 		processJupiterSaturn(symbol, group, ts);
 		processTracking4(symbol, group, ts, body);
