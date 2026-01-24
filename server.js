@@ -1099,10 +1099,10 @@ mirrorToBot8IfSpecial(symbol, msg);
 }
 
 // ==========================================================
-//  SCALPING (W→W or X→X within 20 seconds)
+//  SCALPING (W→W or X→X within 22 seconds)
 // ==========================================================
 
-const SCALPING_WINDOW_MS = 20 * 1000;
+const SCALPING_WINDOW_MS = 22 * 1000;
 
 function processScalping(symbol, group, ts) {
     if (group !== "W" && group !== "X") return;
