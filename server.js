@@ -393,6 +393,10 @@ const divergenceMonitor = {};
 const gammaLast = {};
 // gammaLast[symbol][group] = lastTime
 
+// SCALPING memory (W/X repeat within 20 seconds)
+const scalpingLast = {};
+// scalpingLast[symbol][group] = lastTime
+
 
 // AD2 global burst tracking for BIG MARKET MOVE
 const recentAD2Global = [];
@@ -1090,6 +1094,54 @@ mirrorToBot8IfSpecial(symbol, msg);
     delete gammaLast[symbol][group];
 }
 
+// ==========================================================
+//  SCALPING (W→W or X→X within 20 seconds)
+// ==========================================================
+
+const SCALPING_WINDOW_MS = 20 * 1000;
+
+function processScalping(symbol, group, ts) {
+    if (group !== "W" && group !== "X") return;
+
+    if (!scalpingLast[symbol]) {
+        scalpingLast[symbol] = {};
+    }
+
+    const prevTime = scalpingLast[symbol][group];
+
+    // First occurrence → arm
+    if (!prevTime) {
+        scalpingLast[symbol][group] = ts;
+        return;
+    }
+
+    const diffMs = ts - prevTime;
+
+    // Same event / duplicate → ignore
+    if (diffMs <= 0) return;
+
+    // Too late → reset arm
+    if (diffMs > SCALPING_WINDOW_MS) {
+        scalpingLast[symbol][group] = ts;
+        return;
+    }
+
+    const diffSec = Math.floor(diffMs / 1000);
+
+    const msg =
+        `⚡ SCALPING\n` +
+        `Symbol: ${symbol}\n` +
+        `Group: ${group}\n` +
+        `First hit: ${new Date(prevTime).toLocaleString()}\n` +
+        `Second hit: ${new Date(ts).toLocaleString()}\n` +
+        `Gap: ${diffSec}s`;
+
+    sendToTelegram3(msg);
+
+    // Reset after fire
+    delete scalpingLast[symbol][group];
+}
+
 
 // ==========================================================
 //  JUPITER & SATURN (Directional: G/H tracks A–D)
@@ -1220,6 +1272,7 @@ app.post("/incoming", (req, res) => {
         processNeptune(symbol, group, ts, body);				
         processWakanda(symbol, group, ts);
         processGamma(symbol, group, ts);
+        processScalping(symbol, group, ts);
 
 		processJupiterSaturn(symbol, group, ts);
 		processTracking4(symbol, group, ts, body);
