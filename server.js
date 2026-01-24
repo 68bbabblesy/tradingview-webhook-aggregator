@@ -393,9 +393,10 @@ const divergenceMonitor = {};
 const gammaLast = {};
 // gammaLast[symbol][group] = lastTime
 
-// SCALPING memory (W/X repeat within 20 seconds)
-const scalpingLast = {};
-// scalpingLast[symbol][group] = lastTime
+// SCALPING memory (W/X buffered within 20 seconds)
+const scalpingBuf = {};
+// scalpingBuf[symbol][group] = [ts1, ts2, ...]
+
 
 
 // AD2 global burst tracking for BIG MARKET MOVE
@@ -1103,45 +1104,48 @@ const SCALPING_WINDOW_MS = 20 * 1000;
 function processScalping(symbol, group, ts) {
     if (group !== "W" && group !== "X") return;
 
-    if (!scalpingLast[symbol]) {
-        scalpingLast[symbol] = {};
+    if (!scalpingBuf[symbol]) {
+        scalpingBuf[symbol] = {};
+    }
+    if (!scalpingBuf[symbol][group]) {
+        scalpingBuf[symbol][group] = [];
     }
 
-    const prevTime = scalpingLast[symbol][group];
+    const buf = scalpingBuf[symbol][group];
 
-    // First occurrence → arm
-    if (!prevTime) {
-        scalpingLast[symbol][group] = ts;
-        return;
+    // Ignore exact duplicates
+    if (buf.length && ts <= buf[buf.length - 1]) return;
+
+    // Add this hit
+    buf.push(ts);
+
+    // Prune old hits outside window
+    const cutoff = ts - SCALPING_WINDOW_MS;
+    while (buf.length && buf[0] < cutoff) {
+        buf.shift();
     }
 
-    const diffMs = ts - prevTime;
+    // Need at least 2 hits to fire
+    if (buf.length < 2) return;
 
-    // Same event / duplicate → ignore
-    if (diffMs <= 0) return;
-
-    // Too late → reset arm
-    if (diffMs > SCALPING_WINDOW_MS) {
-        scalpingLast[symbol][group] = ts;
-        return;
-    }
-
+    const first = buf[0];
+    const second = buf[1];
+    const diffMs = second - first;
     const diffSec = Math.floor(diffMs / 1000);
 
     const msg =
         `⚡ SCALPING\n` +
         `Symbol: ${symbol}\n` +
         `Group: ${group}\n` +
-        `First hit: ${new Date(prevTime).toLocaleString()}\n` +
-        `Second hit: ${new Date(ts).toLocaleString()}\n` +
+        `First hit: ${new Date(first).toLocaleString()}\n` +
+        `Second hit: ${new Date(second).toLocaleString()}\n` +
         `Gap: ${diffSec}s`;
 
     sendToTelegram3(msg);
 
-    // Reset after fire
-    delete scalpingLast[symbol][group];
+    // Slide window: drop the first hit only
+    buf.shift();
 }
-
 
 // ==========================================================
 //  JUPITER & SATURN (Directional: G/H tracks A–D)
