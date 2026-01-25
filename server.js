@@ -393,9 +393,9 @@ const divergenceMonitor = {};
 const gammaLast = {};
 // gammaLast[symbol][group] = lastTime
 
-// SCALPING memory (W/X buffered within 20 seconds)
-const scalpingBuf = {};
-// scalpingBuf[symbol][group] = [ts1, ts2, ...]
+// SALSA memory (W/X buffered within 20 seconds)
+const salsaBuf = {};
+// salsaBuf[symbol][group] = [ts1, ts2, ...]
 
 // TANGO memory (A/B buffered within 8 minutes)
 const tangoBuf = {};
@@ -1099,65 +1099,73 @@ mirrorToBot8IfSpecial(symbol, msg);
 }
 
 // ==========================================================
-//  SCALPING (W→W or X→X within 22 seconds)
+//  SALSA (C→C or D→D within 16.5 minutes, buffered)
 // ==========================================================
 
-const SCALPING_WINDOW_MS = 22 * 1000;
+const SALSA_WINDOW_MS = 16.5 * 60 * 1000;
 
-function processScalping(symbol, group, ts) {
-    if (group !== "W" && group !== "X") return;
+function processSalsa(symbol, group, ts) {
+    if (group !== "C" && group !== "D") return;
 
-    if (!scalpingBuf[symbol]) {
-        scalpingBuf[symbol] = {};
+    if (!salsaBuf[symbol]) {
+        salsaBuf[symbol] = {};
     }
-    if (!scalpingBuf[symbol][group]) {
-        scalpingBuf[symbol][group] = [];
+    if (!salsaBuf[symbol][group]) {
+        salsaBuf[symbol][group] = [];
     }
 
-    const buf = scalpingBuf[symbol][group];
+    const buf = salsaBuf[symbol][group];
 
-    // Ignore exact duplicates
+    // Ignore exact duplicates / out-of-order
     if (buf.length && ts <= buf[buf.length - 1]) return;
 
-    // Add this hit
+    // Add hit
     buf.push(ts);
 
-    // Prune old hits outside window
-    const cutoff = ts - SCALPING_WINDOW_MS;
+    // Prune old hits
+    const cutoff = ts - SALSA_WINDOW_MS;
     while (buf.length && buf[0] < cutoff) {
         buf.shift();
     }
 
-    // Need at least 2 hits to fire
+    // Need at least 2 hits
     if (buf.length < 2) return;
 
     const first = buf[0];
     const second = buf[1];
     const diffMs = second - first;
-    const diffSec = Math.floor(diffMs / 1000);
+    const diffMin = Math.floor(diffMs / 60000);
+    const diffSec = Math.floor((diffMs % 60000) / 1000);
 
     const msg =
-        `⚡ SCALPING\n` +
+        `💃 SALSA\n` +
         `Symbol: ${symbol}\n` +
         `Group: ${group}\n` +
         `First hit: ${new Date(first).toLocaleString()}\n` +
         `Second hit: ${new Date(second).toLocaleString()}\n` +
-        `Gap: ${diffSec}s`;
+        `Gap: ${diffMin}m ${diffSec}s`;
 
     sendToTelegram3(msg);
 
-    // Slide window: drop the first hit only
+    // Slide window
     buf.shift();
 }
 
 // ==========================================================
-//  TANGO (A→A or B→B within 8 minutes)
+//  TANGO (Buffered repeat detector with per-group windows)
+//  A/B → 3.5 minutes
+//  W/X → 2.5 minutes
 // ==========================================================
 
-const TANGO_WINDOW_MS = 8 * 60 * 1000;
+const TANGO_WINDOWS_MS = {
+    A: 3.5 * 60 * 1000,
+    B: 3.5 * 60 * 1000,
+    W: 2.5 * 60 * 1000,
+    X: 2.5 * 60 * 1000
+};
 
 function processTango(symbol, group, ts) {
-    if (group !== "A" && group !== "B") return;
+    if (!TANGO_WINDOWS_MS[group]) return;
 
     if (!tangoBuf[symbol]) {
         tangoBuf[symbol] = {};
@@ -1168,19 +1176,19 @@ function processTango(symbol, group, ts) {
 
     const buf = tangoBuf[symbol][group];
 
-    // Ignore exact duplicates
+    // Ignore exact duplicates / out-of-order
     if (buf.length && ts <= buf[buf.length - 1]) return;
 
-    // Add this hit
+    // Add hit
     buf.push(ts);
 
-    // Prune old hits
-    const cutoff = ts - TANGO_WINDOW_MS;
+    // Prune old hits based on group-specific window
+    const cutoff = ts - TANGO_WINDOWS_MS[group];
     while (buf.length && buf[0] < cutoff) {
         buf.shift();
     }
 
-    // Need at least 2 hits
+    // Need at least 2 hits to fire
     if (buf.length < 2) return;
 
     const first = buf[0];
@@ -1199,7 +1207,7 @@ function processTango(symbol, group, ts) {
 
     sendToTelegram4(msg);
 
-    // Slide window
+    // Slide window (allow overlapping sequences)
     buf.shift();
 }
 
@@ -1333,7 +1341,7 @@ app.post("/incoming", (req, res) => {
         processNeptune(symbol, group, ts, body);				
         processWakanda(symbol, group, ts);
         processGamma(symbol, group, ts);
-        processScalping(symbol, group, ts);
+        processSalsa(symbol, group, ts);
         processTango(symbol, group, ts);
 
 		processJupiterSaturn(symbol, group, ts);
