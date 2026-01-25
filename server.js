@@ -401,6 +401,13 @@ const salsaBuf = {};
 const tangoBuf = {};
 // tangoBuf[symbol][group] = [ts1, ts2, ...]
 
+// SPESH memory (ETH ↔ BTC same-group within 50 seconds)
+const speshLast = {
+    BTCUSDT: {},
+    ETHUSDT: {}
+};
+// speshLast[symbol][group] = lastTime
+
 
 // AD2 global burst tracking for BIG MARKET MOVE
 const recentAD2Global = [];
@@ -1211,6 +1218,51 @@ function processTango(symbol, group, ts) {
     buf.shift();
 }
 
+// ==========================================================
+//  SPESH (BTC ↔ ETH same-group within 50 seconds)
+// ==========================================================
+
+const SPESH_WINDOW_MS = 50 * 1000;
+const SPESH_SYMBOLS = new Set(["BTCUSDT", "ETHUSDT"]);
+const SPESH_GROUPS = new Set(["A", "B", "C", "D", "E", "J", "W", "X"]);
+
+function processSpesh(symbol, group, ts) {
+    if (!SPESH_SYMBOLS.has(symbol)) return;
+    if (!SPESH_GROUPS.has(group)) return;
+
+    const otherSymbol = symbol === "BTCUSDT" ? "ETHUSDT" : "BTCUSDT";
+
+    const otherTs = speshLast[otherSymbol][group];
+
+    // If we saw the other symbol recently → fire
+    if (otherTs && Math.abs(ts - otherTs) <= SPESH_WINDOW_MS) {
+        const diffMs = Math.abs(ts - otherTs);
+        const diffSec = Math.floor(diffMs / 1000);
+
+        const msg =
+            `🟢 SPESH\n` +
+            `Group: ${group}\n` +
+            `Symbols: BTCUSDT ↔ ETHUSDT\n` +
+            `BTC time: ${new Date(
+                symbol === "BTCUSDT" ? ts : otherTs
+            ).toLocaleString()}\n` +
+            `ETH time: ${new Date(
+                symbol === "ETHUSDT" ? ts : otherTs
+            ).toLocaleString()}\n` +
+            `Gap: ${diffSec}s`;
+
+        sendToTelegram2(msg);
+
+        // Clear both sides so next match is fresh
+        delete speshLast.BTCUSDT[group];
+        delete speshLast.ETHUSDT[group];
+        return;
+    }
+
+    // Otherwise, store this hit
+    speshLast[symbol][group] = ts;
+}
+
 
 // ==========================================================
 //  JUPITER & SATURN (Directional: G/H tracks A–D)
@@ -1343,6 +1395,7 @@ app.post("/incoming", (req, res) => {
         processGamma(symbol, group, ts);
         processSalsa(symbol, group, ts);
         processTango(symbol, group, ts);
+        processSpesh(symbol, group, ts);
 
 		processJupiterSaturn(symbol, group, ts);
 		processTracking4(symbol, group, ts, body);
