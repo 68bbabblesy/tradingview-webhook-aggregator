@@ -925,43 +925,51 @@ function processMatching3(symbol, group, ts, body) {
         `🎯 MATCHING 3 (Same Level)\nSymbol: ${symbol}\nLevels: ±${lvls[0]}\nGroups: ${candidate.payload.group} ↔ ${group}\nTimes:\n - ${candidate.payload.group}: ${new Date(candidate.time).toLocaleString()}\n - ${group}: ${new Date(ts).toLocaleString()}`
     );
 }
-
 // ==========================================================
-//  BAZOOKA (A–D ↔ W–Z, either order, ≤ 20 minutes)
+//  BAZOOKA (BTC state-based, S/T directional)
+//  BTC sets state → others confirm until replaced
 // ==========================================================
 
-const BAZOOKA_WINDOW_MS = 20 * 60 * 1000;
+const bazookaState = {
+    current: null,   // "S" | "T" | null
+    since: null
+};
 
-function processBazooka(symbol, group, ts, body) {
-    const AD = ["A", "B", "C", "D"];
-    const WZ = ["W", "X", "Y", "Z"];
+function processBazooka(symbol, group, ts) {
 
-    // Only react to relevant groups
-    if (![...AD, ...WZ].includes(group)) return;
+    // ---- BTC sets the state ----
+    if (symbol === "BTCUSDT" && (group === "S" || group === "T")) {
+        bazookaState.current = group;
+        bazookaState.since = ts;
+        return;
+    }
 
-    // Determine which side we are on
-    const isAD = AD.includes(group);
-    const ownGroups = isAD ? AD : WZ;
-    const otherGroups = isAD ? WZ : AD;
+    // ---- No active state → nothing to do ----
+    if (!bazookaState.current) return;
 
-    // Find any opposite-side alert within window
-    const candidate = otherGroups
-        .map(g => safeGet(symbol, g))
-        .filter(Boolean)
-        .find(x => Math.abs(ts - x.time) <= BAZOOKA_WINDOW_MS);
+    // ---- Ignore BTC confirmations ----
+    if (symbol === "BTCUSDT") return;
 
-    if (!candidate) return;
+    // ---- Confirmation rules ----
+    let isConfirm = false;
 
-    const diffMs = Math.abs(ts - candidate.time);
-    const diffMin = Math.floor(diffMs / 60000);
-    const diffSec = Math.floor((diffMs % 60000) / 1000);
+    if (bazookaState.current === "S" && (group === "B" || group === "W")) {
+        isConfirm = true;
+    }
+
+    if (bazookaState.current === "T" && (group === "A" || group === "C")) {
+        isConfirm = true;
+    }
+
+    if (!isConfirm) return;
 
     const msg =
         `💥 BAZOOKA\n` +
-        `Symbol: ${symbol}\n` +
-        `${candidate.payload.group} Time: ${new Date(candidate.time).toLocaleString()}\n` +
-        `${group} Time: ${new Date(ts).toLocaleString()}\n` +
-        `Gap: ${diffMin}m ${diffSec}s`;
+        `BTC State: ${bazookaState.current}\n` +
+        `BTC Since: ${new Date(bazookaState.since).toLocaleString()}\n` +
+        `Confirming Symbol: ${symbol}\n` +
+        `Confirming Group: ${group}\n` +
+        `Confirm Time: ${new Date(ts).toLocaleString()}`;
 
     sendToTelegram6(msg);
 }
