@@ -1033,16 +1033,16 @@ function processNeptune(symbol, group, ts) {
 
 
 // ==========================================================
-//  WAKANDA (W/X/A/B ↔ W/X/A/B, ≤ 120 seconds, either order)
+//  WAKANDA (A/B/W/X ↔ A/B/W/X, ≤ 120 seconds, either order)
 // ==========================================================
 
 const WAKANDA_WINDOW_MS = 120 * 1000;
 
 function processWakanda(symbol, group, ts) {
-    const WXAB = ["W", "X", "A", "B"];
-    if (!WXAB.includes(group)) return;
+    const ABWX = ["A", "B", "W", "X"];
+    if (!ABWX.includes(group)) return;
 
-    // Find the most recent "other" W/X/A/B alert within 120 seconds
+    // Find the most recent "other" A/B/W/X alert within 120 seconds
     const other = ABWX
         .filter(g => g !== group) // different letter only
         .map(g => safeGet(symbol, g))
