@@ -1039,8 +1039,8 @@ function processNeptune(symbol, group, ts) {
 const WAKANDA_WINDOW_MS = 120 * 1000;
 
 function processWakanda(symbol, group, ts) {
-    const WXYZ = ["W", "X", "A", "B"];
-    if (!WXYZ.includes(group)) return;
+    const WXAB = ["W", "X", "A", "B"];
+    if (!WXAB.includes(group)) return;
 
     // Find the most recent "other" W/X/A/B alert within 120 seconds
     const other = ABWX
