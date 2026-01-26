@@ -1033,17 +1033,17 @@ function processNeptune(symbol, group, ts) {
 
 
 // ==========================================================
-//  WAKANDA (W/X/Y/Z ↔ W/X/Y/Z, ≤ 120 seconds, either order)
+//  WAKANDA (W/X/A/B ↔ W/X/A/B, ≤ 120 seconds, either order)
 // ==========================================================
 
 const WAKANDA_WINDOW_MS = 120 * 1000;
 
 function processWakanda(symbol, group, ts) {
-    const WXYZ = ["W", "X", "Y", "Z"];
+    const WXYZ = ["W", "X", "A", "B"];
     if (!WXYZ.includes(group)) return;
 
-    // Find the most recent "other" W/X/Y/Z alert within 120 seconds
-    const other = WXYZ
+    // Find the most recent "other" W/X/A/B alert within 120 seconds
+    const other = ABWX
         .filter(g => g !== group) // different letter only
         .map(g => safeGet(symbol, g))
         .filter(Boolean)
