@@ -973,58 +973,62 @@ function processBazooka(symbol, group, ts) {
 
     sendToTelegram6(msg);
 }
-
 // ==========================================================
-//  NEPTUNE (A–D ↔ X, either order)
+// NEPTUNE (BTC state-based, S/T directional)
 // ==========================================================
 
-const NEPTUNE_1_WINDOW_MS = 4 * 60 * 1000;
-const NEPTUNE_2_WINDOW_MS = 15 * 60 * 1000;
+const neptuneState = {
+    current: null,   // "S" | "T" | null
+    since: null
+};
 
-function processNeptune(symbol, group, ts, body) {
-    const AD = ["A", "B", "C", "D"];
-    const X  = "X";
+function processNeptune(symbol, group, ts) {
 
-    if (![...AD, X].includes(group)) return;
-
-    const isAD = AD.includes(group);
-
-    const adCandidate = isAD
-        ? { group, time: ts }
-        : AD.map(g => safeGet(symbol, g)).filter(Boolean)[0];
-
-    const xCandidate = group === X
-        ? { group: "X", time: ts }
-        : safeGet(symbol, X);
-
-    if (!adCandidate || !xCandidate) return;
-
-    const diffMs = Math.abs(adCandidate.time - xCandidate.time);
-    const diffMin = Math.floor(diffMs / 60000);
-    const diffSec = Math.floor((diffMs % 60000) / 1000);
-
-    if (diffMs <= NEPTUNE_1_WINDOW_MS) {
-        const msg =
-            `🌊 NEPTUNE_1\n` +
-            `Symbol: ${symbol}\n` +
-            `${adCandidate.group} Time: ${new Date(adCandidate.time).toLocaleString()}\n` +
-            `X Time: ${new Date(xCandidate.time).toLocaleString()}\n` +
-            `Gap: ${diffMin}m ${diffSec}s`;
-
-        sendToTelegram6(msg);
-    } 
-
-
-    if (diffMs <= NEPTUNE_2_WINDOW_MS) {
-        const msg =
-            `🌊 NEPTUNE_2\n` +
-            `Symbol: ${symbol}\n` +
-            `${adCandidate.group} Time: ${new Date(adCandidate.time).toLocaleString()}\n` +
-            `X Time: ${new Date(xCandidate.time).toLocaleString()}\n` +
-            `Gap: ${diffMin}m ${diffSec}s`;
-
-        sendToTelegram6(msg);
+    // ------------------------------------------------------
+    // BTC sets / replaces the state
+    // ------------------------------------------------------
+    if (symbol === "BTCUSDT" && (group === "S" || group === "T")) {
+        neptuneState.current = group;
+        neptuneState.since = ts;
+        return;
     }
+
+    // ------------------------------------------------------
+    // No active state
+    // ------------------------------------------------------
+    if (!neptuneState.current) return;
+
+    // ------------------------------------------------------
+    // Ignore BTC confirmations
+    // ------------------------------------------------------
+    if (symbol === "BTCUSDT") return;
+
+    // ------------------------------------------------------
+    // Confirmation rules
+    // S → C
+    // T → D
+    // ------------------------------------------------------
+    let isConfirm = false;
+
+    if (neptuneState.current === "S" && group === "C") {
+        isConfirm = true;
+    }
+
+    if (neptuneState.current === "T" && group === "D") {
+        isConfirm = true;
+    }
+
+    if (!isConfirm) return;
+
+    const msg =
+        `🔵 NEPTUNE\n` +
+        `BTC State: ${neptuneState.current}\n` +
+        `BTC Since: ${new Date(neptuneState.since).toLocaleString()}\n` +
+        `Confirming Symbol: ${symbol}\n` +
+        `Confirming Group: ${group}\n` +
+        `Confirm Time: ${new Date(ts).toLocaleString()}`;
+
+    sendToTelegram6(msg);
 }
 
 
