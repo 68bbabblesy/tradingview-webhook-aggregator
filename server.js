@@ -1067,10 +1067,10 @@ function processWakanda(symbol, group, ts) {
 }
 
 // ==========================================================
-//  BLACK_PANTHER (A/B/C/D/X/Y → 3 distinct groups, ≤ 150s)
+//  BLACK_PANTHER (A/B/C/D/X/Y → 3 distinct groups, ≤ 300s)
 // ==========================================================
 
-const BLACK_PANTHER_WINDOW_MS = 150 * 1000;
+const BLACK_PANTHER_WINDOW_MS = 300 * 1000;
 
 function processBlackPanther(symbol, group, ts) {
     const ABCDXY = ["A", "B", "C", "D", "X", "Y"];
