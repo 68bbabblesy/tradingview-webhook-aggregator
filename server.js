@@ -1067,6 +1067,51 @@ function processWakanda(symbol, group, ts) {
 }
 
 // ==========================================================
+//  BLACK_PANTHER (A/B/C/D/X/Y → 3 distinct groups, ≤ 120s)
+// ==========================================================
+
+const BLACK_PANTHER_WINDOW_MS = 120 * 1000;
+
+function processBlackPanther(symbol, group, ts) {
+    const ABCDXY = ["A", "B", "C", "D", "X", "Y"];
+    if (!ABCDXY.includes(group)) return;
+
+    // Collect recent distinct groups within window
+    const recent = ABCDXY
+        .map(g => safeGet(symbol, g))
+        .filter(Boolean)
+        .filter(x => Math.abs(ts - x.time) <= BLACK_PANTHER_WINDOW_MS);
+
+    // We need at least 3 DISTINCT groups
+    const distinct = {};
+    for (const x of recent) {
+        distinct[x.payload.group] = x;
+    }
+
+    const groups = Object.keys(distinct);
+    if (groups.length < 3) return;
+
+    // Pick the latest 3 distinct groups by time
+    const picked = Object.values(distinct)
+        .sort((a, b) => a.time - b.time)
+        .slice(-3);
+
+    const times = picked.map(p => new Date(p.time).toLocaleString());
+
+    const msg =
+        `🖤 BLACK_PANTHER\n` +
+        `Symbol: ${symbol}\n` +
+        `Groups: ${picked.map(p => p.payload.group).join(" → ")}\n` +
+        `Times:\n` +
+        `1) ${times[0]}\n` +
+        `2) ${times[1]}\n` +
+        `3) ${times[2]}`;
+
+    sendToTelegram5(msg);
+}
+
+
+// ==========================================================
 //  GAMMA (E→E or J→J within 3 minutes)
 // ==========================================================
 
@@ -1404,6 +1449,8 @@ app.post("/incoming", (req, res) => {
 		processBazooka(symbol, group, ts, body);
         processNeptune(symbol, group, ts, body);				
         processWakanda(symbol, group, ts);
+		processBlackPanther(symbol, group, ts);
+
         processGamma(symbol, group, ts);
         processSalsa(symbol, group, ts);
         processTango(symbol, group, ts);
