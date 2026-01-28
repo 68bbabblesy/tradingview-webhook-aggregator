@@ -401,12 +401,6 @@ const salsaBuf = {};
 const tangoBuf = {};
 // tangoBuf[symbol][group] = [ts1, ts2, ...]
 
-// SPESH memory (ETH ↔ BTC same-group within 50 seconds)
-const speshLast = {
-    BTCUSDT: {},
-    ETHUSDT: {}
-};
-// speshLast[symbol][group] = lastTime
 
 
 // AD2 global burst tracking for BIG MARKET MOVE
