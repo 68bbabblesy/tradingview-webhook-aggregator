@@ -1317,6 +1317,53 @@ function processSpesh(symbol, group, ts) {
 }
 
 // ==========================================================
+//  SNOWFLAKE (BTC ↔ ETH exact-group within 90 seconds)
+//  Groups: A B E J K L W X
+// ==========================================================
+
+const SNOWFLAKE_WINDOW_MS = 90 * 1000;
+const SNOWFLAKE_SYMBOLS = new Set(["BTCUSDT", "ETHUSDT"]);
+const SNOWFLAKE_GROUPS = new Set(["A", "B", "E", "J", "K", "L", "W", "X"]);
+
+const snowflakeLast = {
+    BTCUSDT: {},
+    ETHUSDT: {}
+};
+// snowflakeLast[symbol][group] = lastTime
+
+function processSnowflake(symbol, group, ts) {
+    if (!SNOWFLAKE_SYMBOLS.has(symbol)) return;
+    if (!SNOWFLAKE_GROUPS.has(group)) return;
+
+    const otherSymbol = symbol === "BTCUSDT" ? "ETHUSDT" : "BTCUSDT";
+    const otherTs = snowflakeLast[otherSymbol][group];
+
+    // Fire if counterpart exists within window
+    if (otherTs && Math.abs(ts - otherTs) <= SNOWFLAKE_WINDOW_MS) {
+        const diffMs = Math.abs(ts - otherTs);
+        const diffSec = Math.floor(diffMs / 1000);
+
+        const msg =
+            `❄️ SNOWFLAKE\n` +
+            `Group: ${group}\n` +
+            `Symbols: BTCUSDT ↔ ETHUSDT\n` +
+            `BTC Time: ${new Date(
+                symbol === "BTCUSDT" ? ts : otherTs
+            ).toLocaleString()}\n` +
+            `ETH Time: ${new Date(
+                symbol === "ETHUSDT" ? ts : otherTs
+            ).toLocaleString()}\n` +
+            `Gap: ${diffSec}s`;
+
+        sendToTelegram2(msg);
+    }
+
+    // Window-based persistence
+    snowflakeLast[symbol][group] = ts;
+}
+
+
+// ==========================================================
 //  JUPITER & SATURN (Directional: G/H tracks A–D)
 // ==========================================================
 
@@ -1450,6 +1497,7 @@ app.post("/incoming", (req, res) => {
         processSalsa(symbol, group, ts);
         processTango(symbol, group, ts);
         processSpesh(symbol, group, ts);
+        processSnowflake(symbol, group, ts);
 
 		processJupiterSaturn(symbol, group, ts);
 		processTracking4(symbol, group, ts, body);
