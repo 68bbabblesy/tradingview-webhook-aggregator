@@ -1276,22 +1276,29 @@ function processTango(symbol, group, ts) {
 }
 
 // ==========================================================
-//  SPESH (BTC ↔ ETH same-group within 50 seconds)
+//  SPESH (BTC ↔ ETH same-group within 90 seconds)
+//  Groups: A B E J W X
+//  Window-based persistence (overlapping matches allowed)
 // ==========================================================
 
-const SPESH_WINDOW_MS = 50 * 1000;
+const SPESH_WINDOW_MS = 90 * 1000;
 const SPESH_SYMBOLS = new Set(["BTCUSDT", "ETHUSDT"]);
-const SPESH_GROUPS = new Set(["A", "B", "C", "D", "E", "J", "W", "X"]);
+const SPESH_GROUPS = new Set(["A", "B", "E", "J", "W", "X"]);
+
+const speshLast = {
+    BTCUSDT: {},
+    ETHUSDT: {}
+};
+// speshLast[symbol][group] = lastTime
 
 function processSpesh(symbol, group, ts) {
     if (!SPESH_SYMBOLS.has(symbol)) return;
     if (!SPESH_GROUPS.has(group)) return;
 
     const otherSymbol = symbol === "BTCUSDT" ? "ETHUSDT" : "BTCUSDT";
-
     const otherTs = speshLast[otherSymbol][group];
 
-    // If we saw the other symbol recently → fire
+    // If other side exists and is within window → fire
     if (otherTs && Math.abs(ts - otherTs) <= SPESH_WINDOW_MS) {
         const diffMs = Math.abs(ts - otherTs);
         const diffSec = Math.floor(diffMs / 1000);
@@ -1300,26 +1307,20 @@ function processSpesh(symbol, group, ts) {
             `🟢 SPESH\n` +
             `Group: ${group}\n` +
             `Symbols: BTCUSDT ↔ ETHUSDT\n` +
-            `BTC time: ${new Date(
+            `BTC Time: ${new Date(
                 symbol === "BTCUSDT" ? ts : otherTs
             ).toLocaleString()}\n` +
-            `ETH time: ${new Date(
+            `ETH Time: ${new Date(
                 symbol === "ETHUSDT" ? ts : otherTs
             ).toLocaleString()}\n` +
             `Gap: ${diffSec}s`;
 
         sendToTelegram2(msg);
-
-        // Clear both sides so next match is fresh
-        delete speshLast.BTCUSDT[group];
-        delete speshLast.ETHUSDT[group];
-        return;
     }
 
-    // Otherwise, store this hit
+    // Always update latest timestamp (window controls validity)
     speshLast[symbol][group] = ts;
 }
-
 
 // ==========================================================
 //  JUPITER & SATURN (Directional: G/H tracks A–D)
