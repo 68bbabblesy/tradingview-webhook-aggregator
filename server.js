@@ -1081,11 +1081,12 @@ function processWakanda(symbol, group, ts) {
 const BLACK_PANTHER_WINDOW_MS = 300 * 1000;
 
 function processBlackPanther(symbol, group, ts) {
-    const ABCDXY = ["A", "B", "C", "D", "X", "Y"];
-    if (!ABCDXY.includes(group)) return;
+    const ABCDWX = ["A", "B", "C", "D", "W", "X"];
+
+    if (!ABCDWX.includes(group)) return;
 
     // Collect recent distinct groups within window
-    const recent = ABCDXY
+    const recent = ABCDWX
         .map(g => safeGet(symbol, g))
         .filter(Boolean)
         .filter(x => Math.abs(ts - x.time) <= BLACK_PANTHER_WINDOW_MS);
