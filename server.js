@@ -1263,7 +1263,7 @@ function processTango(symbol, group, ts) {
         `Second hit: ${new Date(second).toLocaleString()}\n` +
         `Gap: ${diffMin}m ${diffSec}s`;
 
-    sendToTelegram4(msg);
+    sendToTelegram3(msg);
 
     // Slide window (allow overlapping sequences)
     buf.shift();
