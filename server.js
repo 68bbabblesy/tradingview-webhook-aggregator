@@ -725,30 +725,44 @@ function processMatching1(symbol, group, ts, body) {
 }
 
 function processMatchingAD2(symbol, group, ts) {
-    const AD = ["A", "B", "C", "D", "Q", "R"];
 
-    if (!AD.includes(group)) return;
+    const WINDOW_MS = 3 * 60 * 1000;
 
-    const candidate = AD
+    let matchGroups = [];
+
+    if (group === "C") {
+        matchGroups = ["A", "W"];
+    } else if (group === "D") {
+        matchGroups = ["B", "X"];
+    } else if (group === "A" || group === "W") {
+        matchGroups = ["C"];
+    } else if (group === "B" || group === "X") {
+        matchGroups = ["D"];
+    } else {
+        return;
+    }
+
+    const candidate = matchGroups
         .map(g => safeGet(symbol, g))
         .filter(Boolean)
-        .filter(x => x.payload.group !== group)
-        .filter(x => Math.abs(ts - x.time) <= MATCH_WINDOW_MS)
-        .sort((a,b) => b.time - a.time)[0];
+        .find(x => Math.abs(ts - x.time) <= WINDOW_MS);
 
     if (!candidate) return;
 
+    const diffMs = Math.abs(ts - candidate.time);
+    const diffMin = Math.floor(diffMs / 60000);
+    const diffSec = Math.floor((diffMs % 60000) / 1000);
+
     sendToTelegram4(
-        `🔁 AD-2 Divergence\nSymbol: ${symbol}\nGroups: ${candidate.payload.group} ↔ ${group}\nTimes:\n - ${candidate.payload.group}: ${new Date(candidate.time).toLocaleString()}\n - ${group}: ${new Date(ts).toLocaleString()}`
+        `🔁 AD2-Divergence\n` +
+        `Symbol: ${symbol}\n` +
+        `Groups: ${candidate.payload.group} ↔ ${group}\n` +
+        `${candidate.payload.group} Time: ${new Date(candidate.time).toLocaleString()}\n` +
+        `${group} Time: ${new Date(ts).toLocaleString()}\n` +
+        `Gap: ${diffMin}m ${diffSec}s`
     );
-	// Record AD2 for Divergence Trio
-recentAD2[symbol] = { time: ts };
-
-// Global AD2 burst tracking for BIG MARKET MOVE
-processBigMarketMove(ts);
-
-
 }
+
 
 const TRIO_WINDOW_MS = 3 * 60 * 1000; // 3 minutes
 
