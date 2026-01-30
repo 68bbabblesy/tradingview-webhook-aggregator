@@ -223,6 +223,21 @@ async function sendToTelegram8(text) {
         body: JSON.stringify({ chat_id: chat, text })
     });
 }
+
+// Telegram sender for Bot 9
+async function sendToTelegram9(text) {
+    const token = (process.env.TELEGRAM_BOT_TOKEN_9 || "").trim();
+    const chat  = (process.env.TELEGRAM_CHAT_ID_9 || "").trim();
+    if (!token || !chat) return;
+
+    await fetch(`https://api.telegram.org/bot${token}/sendMessage`, {
+        method: "POST",
+        headers: { "Content-Type": "application/json" },
+        body: JSON.stringify({ chat_id: chat, text })
+    });
+}
+
+
 // -----------------------------
 // BOT 8 MIRROR HELPER (SPECIAL SYMBOLS)
 // -----------------------------
@@ -358,6 +373,18 @@ function maxWindowMs() {
     if (!RULES.length) return WINDOW_SECONDS_DEF * 1000;
     return Math.max(...RULES.map(r => r.windowSeconds)) * 1000;
 }
+
+// -----------------------------
+// BOT9 — BABABIA / MAMAMIA (global burst storage)
+// -----------------------------
+const bababiaGlobal = {
+    C: [],
+    D: [],
+    W: [],
+    X: []
+};
+// bababiaGlobal[group] = [{ symbol, time }, ...]
+
 
 // ==========================================================
 //  BOT2 ENGINE STORAGE (tracking + matching)
@@ -1125,6 +1152,60 @@ function processBlackPanther(symbol, group, ts) {
     sendToTelegram5(msg);
 }
 
+// ==========================================================
+//  BABABIA / MAMAMIA (GLOBAL CDWX burst detector)
+// ==========================================================
+
+const BABABIA_WINDOW_MS = 20 * 1000;
+const MAMAMIA_WINDOW_MS = 50 * 1000;
+const BABABIA_MIN_COUNT = 3;
+
+function processBababia(symbol, group, ts) {
+    if (!["C", "D", "W", "X"].includes(group)) return;
+
+    const buf = bababiaGlobal[group];
+
+    // Add event
+    buf.push({ symbol, time: ts });
+
+    // Prune to max window (50s)
+    const cutoff = ts - MAMAMIA_WINDOW_MS;
+    while (buf.length && buf[0].time < cutoff) {
+        buf.shift();
+    }
+
+    // ---- BABABIA (20s) ----
+    const recent20 = buf.filter(e => ts - e.time <= BABABIA_WINDOW_MS);
+    if (recent20.length >= BABABIA_MIN_COUNT) {
+        const lines = recent20
+            .map(e => `• ${e.symbol} @ ${new Date(e.time).toLocaleTimeString()}`)
+            .join("\n");
+
+        sendToTelegram9(
+            `🎉 BABABIA\n` +
+            `Group: ${group}\n` +
+            `Alerts: ${recent20.length}\n` +
+            `Window: 20s\n` +
+            `Symbols:\n${lines}`
+        );
+    }
+
+    // ---- MAMAMIA (50s) ----
+    if (buf.length >= BABABIA_MIN_COUNT) {
+        const lines = buf
+            .map(e => `• ${e.symbol} @ ${new Date(e.time).toLocaleTimeString()}`)
+            .join("\n");
+
+        sendToTelegram9(
+            `🎶 MAMAMIA\n` +
+            `Group: ${group}\n` +
+            `Alerts: ${buf.length}\n` +
+            `Window: 50s\n` +
+            `Symbols:\n${lines}`
+        );
+    }
+}
+
 
 // ==========================================================
 //  GAMMA (E→E or J→J within 3 minutes)
@@ -1523,6 +1604,7 @@ app.post("/incoming", (req, res) => {
         processTango(symbol, group, ts);
         processSpesh(symbol, group, ts);
         processSnowflake(symbol, group, ts);
+        processBababia(symbol, group, ts);
 
 		processJupiterSaturn(symbol, group, ts);
 		processTracking4(symbol, group, ts, body);
