@@ -468,6 +468,12 @@ function formatLevel(group, payload) {
     return ` (${raw})`;
 }
 
+function biasFromGroup(group) {
+    if (["A", "C", "W"].includes(group)) return "Support Zone";
+    if (["B", "D", "X"].includes(group)) return "Resistance Zone";
+    return "Unknown";
+}
+
 
 // ==========================================================
 //  TRACKING ENGINE
@@ -1216,7 +1222,9 @@ function processSalsa(symbol, group, ts) {
         `Group: ${group}\n` +
         `First hit: ${new Date(first).toLocaleString()}\n` +
         `Second hit: ${new Date(second).toLocaleString()}\n` +
-        `Gap: ${diffMin}m ${diffSec}s`;
+           `Gap: ${diffMin}m ${diffSec}s\n` +
+        `Bias: ${biasFromGroup(group)}`;
+
 
     sendToTelegram3(msg);
 
@@ -1276,7 +1284,9 @@ function processTango(symbol, group, ts) {
         `Group: ${group}\n` +
         `First hit: ${new Date(first).toLocaleString()}\n` +
         `Second hit: ${new Date(second).toLocaleString()}\n` +
-        `Gap: ${diffMin}m ${diffSec}s`;
+           `Gap: ${diffMin}m ${diffSec}s\n` +
+        `Bias: ${biasFromGroup(group)}`;
+
 
     sendToTelegram3(msg);
 
