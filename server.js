@@ -1158,7 +1158,7 @@ function processBlackPanther(symbol, group, ts) {
 
 const BABABIA_WINDOW_MS = 20 * 1000;
 const MAMAMIA_WINDOW_MS = 50 * 1000;
-const BABABIA_MIN_COUNT = 3;
+const BABABIA_MIN_COUNT = 5;
 
 function processBababia(symbol, group, ts) {
     if (!["C", "D", "W", "X"].includes(group)) return;
