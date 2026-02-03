@@ -946,6 +946,57 @@ function processMatching2(symbol, group, ts, body) {
     );
 }
 
+function processContrarian(symbol, group, ts) {
+    if (!contrarianState.active) return;
+
+    // Expiry
+    if (ts - contrarianState.since > CONTRARIAN_EXPIRY_MS) {
+        contrarianState.active = false;
+        contrarianState.buf = [];
+        return;
+    }
+
+    const ACW = ["A", "C", "W"];
+    const BDX = ["B", "D", "X"];
+
+    // Determine which side we are waiting for
+    const wantedGroups =
+        contrarianState.fromGroup === "ACW" ? BDX : ACW;
+
+    if (!wantedGroups.includes(group)) return;
+
+    // Enforce different symbols
+    if (contrarianState.buf.some(e => e.symbol === symbol)) return;
+
+    // Add hit
+    contrarianState.buf.push({ symbol, group, time: ts });
+
+    // Prune to 50s window
+    const cutoff = ts - CONTRARIAN_WINDOW_MS;
+    contrarianState.buf = contrarianState.buf.filter(
+        e => e.time >= cutoff
+    );
+
+    if (contrarianState.buf.length < 2) return;
+
+    const lines = contrarianState.buf
+        .map(e => `• ${e.symbol} (${e.group}) @ ${new Date(e.time).toLocaleTimeString()}`)
+        .join("\n");
+
+    sendToTelegram2(
+        `⚖️ CONTRARIAN\n` +
+        `After BAZOOKA from: ${contrarianState.fromGroup}\n` +
+        `Matches: ${contrarianState.buf.length}\n` +
+        `Window: 50s\n` +
+        `Symbols:\n${lines}`
+    );
+
+    // One-shot per Bazooka
+    contrarianState.active = false;
+    contrarianState.buf = [];
+}
+
+
 function processMatching3(symbol, group, ts, body) {
     const GH = ["G", "H"];
     if (!GH.includes(group)) return;
@@ -1022,6 +1073,18 @@ function processBazooka(symbol, group, ts) {
         `Symbols:\n${lines}`;
 
     sendToTelegram6(msg);
+	
+	// Activate CONTRARIAN watcher
+contrarianState.active = true;
+contrarianState.since = ts;
+contrarianState.buf = [];
+
+if (["A", "C", "W"].includes(group)) {
+    contrarianState.fromGroup = "ACW";
+} else {
+    contrarianState.fromGroup = "BDX";
+}
+	
 }
 
 // ==========================================================
@@ -1386,6 +1449,21 @@ function processTango(symbol, group, ts) {
 }
 
 // ==========================================================
+//  CONTRARIAN (post-BAZOOKA opposite-group detector)
+// ==========================================================
+
+const CONTRARIAN_WINDOW_MS = 50 * 1000;
+const CONTRARIAN_EXPIRY_MS = 3 * 60 * 60 * 1000; // 3 hours
+
+const contrarianState = {
+    active: false,
+    fromGroup: null,   // "ACW" or "BDX"
+    since: null,
+    buf: []            // [{ symbol, group, time }]
+};
+
+
+// ==========================================================
 //  SPESH (BTC ↔ ETH same-group within 90 seconds)
 //  Groups: A B E J W X
 //  Window-based persistence (overlapping matches allowed)
@@ -1605,6 +1683,8 @@ app.post("/incoming", (req, res) => {
         processMatching2(symbol, group, ts, body);
         processMatching3(symbol, group, ts, body);
 		processBazooka(symbol, group, ts, body);
+		processContrarian(symbol, group, ts);
+
         processNeptune(symbol, group, ts, body);				
         processWakanda(symbol, group, ts);
 		processBlackPanther(symbol, group, ts);
