@@ -378,6 +378,8 @@ function maxWindowMs() {
 // BOT9 — BABABIA / MAMAMIA (global burst storage)
 // -----------------------------
 const bababiaGlobal = {
+    A: [],
+    B: [],
     C: [],
     D: [],
     W: [],
@@ -1160,7 +1162,7 @@ function processBlackPanther(symbol, group, ts) {
 }
 
 // ==========================================================
-//  BABABIA / MAMAMIA (GLOBAL CDWX burst detector)
+//  BABABIA / MAMAMIA (GLOBAL ABCDWX burst detector)
 // ==========================================================
 
 const BABABIA_WINDOW_MS = 20 * 1000;
@@ -1168,7 +1170,7 @@ const MAMAMIA_WINDOW_MS = 50 * 1000;
 const BABABIA_MIN_COUNT = 5;
 
 function processBababia(symbol, group, ts) {
-    if (!["C", "D", "W", "X"].includes(group)) return;
+    if (!["A", "B", "C", "D", "W", "X"].includes(group)) return;
 
     const buf = bababiaGlobal[group];
 
