@@ -763,28 +763,29 @@ function processMatchingAD2(symbol, group, ts) {
 
     const WINDOW_MS = 3 * 60 * 1000;
 
-    let matchGroups = [];
+    const SET_ACW = ["A", "C", "W"];
+    const SET_BDX = ["B", "D", "X"];
 
-    if (group === "C") {
-        matchGroups = ["A", "W"];
-    } else if (group === "D") {
-        matchGroups = ["B", "X"];
-    } else if (group === "A" || group === "W") {
-        matchGroups = ["C"];
-    } else if (group === "B" || group === "X") {
-        matchGroups = ["D"];
+    let activeSet = null;
+
+    if (SET_ACW.includes(group)) {
+        activeSet = SET_ACW;
+    } else if (SET_BDX.includes(group)) {
+        activeSet = SET_BDX;
     } else {
         return;
     }
 
-    const candidate = matchGroups
+    // Look for any OTHER group in the same set
+    const candidate = activeSet
+        .filter(g => g !== group)
         .map(g => safeGet(symbol, g))
         .filter(Boolean)
         .find(x => Math.abs(ts - x.time) <= WINDOW_MS);
 
     if (!candidate) return;
 
-    const diffMs = Math.abs(ts - candidate.time);
+    const diffMs  = Math.abs(ts - candidate.time);
     const diffMin = Math.floor(diffMs / 60000);
     const diffSec = Math.floor((diffMs % 60000) / 1000);
 
