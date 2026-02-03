@@ -385,16 +385,6 @@ const bababiaGlobal = {
 };
 // bababiaGlobal[group] = [{ symbol, time }, ...]
 
-// -----------------------------
-// BAZOOKA — global CDWX burst storage
-// -----------------------------
-const bazookaGlobal = {
-    C: [],
-    D: [],
-    W: [],
-    X: []
-};
-
 
 // ==========================================================
 //  BOT2 ENGINE STORAGE (tracking + matching)
@@ -976,8 +966,54 @@ function processMatching3(symbol, group, ts, body) {
         `🎯 MATCHING 3 (Same Level)\nSymbol: ${symbol}\nLevels: ±${lvls[0]}\nGroups: ${candidate.payload.group} ↔ ${group}\nTimes:\n - ${candidate.payload.group}: ${new Date(candidate.time).toLocaleString()}\n - ${group}: ${new Date(ts).toLocaleString()}`
     );
 }
+// ==========================================================
+//  BAZOOKA (BTC state-based, S/T directional)
+//  BTC sets state → others confirm until replaced
+// ==========================================================
 
+const bazookaState = {
+    current: null,   // "S" | "T" | null
+    since: null
+};
 
+function processBazooka(symbol, group, ts) {
+
+    // ---- BTC sets the state ----
+    if (symbol === "BTCUSDT" && (group === "S" || group === "T")) {
+        bazookaState.current = group;
+        bazookaState.since = ts;
+        return;
+    }
+
+    // ---- No active state → nothing to do ----
+    if (!bazookaState.current) return;
+
+    // ---- Ignore BTC confirmations ----
+    if (symbol === "BTCUSDT") return;
+
+    // ---- Confirmation rules ----
+    let isConfirm = false;
+
+    if (bazookaState.current === "S" && (group === "B" || group === "W")) {
+        isConfirm = true;
+    }
+
+    if (bazookaState.current === "T" && (group === "A" || group === "C")) {
+        isConfirm = true;
+    }
+
+    if (!isConfirm) return;
+
+    const msg =
+        `💥 BAZOOKA\n` +
+        `BTC State: ${bazookaState.current}\n` +
+        `BTC Since: ${new Date(bazookaState.since).toLocaleString()}\n` +
+        `Confirming Symbol: ${symbol}\n` +
+        `Confirming Group: ${group}\n` +
+        `Confirm Time: ${new Date(ts).toLocaleString()}`;
+
+    sendToTelegram6(msg);
+}
 // ==========================================================
 // NEPTUNE (BTC state-based, S/T directional)
 // ==========================================================
@@ -1168,43 +1204,6 @@ function processBababia(symbol, group, ts) {
             `Symbols:\n${lines}`
         );
     }
-}
-
-// ==========================================================
-//  BAZOOKA (GLOBAL CDWX burst detector — BABABIA style)
-//  Min count: 10 → Bot 6
-// ==========================================================
-
-const BAZOOKA_WINDOW_MS = 50 * 1000;
-const BAZOOKA_MIN_COUNT = 10;
-
-function processBazooka(symbol, group, ts) {
-    if (!["C", "D", "W", "X"].includes(group)) return;
-
-    const buf = bababiaGlobal[group];
-
-    // Add event
-    buf.push({ symbol, time: ts });
-
-    // Prune to 50s window
-    const cutoff = ts - BAZOOKA_WINDOW_MS;
-    while (buf.length && buf[0].time < cutoff) {
-        buf.shift();
-    }
-
-    if (buf.length < BAZOOKA_MIN_COUNT) return;
-
-    const lines = buf
-        .map(e => `• ${e.symbol} @ ${new Date(e.time).toLocaleTimeString()}`)
-        .join("\n");
-
-    sendToTelegram6(
-        `💥 BAZOOKA\n` +
-        `Group: ${group}\n` +
-        `Alerts: ${buf.length}\n` +
-        `Window: 50s\n` +
-        `Symbols:\n${lines}`
-    );
 }
 
 
@@ -1595,8 +1594,7 @@ app.post("/incoming", (req, res) => {
        processDivergenceMonitor(symbol, group, ts);
         processMatching2(symbol, group, ts, body);
         processMatching3(symbol, group, ts, body);
-		processBazooka(symbol, group, ts);
-
+		processBazooka(symbol, group, ts, body);
         processNeptune(symbol, group, ts, body);				
         processWakanda(symbol, group, ts);
 		processBlackPanther(symbol, group, ts);
