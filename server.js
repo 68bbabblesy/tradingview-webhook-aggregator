@@ -967,53 +967,60 @@ function processMatching3(symbol, group, ts, body) {
     );
 }
 // ==========================================================
-//  BAZOOKA (BTC state-based, S/T directional)
-//  BTC sets state → others confirm until replaced
+//  BAZOOKA (GLOBAL ABCDWX burst detector — standalone)
+//  Window: 50 seconds | Min count: 10 | Bot 6
 // ==========================================================
 
-const bazookaState = {
-    current: null,   // "S" | "T" | null
-    since: null
+const BAZOOKA_WINDOW_MS = 50 * 1000;
+const BAZOOKA_MIN_COUNT = 10;
+
+// Independent storage (DO NOT SHARE WITH ANY OTHER ENGINE)
+const bazookaGlobal = {
+    A: new Map(),
+    B: new Map(),
+    C: new Map(),
+    D: new Map(),
+    W: new Map(),
+    X: new Map()
 };
+// bazookaGlobal[group] = Map(symbol → time)
 
 function processBazooka(symbol, group, ts) {
+    if (!bazookaGlobal[group]) return;
 
-    // ---- BTC sets the state ----
-    if (symbol === "BTCUSDT" && (group === "S" || group === "T")) {
-        bazookaState.current = group;
-        bazookaState.since = ts;
-        return;
+    const map = bazookaGlobal[group];
+
+    // Record / replace latest timestamp per symbol
+    map.set(symbol, ts);
+
+    // Prune old symbols
+    const cutoff = ts - BAZOOKA_WINDOW_MS;
+    for (const [sym, time] of map.entries()) {
+        if (time < cutoff) {
+            map.delete(sym);
+        }
     }
 
-    // ---- No active state → nothing to do ----
-    if (!bazookaState.current) return;
+    // Check threshold
+    if (map.size < BAZOOKA_MIN_COUNT) return;
 
-    // ---- Ignore BTC confirmations ----
-    if (symbol === "BTCUSDT") return;
-
-    // ---- Confirmation rules ----
-    let isConfirm = false;
-
-    if (bazookaState.current === "S" && (group === "B" || group === "W")) {
-        isConfirm = true;
-    }
-
-    if (bazookaState.current === "T" && (group === "A" || group === "C")) {
-        isConfirm = true;
-    }
-
-    if (!isConfirm) return;
+    const lines = [...map.entries()]
+        .sort((a, b) => a[1] - b[1])
+        .map(([sym, time]) =>
+            `• ${sym} @ ${new Date(time).toLocaleTimeString()}`
+        )
+        .join("\n");
 
     const msg =
         `💥 BAZOOKA\n` +
-        `BTC State: ${bazookaState.current}\n` +
-        `BTC Since: ${new Date(bazookaState.since).toLocaleString()}\n` +
-        `Confirming Symbol: ${symbol}\n` +
-        `Confirming Group: ${group}\n` +
-        `Confirm Time: ${new Date(ts).toLocaleString()}`;
+        `Group: ${group}\n` +
+        `Unique Symbols: ${map.size}\n` +
+        `Window: 50s\n` +
+        `Symbols:\n${lines}`;
 
     sendToTelegram6(msg);
 }
+
 // ==========================================================
 // NEPTUNE (BTC state-based, S/T directional)
 // ==========================================================
