@@ -1036,20 +1036,19 @@ function processGodzilla(symbol, group, ts) {
     // -------------------------
     // ARM SELL TRACKER (ACW)
     // -------------------------
-  if (ACW.includes(group)) {
-    if (!godzilllaState.sell[symbol]) {
-        godzilllaState.sell[symbol] = [];
+    if (ACW.includes(group)) {
+        if (!godzilllaState.sell[symbol]) {
+            godzilllaState.sell[symbol] = [];
+        }
+
+        godzilllaState.sell[symbol].push({
+            count: 0,
+            times: [],
+            startTime: ts
+        });
+
+        return;
     }
-
-    godzilllaState.sell[symbol].push({
-        count: 0,
-        times: [],
-        startTime: ts
-    });
-
-    return;
-}
-
 
     // -------------------------
     // ARM BUY TRACKER (BDX)
@@ -1061,8 +1060,10 @@ function processGodzilla(symbol, group, ts) {
 
         godzilllaState.buy[symbol].push({
             count: 0,
-            times: []
+            times: [],
+            startTime: ts   // ✅ ADDED (same as SELL)
         });
+
         return;
     }
 
@@ -1074,6 +1075,7 @@ function processGodzilla(symbol, group, ts) {
 
         for (let i = trackers.length - 1; i >= 0; i--) {
             const t = trackers[i];
+
             t.count++;
             t.times.push(ts);
 
@@ -1081,8 +1083,10 @@ function processGodzilla(symbol, group, ts) {
                 sendToTelegram8(
                     `🦖 GODZILLA_SELL\n` +
                     `Symbol: ${symbol}\n` +
-                    `Trigger: 2nd M\n` +
-                    `Times:\n` +
+                    `Anchor: ACW\n` +
+                    `Anchor Time: ${new Date(t.startTime).toLocaleString()}\n` +
+                    `\n` +
+                    `M Timeline:\n` +
                     `1) ${new Date(t.times[0]).toLocaleString()}\n` +
                     `2) ${new Date(t.times[1]).toLocaleString()}`
                 );
@@ -1103,6 +1107,7 @@ function processGodzilla(symbol, group, ts) {
 
         for (let i = trackers.length - 1; i >= 0; i--) {
             const t = trackers[i];
+
             t.count++;
             t.times.push(ts);
 
@@ -1110,8 +1115,10 @@ function processGodzilla(symbol, group, ts) {
                 sendToTelegram8(
                     `🦖 GODZILLA_BUY\n` +
                     `Symbol: ${symbol}\n` +
-                    `Trigger: 2nd N\n` +
-                    `Times:\n` +
+                    `Anchor: BDX\n` +
+                    `Anchor Time: ${new Date(t.startTime).toLocaleString()}\n` +
+                    `\n` +
+                    `N Timeline:\n` +
                     `1) ${new Date(t.times[0]).toLocaleString()}\n` +
                     `2) ${new Date(t.times[1]).toLocaleString()}`
                 );
