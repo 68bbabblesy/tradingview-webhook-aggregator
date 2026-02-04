@@ -1020,6 +1020,108 @@ function processMatching3(symbol, group, ts, body) {
         `🎯 MATCHING 3 (Same Level)\nSymbol: ${symbol}\nLevels: ±${lvls[0]}\nGroups: ${candidate.payload.group} ↔ ${group}\nTimes:\n - ${candidate.payload.group}: ${new Date(candidate.time).toLocaleString()}\n - ${group}: ${new Date(ts).toLocaleString()}`
     );
 }
+
+// ==========================================================
+//  GODZILLA (ACW → M = SELL, BDX → N = BUY)
+//  Fires on SECOND M / N
+//  Multiple concurrent trackers per symbol
+//  Bot 8
+// ==========================================================
+
+function processGodzilla(symbol, group, ts) {
+
+    const ACW = ["A", "C", "W"];
+    const BDX = ["B", "D", "X"];
+
+    // -------------------------
+    // ARM SELL TRACKER (ACW)
+    // -------------------------
+    if (ACW.includes(group)) {
+        if (!godzilllaState.sell[symbol]) {
+            godzilllaState.sell[symbol] = [];
+        }
+
+        godzilllaState.sell[symbol].push({
+            count: 0,
+            times: []
+        });
+        return;
+    }
+
+    // -------------------------
+    // ARM BUY TRACKER (BDX)
+    // -------------------------
+    if (BDX.includes(group)) {
+        if (!godzilllaState.buy[symbol]) {
+            godzilllaState.buy[symbol] = [];
+        }
+
+        godzilllaState.buy[symbol].push({
+            count: 0,
+            times: []
+        });
+        return;
+    }
+
+    // -------------------------
+    // PROCESS M (SELL)
+    // -------------------------
+    if (group === "M" && godzilllaState.sell[symbol]) {
+        const trackers = godzilllaState.sell[symbol];
+
+        for (let i = trackers.length - 1; i >= 0; i--) {
+            const t = trackers[i];
+            t.count++;
+            t.times.push(ts);
+
+            if (t.count === 2) {
+                sendToTelegram8(
+                    `🦖 GODZILLA_SELL\n` +
+                    `Symbol: ${symbol}\n` +
+                    `Trigger: 2nd M\n` +
+                    `Times:\n` +
+                    `1) ${new Date(t.times[0]).toLocaleString()}\n` +
+                    `2) ${new Date(t.times[1]).toLocaleString()}`
+                );
+
+                trackers.splice(i, 1);
+            }
+        }
+
+        if (!trackers.length) delete godzilllaState.sell[symbol];
+        return;
+    }
+
+    // -------------------------
+    // PROCESS N (BUY)
+    // -------------------------
+    if (group === "N" && godzilllaState.buy[symbol]) {
+        const trackers = godzilllaState.buy[symbol];
+
+        for (let i = trackers.length - 1; i >= 0; i--) {
+            const t = trackers[i];
+            t.count++;
+            t.times.push(ts);
+
+            if (t.count === 2) {
+                sendToTelegram8(
+                    `🦖 GODZILLA_BUY\n` +
+                    `Symbol: ${symbol}\n` +
+                    `Trigger: 2nd N\n` +
+                    `Times:\n` +
+                    `1) ${new Date(t.times[0]).toLocaleString()}\n` +
+                    `2) ${new Date(t.times[1]).toLocaleString()}`
+                );
+
+                trackers.splice(i, 1);
+            }
+        }
+
+        if (!trackers.length) delete godzilllaState.buy[symbol];
+    }
+}
+
+
 // ==========================================================
 //  BAZOOKA (GLOBAL ABCDWX burst detector — standalone)
 //  Window: 50 seconds | Min count: 10 | Bot 6
@@ -1462,6 +1564,15 @@ const contrarianState = {
     buf: []            // [{ symbol, group, time }]
 };
 
+// ==========================================================
+//  GODZILLA STATE (ACW → M, BDX → N)
+// ==========================================================
+
+const godzilllaState = {
+    sell: {}, // symbol → [ { count, times[] }, ... ]
+    buy: {}   // symbol → [ { count, times[] }, ... ]
+};
+
 
 // ==========================================================
 //  SPESH (BTC ↔ ETH same-group within 90 seconds)
@@ -1684,6 +1795,7 @@ app.post("/incoming", (req, res) => {
         processMatching3(symbol, group, ts, body);
 		processBazooka(symbol, group, ts, body);
 		processContrarian(symbol, group, ts);
+        processGodzilla(symbol, group, ts);
 
         processNeptune(symbol, group, ts, body);				
         processWakanda(symbol, group, ts);
