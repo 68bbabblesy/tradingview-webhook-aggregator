@@ -1036,17 +1036,20 @@ function processGodzilla(symbol, group, ts) {
     // -------------------------
     // ARM SELL TRACKER (ACW)
     // -------------------------
-    if (ACW.includes(group)) {
-        if (!godzilllaState.sell[symbol]) {
-            godzilllaState.sell[symbol] = [];
-        }
-
-        godzilllaState.sell[symbol].push({
-            count: 0,
-            times: []
-        });
-        return;
+  if (ACW.includes(group)) {
+    if (!godzilllaState.sell[symbol]) {
+        godzilllaState.sell[symbol] = [];
     }
+
+    godzilllaState.sell[symbol].push({
+        count: 0,
+        times: [],
+        startTime: ts
+    });
+
+    return;
+}
+
 
     // -------------------------
     // ARM BUY TRACKER (BDX)
