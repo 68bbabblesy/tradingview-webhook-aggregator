@@ -1147,8 +1147,13 @@ const bazookaGlobal = {
     C: new Map(),
     D: new Map(),
     W: new Map(),
-    X: new Map()
+    X: new Map(),
+    S: new Map(),
+    T: new Map(),
+    U: new Map(),
+    V: new Map()
 };
+
 // bazookaGlobal[group] = Map(symbol → time)
 
 function processBazooka(symbol, group, ts) {
@@ -1199,63 +1204,6 @@ if (["A", "C", "W"].includes(group)) {
 	
 }
 
-// ==========================================================
-// NEPTUNE (BTC state-based, S/T directional)
-// ==========================================================
-
-const neptuneState = {
-    current: null,   // "S" | "T" | null
-    since: null
-};
-
-function processNeptune(symbol, group, ts) {
-
-    // ------------------------------------------------------
-    // BTC sets / replaces the state
-    // ------------------------------------------------------
-    if (symbol === "BTCUSDT" && (group === "S" || group === "T")) {
-        neptuneState.current = group;
-        neptuneState.since = ts;
-        return;
-    }
-
-    // ------------------------------------------------------
-    // No active state
-    // ------------------------------------------------------
-    if (!neptuneState.current) return;
-
-    // ------------------------------------------------------
-    // Ignore BTC confirmations
-    // ------------------------------------------------------
-    if (symbol === "BTCUSDT") return;
-
-    // ------------------------------------------------------
-    // Confirmation rules
-    // S → C
-    // T → D
-    // ------------------------------------------------------
-    let isConfirm = false;
-
-    if (neptuneState.current === "S" && group === "C") {
-        isConfirm = true;
-    }
-
-    if (neptuneState.current === "T" && group === "D") {
-        isConfirm = true;
-    }
-
-    if (!isConfirm) return;
-
-    const msg =
-        `🔵 NEPTUNE\n` +
-        `BTC State: ${neptuneState.current}\n` +
-        `BTC Since: ${new Date(neptuneState.since).toLocaleString()}\n` +
-        `Confirming Symbol: ${symbol}\n` +
-        `Confirming Group: ${group}\n` +
-        `Confirm Time: ${new Date(ts).toLocaleString()}`;
-
-    sendToTelegram6(msg);
-}
 
 
 // ==========================================================
@@ -1807,7 +1755,7 @@ app.post("/incoming", (req, res) => {
 		processContrarian(symbol, group, ts);
         processGodzilla(symbol, group, ts);
 
-        processNeptune(symbol, group, ts, body);				
+        			
         processWakanda(symbol, group, ts);
 		processBlackPanther(symbol, group, ts);
 
