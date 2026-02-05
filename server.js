@@ -499,6 +499,46 @@ function safeGet(symbol, group) {
     return lastAlert[symbol]?.[group] || null;
 }
 
+// -----------------------------
+// GODZILLA ELIGIBILITY HELPERS
+// -----------------------------
+function markGodzillaEligible(symbol, ts) {
+    // If symbol was already used recently, ignore new eligibility marks
+    const lastUsed = godzillaLastUsed.get(symbol);
+    if (lastUsed && ts - lastUsed < GODZILLA_ARM_COOLDOWN_MS) return;
+
+    // Only set if not already eligible (keeps the earliest eligible time)
+    if (!godzillaEligible.has(symbol)) {
+        godzillaEligible.set(symbol, ts);
+    }
+}
+
+function isGodzillaEligible(symbol, ts) {
+    const eligibleAt = godzillaEligible.get(symbol);
+    if (!eligibleAt) return false;
+
+    // Expire eligibility after TTL
+    if (ts - eligibleAt > GODZILLA_SOURCE_TTL_MS) {
+        godzillaEligible.delete(symbol);
+        return false;
+    }
+
+    return true;
+}
+
+function canArmGodzilla(symbol, ts) {
+    const lastUsed = godzillaLastUsed.get(symbol);
+    if (!lastUsed) return true; // never used before
+
+    return (ts - lastUsed) >= GODZILLA_ARM_COOLDOWN_MS;
+}
+
+function consumeGodzillaEligibility(symbol, ts) {
+    godzillaLastUsed.set(symbol, ts);
+    godzillaEligible.delete(symbol); // one-shot until re-eligible later
+}
+
+
 function formatLevel(group, payload) {
     // No payload or no numericLevels => no level (A–D etc.)
     if (!payload || !payload.numericLevels || payload.numericLevels.length === 0) {
@@ -1072,35 +1112,43 @@ function processGodzilla(symbol, group, ts) {
     // ARM SELL TRACKER (ACW)
     // -------------------------
     if (ACW.includes(group)) {
-        if (!godzilllaState.sell[symbol]) {
-            godzilllaState.sell[symbol] = [];
-        }
+    if (!isGodzillaEligible(symbol, ts)) return;
+    if (!canArmGodzilla(symbol, ts)) return;
 
-        godzilllaState.sell[symbol].push({
-            count: 0,
-            times: [],
-            startTime: ts
-        });
-
-        return;
+    if (!godzilllaState.sell[symbol]) {
+        godzilllaState.sell[symbol] = [];
     }
+
+    godzilllaState.sell[symbol].push({
+        count: 0,
+        times: [],
+        startTime: ts
+    });
+consumeGodzillaEligibility(symbol, ts);
+    return;
+}
+
 
     // -------------------------
     // ARM BUY TRACKER (BDX)
     // -------------------------
     if (BDX.includes(group)) {
-        if (!godzilllaState.buy[symbol]) {
-            godzilllaState.buy[symbol] = [];
-        }
+    if (!isGodzillaEligible(symbol, ts)) return;
+    if (!canArmGodzilla(symbol, ts)) return;
 
-        godzilllaState.buy[symbol].push({
-            count: 0,
-            times: [],
-            startTime: ts   // ✅ ADDED (same as SELL)
-        });
-
-        return;
+    if (!godzilllaState.buy[symbol]) {
+        godzilllaState.buy[symbol] = [];
     }
+
+    godzilllaState.buy[symbol].push({
+        count: 0,
+        times: [],
+        startTime: ts
+    });
+  consumeGodzillaEligibility(symbol, ts);
+    return;
+}
+
 
     // -------------------------
     // PROCESS M (SELL)
@@ -1247,6 +1295,12 @@ function processBazooka(symbol, group, ts) {
 
     sendToTelegram6(msg);
 
+// Mark symbols eligible for GODZILLA
+for (const sym of map.keys()) {
+    markGodzillaEligible(sym, ts);
+}
+
+
     // Activate CONTRARIAN watcher
     contrarianState.active = true;
     contrarianState.since = ts;
@@ -1375,6 +1429,12 @@ function processBababia(symbol, group, ts) {
             `Window: 20s\n` +
             `Symbols:\n${lines}`
         );
+		// Mark symbols eligible for GODZILLA (from BABABIA 20s burst)
+for (const e of recent20) {
+    markGodzillaEligible(e.symbol, ts);
+}
+
+
     }
 
     // ---- MAMAMIA (50s) ----
@@ -1390,6 +1450,11 @@ function processBababia(symbol, group, ts) {
             `Window: 50s\n` +
             `Symbols:\n${lines}`
         );
+		// 🔹 MARK SYMBOLS ELIGIBLE FOR GODZILLA
+for (const e of buf) {
+    markGodzillaEligible(e.symbol, ts);
+}
+
     }
 }
 
@@ -1686,6 +1751,18 @@ const godzilllaState = {
     sell: {}, // symbol → [ { count, times[] }, ... ]
     buy: {}   // symbol → [ { count, times[] }, ... ]
 };
+
+// ==========================================================
+//  GODZILLA ELIGIBILITY (source + cooldown)
+// ==========================================================
+
+const GODZILLA_SOURCE_TTL_MS = 60 * 60 * 1000; // 1 hour max eligibility
+const GODZILLA_ARM_COOLDOWN_MS = 20 * 60 * 1000; // 20 min per symbol
+
+const godzillaEligible = new Map();
+// symbol → lastEligibleTime
+const godzillaLastUsed = new Map();
+// symbol → last time we ARMED (used) the symbol
 
 
 // ==========================================================
