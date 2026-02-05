@@ -1154,6 +1154,20 @@ const bazookaGlobal = {
     V: new Map()
 };
 
+// Tracks whether BAZOOKA already fired for the current burst (per group)
+const bazookaFired = {
+    A: false,
+    B: false,
+    C: false,
+    D: false,
+    W: false,
+    X: false,
+    S: false,
+    T: false,
+    U: false,
+    V: false
+};
+
 // bazookaGlobal[group] = Map(symbol → time)
 
 function processBazooka(symbol, group, ts) {
@@ -1172,8 +1186,15 @@ function processBazooka(symbol, group, ts) {
         }
     }
 
-    // Check threshold
-    if (map.size < BAZOOKA_MIN_COUNT) return;
+    // If we dropped back below threshold, allow next burst to fire
+    if (map.size < BAZOOKA_MIN_COUNT) {
+        bazookaFired[group] = false;
+        return;
+    }
+
+    // Do not refire during the same burst
+    if (bazookaFired[group]) return;
+    bazookaFired[group] = true;
 
     const lines = [...map.entries()]
         .sort((a, b) => a[1] - b[1])
@@ -1190,20 +1211,18 @@ function processBazooka(symbol, group, ts) {
         `Symbols:\n${lines}`;
 
     sendToTelegram6(msg);
-	
-	// Activate CONTRARIAN watcher
-contrarianState.active = true;
-contrarianState.since = ts;
-contrarianState.buf = [];
 
-if (["A", "C", "W"].includes(group)) {
-    contrarianState.fromGroup = "ACW";
-} else {
-    contrarianState.fromGroup = "BDX";
-}
-	
-}
+    // Activate CONTRARIAN watcher
+    contrarianState.active = true;
+    contrarianState.since = ts;
+    contrarianState.buf = [];
 
+    if (["A", "C", "W"].includes(group)) {
+        contrarianState.fromGroup = "ACW";
+    } else {
+        contrarianState.fromGroup = "BDX";
+    }
+}
 
 
 // ==========================================================
@@ -1293,6 +1312,25 @@ const BABABIA_WINDOW_MS = 20 * 1000;
 const MAMAMIA_WINDOW_MS = 50 * 1000;
 const BABABIA_MIN_COUNT = 5;
 
+// Fire-once-per-burst flags (per group)
+const bababiaFired = {
+    A: false,
+    B: false,
+    C: false,
+    D: false,
+    W: false,
+    X: false
+};
+
+const mamamiaFired = {
+    A: false,
+    B: false,
+    C: false,
+    D: false,
+    W: false,
+    X: false
+};
+
 function processBababia(symbol, group, ts) {
     if (!["A", "B", "C", "D", "W", "X"].includes(group)) return;
 
@@ -1307,9 +1345,22 @@ function processBababia(symbol, group, ts) {
         buf.shift();
     }
 
-    // ---- BABABIA (20s) ----
+    // -------------------------
+    // BABABIA (20s, min 5)
+    // -------------------------
     const recent20 = buf.filter(e => ts - e.time <= BABABIA_WINDOW_MS);
-    if (recent20.length >= BABABIA_MIN_COUNT) {
+
+    // Reset fire flag once we drop below threshold
+    if (recent20.length < BABABIA_MIN_COUNT) {
+        bababiaFired[group] = false;
+    }
+
+    if (
+        recent20.length >= BABABIA_MIN_COUNT &&
+        !bababiaFired[group]
+    ) {
+        bababiaFired[group] = true;
+
         const lines = recent20
             .map(e => `• ${e.symbol} @ ${new Date(e.time).toLocaleTimeString()}`)
             .join("\n");
@@ -1323,8 +1374,17 @@ function processBababia(symbol, group, ts) {
         );
     }
 
-    // ---- MAMAMIA (50s) ----
-    if (buf.length >= BABABIA_MIN_COUNT) {
+    // -------------------------
+    // MAMAMIA (50s, min 5)
+    // -------------------------
+    if (buf.length < BABABIA_MIN_COUNT) {
+        mamamiaFired[group] = false;
+        return;
+    }
+
+    if (!mamamiaFired[group]) {
+        mamamiaFired[group] = true;
+
         const lines = buf
             .map(e => `• ${e.symbol} @ ${new Date(e.time).toLocaleTimeString()}`)
             .join("\n");
