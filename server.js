@@ -383,9 +383,44 @@ const bababiaGlobal = {
     C: [],
     D: [],
     W: [],
-    X: []
+    X: [],
+    S: [],
+    T: [],
+    U: [],
+    V: []
 };
 // bababiaGlobal[group] = [{ symbol, time }, ...]
+
+// ==========================================================
+//  BOT 7 — TESTRUN burst engines (isolated, delayed flush)
+// ==========================================================
+
+const TESTRUN_HOLD_MS = 60 * 1000;
+
+// ---- TESTRUN_BB (BABABIA test) ----
+const testrunBB = {
+    A: new Map(), B: new Map(), C: new Map(), D: new Map(),
+    W: new Map(), X: new Map(), S: new Map(), T: new Map(),
+    U: new Map(), V: new Map(),
+    timer: {}
+};
+
+// ---- TESTRUN_MM (MAMAMIA test) ----
+const testrunMM = {
+    A: new Map(), B: new Map(), C: new Map(), D: new Map(),
+    W: new Map(), X: new Map(), S: new Map(), T: new Map(),
+    U: new Map(), V: new Map(),
+    timer: {}
+};
+
+// ---- TESTRUN_BZ (BAZOOKA test) ----
+const testrunBZ = {
+    A: new Map(), B: new Map(), C: new Map(), D: new Map(),
+    W: new Map(), X: new Map(), S: new Map(), T: new Map(),
+    U: new Map(), V: new Map(),
+    timer: {}
+};
+
 
 
 // ==========================================================
@@ -1305,34 +1340,15 @@ function processBlackPanther(symbol, group, ts) {
 }
 
 // ==========================================================
-//  BABABIA / MAMAMIA (GLOBAL ABCDWX burst detector)
+//  BABABIA / MAMAMIA (GLOBAL ABCDWXSTUV burst detector)
 // ==========================================================
 
 const BABABIA_WINDOW_MS = 20 * 1000;
 const MAMAMIA_WINDOW_MS = 50 * 1000;
 const BABABIA_MIN_COUNT = 5;
 
-// Fire-once-per-burst flags (per group)
-const bababiaFired = {
-    A: false,
-    B: false,
-    C: false,
-    D: false,
-    W: false,
-    X: false
-};
-
-const mamamiaFired = {
-    A: false,
-    B: false,
-    C: false,
-    D: false,
-    W: false,
-    X: false
-};
-
 function processBababia(symbol, group, ts) {
-    if (!["A", "B", "C", "D", "W", "X"].includes(group)) return;
+    if (!["A", "B", "C", "D", "W", "X", "S", "T", "U", "V"].includes(group)) return;
 
     const buf = bababiaGlobal[group];
 
@@ -1345,22 +1361,9 @@ function processBababia(symbol, group, ts) {
         buf.shift();
     }
 
-    // -------------------------
-    // BABABIA (20s, min 5)
-    // -------------------------
+    // ---- BABABIA (20s) ----
     const recent20 = buf.filter(e => ts - e.time <= BABABIA_WINDOW_MS);
-
-    // Reset fire flag once we drop below threshold
-    if (recent20.length < BABABIA_MIN_COUNT) {
-        bababiaFired[group] = false;
-    }
-
-    if (
-        recent20.length >= BABABIA_MIN_COUNT &&
-        !bababiaFired[group]
-    ) {
-        bababiaFired[group] = true;
-
+    if (recent20.length >= BABABIA_MIN_COUNT) {
         const lines = recent20
             .map(e => `• ${e.symbol} @ ${new Date(e.time).toLocaleTimeString()}`)
             .join("\n");
@@ -1374,17 +1377,8 @@ function processBababia(symbol, group, ts) {
         );
     }
 
-    // -------------------------
-    // MAMAMIA (50s, min 5)
-    // -------------------------
-    if (buf.length < BABABIA_MIN_COUNT) {
-        mamamiaFired[group] = false;
-        return;
-    }
-
-    if (!mamamiaFired[group]) {
-        mamamiaFired[group] = true;
-
+    // ---- MAMAMIA (50s) ----
+    if (buf.length >= BABABIA_MIN_COUNT) {
         const lines = buf
             .map(e => `• ${e.symbol} @ ${new Date(e.time).toLocaleTimeString()}`)
             .join("\n");
@@ -1398,6 +1392,108 @@ function processBababia(symbol, group, ts) {
         );
     }
 }
+
+function processTESTRUN_BB(symbol, group, ts) {
+    if (!testrunBB[group]) return;
+
+    const map = testrunBB[group];
+    map.set(symbol, ts);
+
+    const cutoff = ts - BABABIA_WINDOW_MS;
+    for (const [s, t] of map.entries()) {
+        if (t < cutoff) map.delete(s);
+    }
+
+    if (map.size < BABABIA_MIN_COUNT) return;
+    if (testrunBB.timer[group]) return;
+
+    testrunBB.timer[group] = setTimeout(() => {
+        const lines = [...map.entries()]
+            .map(([s, t]) => `• ${s} @ ${new Date(t).toLocaleTimeString()}`)
+            .join("\n");
+
+        sendToTelegram7(
+            `🧪 TESTRUN_BB\n` +
+            `Group: ${group}\n` +
+            `Unique Symbols: ${map.size}\n` +
+            `Window: 20s\n` +
+            `Symbols:\n${lines}`
+        );
+
+        map.clear();
+        clearTimeout(testrunBB.timer[group]);
+        testrunBB.timer[group] = null;
+    }, TESTRUN_HOLD_MS);
+}
+
+
+function processTESTRUN_MM(symbol, group, ts) {
+    if (!testrunMM[group]) return;
+
+    const map = testrunMM[group];
+    map.set(symbol, ts);
+
+    const cutoff = ts - MAMAMIA_WINDOW_MS;
+    for (const [s, t] of map.entries()) {
+        if (t < cutoff) map.delete(s);
+    }
+
+    if (map.size < BABABIA_MIN_COUNT) return;
+    if (testrunMM.timer[group]) return;
+
+    testrunMM.timer[group] = setTimeout(() => {
+        const lines = [...map.entries()]
+            .map(([s, t]) => `• ${s} @ ${new Date(t).toLocaleTimeString()}`)
+            .join("\n");
+
+        sendToTelegram7(
+            `🧪 TESTRUN_MM\n` +
+            `Group: ${group}\n` +
+            `Unique Symbols: ${map.size}\n` +
+            `Window: 50s\n` +
+            `Symbols:\n${lines}`
+        );
+
+        map.clear();
+        clearTimeout(testrunMM.timer[group]);
+        testrunMM.timer[group] = null;
+    }, TESTRUN_HOLD_MS);
+}
+
+
+function processTESTRUN_BZ(symbol, group, ts) {
+    if (!testrunBZ[group]) return;
+
+    const map = testrunBZ[group];
+    map.set(symbol, ts);
+
+    const cutoff = ts - BAZOOKA_WINDOW_MS;
+    for (const [s, t] of map.entries()) {
+        if (t < cutoff) map.delete(s);
+    }
+
+    if (map.size < BAZOOKA_MIN_COUNT) return;
+    if (testrunBZ.timer[group]) return;
+
+    testrunBZ.timer[group] = setTimeout(() => {
+        const lines = [...map.entries()]
+            .map(([s, t]) => `• ${s} @ ${new Date(t).toLocaleTimeString()}`)
+            .join("\n");
+
+        sendToTelegram7(
+            `🧪 TESTRUN_BZ\n` +
+            `Group: ${group}\n` +
+            `Unique Symbols: ${map.size}\n` +
+            `Window: 50s\n` +
+            `Symbols:\n${lines}`
+        );
+
+        map.clear();
+        clearTimeout(testrunBZ.timer[group]);
+        testrunBZ.timer[group] = null;
+    }, TESTRUN_HOLD_MS);
+}
+
 
 
 // ==========================================================
@@ -1825,6 +1921,9 @@ app.post("/incoming", (req, res) => {
         processSpesh(symbol, group, ts);
         processSnowflake(symbol, group, ts);
         processBababia(symbol, group, ts);
+        processTESTRUN_BB(symbol, group, ts);
+        processTESTRUN_MM(symbol, group, ts);
+        processTESTRUN_BZ(symbol, group, ts);
 
 		processJupiterSaturn(symbol, group, ts);
 		processTracking4(symbol, group, ts, body);
