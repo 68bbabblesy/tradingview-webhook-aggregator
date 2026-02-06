@@ -374,22 +374,7 @@ function maxWindowMs() {
     return Math.max(...RULES.map(r => r.windowSeconds)) * 1000;
 }
 
-// -----------------------------
-// BOT9 — BABABIA / MAMAMIA (global burst storage)
-// -----------------------------
-const bababiaGlobal = {
-    A: [],
-    B: [],
-    C: [],
-    D: [],
-    W: [],
-    X: [],
-    S: [],
-    T: [],
-    U: [],
-    V: []
-};
-// bababiaGlobal[group] = [{ symbol, time }, ...]
+
 
 // ==========================================================
 //  BOT 7 — TESTRUN burst engines (isolated, delayed flush)
@@ -429,6 +414,23 @@ const LOCKED_BB_WINDOW_MS = 20 * 1000;
 const LOCKED_BB_MIN_COUNT = 5;
 
 const lockedBB = {
+    A: { active: false, symbols: new Map(), timer: null },
+    B: { active: false, symbols: new Map(), timer: null },
+    C: { active: false, symbols: new Map(), timer: null },
+    D: { active: false, symbols: new Map(), timer: null },
+    W: { active: false, symbols: new Map(), timer: null },
+    X: { active: false, symbols: new Map(), timer: null },
+    S: { active: false, symbols: new Map(), timer: null },
+    T: { active: false, symbols: new Map(), timer: null },
+    U: { active: false, symbols: new Map(), timer: null },
+    V: { active: false, symbols: new Map(), timer: null }
+};
+
+// ==========================================================
+//  LOCKED BABABIA / MAMAMIA (Render-safe queue)
+// ==========================================================
+
+const lockedBM = {
     A: { active: false, symbols: new Map(), timer: null },
     B: { active: false, symbols: new Map(), timer: null },
     C: { active: false, symbols: new Map(), timer: null },
@@ -1421,61 +1423,56 @@ const MAMAMIA_WINDOW_MS = 50 * 1000;
 const BABABIA_MIN_COUNT = 5;
 
 function processBababia(symbol, group, ts) {
-    if (!["A", "B", "C", "D", "W", "X", "S", "T", "U", "V"].includes(group)) return;
+    if (!lockedBM[group]) return;
 
-    const buf = bababiaGlobal[group];
+    const state = lockedBM[group];
 
-    // Add event
-    buf.push({ symbol, time: ts });
+    if (!state.active) {
+        state.active = true;
+        state.symbols.clear();
 
-    // Prune to max window (50s)
-    const cutoff = ts - MAMAMIA_WINDOW_MS;
-    while (buf.length && buf[0].time < cutoff) {
-        buf.shift();
+        state.timer = setTimeout(() => {
+            const entries = [...state.symbols.entries()];
+            const count = entries.length;
+
+            if (count >= BABABIA_MIN_COUNT) {
+                const lines = entries
+                    .sort((a, b) => a[1] - b[1])
+                    .map(([s, t]) => `• ${s} @ ${new Date(t).toLocaleTimeString()}`)
+                    .join("\n");
+
+                sendToTelegram9(
+                    `🎉 BABABIA\n` +
+                    `Group: ${group}\n` +
+                    `Unique Symbols: ${count}\n` +
+                    `Window: 20s\n` +
+                    `Symbols:\n${lines}`
+                );
+
+                sendToTelegram9(
+                    `🎶 MAMAMIA\n` +
+                    `Group: ${group}\n` +
+                    `Unique Symbols: ${count}\n` +
+                    `Window: 50s\n` +
+                    `Symbols:\n${lines}`
+                );
+
+                for (const [sym] of entries) {
+                    markGodzillaEligible(sym, Date.now());
+                }
+            }
+
+            state.active = false;
+            state.symbols.clear();
+            clearTimeout(state.timer);
+            state.timer = null;
+
+        }, MAMAMIA_WINDOW_MS);
     }
 
-    // ---- BABABIA (20s) ----
-    const recent20 = buf.filter(e => ts - e.time <= BABABIA_WINDOW_MS);
-    if (recent20.length >= BABABIA_MIN_COUNT) {
-        const lines = recent20
-            .map(e => `• ${e.symbol} @ ${new Date(e.time).toLocaleTimeString()}`)
-            .join("\n");
-
-        sendToTelegram9(
-            `🎉 BABABIA\n` +
-            `Group: ${group}\n` +
-            `Alerts: ${recent20.length}\n` +
-            `Window: 20s\n` +
-            `Symbols:\n${lines}`
-        );
-		// Mark symbols eligible for GODZILLA (from BABABIA 20s burst)
-for (const e of recent20) {
-    markGodzillaEligible(e.symbol, ts);
+    state.symbols.set(symbol, ts);
 }
 
-
-    }
-
-    // ---- MAMAMIA (50s) ----
-    if (buf.length >= BABABIA_MIN_COUNT) {
-        const lines = buf
-            .map(e => `• ${e.symbol} @ ${new Date(e.time).toLocaleTimeString()}`)
-            .join("\n");
-
-        sendToTelegram9(
-            `🎶 MAMAMIA\n` +
-            `Group: ${group}\n` +
-            `Alerts: ${buf.length}\n` +
-            `Window: 50s\n` +
-            `Symbols:\n${lines}`
-        );
-		// 🔹 MARK SYMBOLS ELIGIBLE FOR GODZILLA
-for (const e of buf) {
-    markGodzillaEligible(e.symbol, ts);
-}
-
-    }
-}
 
 function processTESTRUN_BB(symbol, group, ts) {
     if (!testrunBB[group]) return;
