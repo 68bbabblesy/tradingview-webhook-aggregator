@@ -421,6 +421,25 @@ const testrunBZ = {
     timer: {}
 };
 
+// ==========================================================
+//  BOT 7 — LOCKED BATCH (BABABIA only, window-locked)
+// ==========================================================
+
+const LOCKED_BB_WINDOW_MS = 20 * 1000;
+const LOCKED_BB_MIN_COUNT = 5;
+
+const lockedBB = {
+    A: { active: false, symbols: new Map(), timer: null },
+    B: { active: false, symbols: new Map(), timer: null },
+    C: { active: false, symbols: new Map(), timer: null },
+    D: { active: false, symbols: new Map(), timer: null },
+    W: { active: false, symbols: new Map(), timer: null },
+    X: { active: false, symbols: new Map(), timer: null },
+    S: { active: false, symbols: new Map(), timer: null },
+    T: { active: false, symbols: new Map(), timer: null },
+    U: { active: false, symbols: new Map(), timer: null },
+    V: { active: false, symbols: new Map(), timer: null }
+};
 
 
 // ==========================================================
@@ -1559,6 +1578,45 @@ function processTESTRUN_BZ(symbol, group, ts) {
     }, TESTRUN_HOLD_MS);
 }
 
+function processLOCKED_BB(symbol, group, ts) {
+    const state = lockedBB[group];
+    if (!state) return;
+
+    // First alert → lock the window
+    if (!state.active) {
+        state.active = true;
+        state.symbols.clear();
+
+        state.timer = setTimeout(() => {
+            const count = state.symbols.size;
+
+            if (count >= LOCKED_BB_MIN_COUNT) {
+                const lines = [...state.symbols.entries()]
+                    .sort((a, b) => a[1] - b[1])
+                    .map(([s, t]) => `• ${s} @ ${new Date(t).toLocaleTimeString()}`)
+                    .join("\n");
+
+                sendToTelegram7(
+                    `📦 LOCKED_BB\n` +
+                    `Group: ${group}\n` +
+                    `Unique Symbols: ${count}\n` +
+                    `Window: 20s\n` +
+                    `Symbols:\n${lines}`
+                );
+            }
+
+            // Reset state
+            state.active = false;
+            state.symbols.clear();
+            clearTimeout(state.timer);
+            state.timer = null;
+
+        }, LOCKED_BB_WINDOW_MS);
+    }
+
+    // Collect unique symbols during locked window
+    state.symbols.set(symbol, ts);
+}
 
 
 // ==========================================================
@@ -2001,6 +2059,7 @@ app.post("/incoming", (req, res) => {
         processTESTRUN_BB(symbol, group, ts);
         processTESTRUN_MM(symbol, group, ts);
         processTESTRUN_BZ(symbol, group, ts);
+        processLOCKED_BB(symbol, group, ts);
 
 		processJupiterSaturn(symbol, group, ts);
 		processTracking4(symbol, group, ts, body);
