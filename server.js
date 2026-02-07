@@ -1119,7 +1119,7 @@ function processMatching3(symbol, group, ts, body) {
 
 // ==========================================================
 //  GODZILLA (ACW → M = SELL, BDX → N = BUY)
-//  Fires on SECOND M / N
+//  Fires on FIRST M / N (one-shot)
 //  Multiple concurrent trackers per symbol
 //  Bot 8
 // ==========================================================
@@ -1133,46 +1133,48 @@ function processGodzilla(symbol, group, ts) {
     // ARM SELL TRACKER (ACW)
     // -------------------------
     if (ACW.includes(group)) {
-    if (!isGodzillaEligible(symbol, ts)) return;
-    if (!canArmGodzilla(symbol, ts)) return;
+        if (!isGodzillaEligible(symbol, ts)) return;
+        if (!canArmGodzilla(symbol, ts)) return;
 
-    if (!godzilllaState.sell[symbol]) {
-        godzilllaState.sell[symbol] = [];
+        if (!godzilllaState.sell[symbol]) {
+            godzilllaState.sell[symbol] = [];
+        }
+
+        godzilllaState.sell[symbol].push({
+            count: 0,
+            times: [],
+            startTime: ts
+        });
+
+        // consume eligibility immediately (prevents reuse)
+        consumeGodzillaEligibility(symbol, ts);
+        return;
     }
-
-    godzilllaState.sell[symbol].push({
-        count: 0,
-        times: [],
-        startTime: ts
-    });
-consumeGodzillaEligibility(symbol, ts);
-    return;
-}
-
 
     // -------------------------
     // ARM BUY TRACKER (BDX)
     // -------------------------
     if (BDX.includes(group)) {
-    if (!isGodzillaEligible(symbol, ts)) return;
-    if (!canArmGodzilla(symbol, ts)) return;
+        if (!isGodzillaEligible(symbol, ts)) return;
+        if (!canArmGodzilla(symbol, ts)) return;
 
-    if (!godzilllaState.buy[symbol]) {
-        godzilllaState.buy[symbol] = [];
+        if (!godzilllaState.buy[symbol]) {
+            godzilllaState.buy[symbol] = [];
+        }
+
+        godzilllaState.buy[symbol].push({
+            count: 0,
+            times: [],
+            startTime: ts
+        });
+
+        // consume eligibility immediately
+        consumeGodzillaEligibility(symbol, ts);
+        return;
     }
 
-    godzilllaState.buy[symbol].push({
-        count: 0,
-        times: [],
-        startTime: ts
-    });
-  consumeGodzillaEligibility(symbol, ts);
-    return;
-}
-
-
     // -------------------------
-    // PROCESS M (SELL)
+    // PROCESS M (SELL) — FIRE ON FIRST M
     // -------------------------
     if (group === "M" && godzilllaState.sell[symbol]) {
         const trackers = godzilllaState.sell[symbol];
@@ -1183,20 +1185,18 @@ consumeGodzillaEligibility(symbol, ts);
             t.count++;
             t.times.push(ts);
 
-            if (t.count === 2) {
-                sendToTelegram8(
-                    `🦖 GODZILLA_SELL\n` +
-                    `Symbol: ${symbol}\n` +
-                    `Anchor: ACW\n` +
-                    `Anchor Time: ${new Date(t.startTime).toLocaleString()}\n` +
-                    `\n` +
-                    `M Timeline:\n` +
-                    `1) ${new Date(t.times[0]).toLocaleString()}\n` +
-                    `2) ${new Date(t.times[1]).toLocaleString()}`
-                );
+            sendToTelegram8(
+                `🦖 GODZILLA_SELL\n` +
+                `Symbol: ${symbol}\n` +
+                `Anchor: ACW\n` +
+                `Anchor Time: ${new Date(t.startTime).toLocaleString()}\n` +
+                `\n` +
+                `M Time:\n` +
+                `1) ${new Date(ts).toLocaleString()}`
+            );
 
-                trackers.splice(i, 1);
-            }
+            // one-shot → remove tracker immediately
+            trackers.splice(i, 1);
         }
 
         if (!trackers.length) delete godzilllaState.sell[symbol];
@@ -1204,7 +1204,7 @@ consumeGodzillaEligibility(symbol, ts);
     }
 
     // -------------------------
-    // PROCESS N (BUY)
+    // PROCESS N (BUY) — FIRE ON FIRST N
     // -------------------------
     if (group === "N" && godzilllaState.buy[symbol]) {
         const trackers = godzilllaState.buy[symbol];
@@ -1215,26 +1215,24 @@ consumeGodzillaEligibility(symbol, ts);
             t.count++;
             t.times.push(ts);
 
-            if (t.count === 2) {
-                sendToTelegram8(
-                    `🦖 GODZILLA_BUY\n` +
-                    `Symbol: ${symbol}\n` +
-                    `Anchor: BDX\n` +
-                    `Anchor Time: ${new Date(t.startTime).toLocaleString()}\n` +
-                    `\n` +
-                    `N Timeline:\n` +
-                    `1) ${new Date(t.times[0]).toLocaleString()}\n` +
-                    `2) ${new Date(t.times[1]).toLocaleString()}`
-                );
+            sendToTelegram8(
+                `🦖 GODZILLA_BUY\n` +
+                `Symbol: ${symbol}\n` +
+                `Anchor: BDX\n` +
+                `Anchor Time: ${new Date(t.startTime).toLocaleString()}\n` +
+                `\n` +
+                `N Time:\n` +
+                `1) ${new Date(ts).toLocaleString()}`
+            );
 
-                trackers.splice(i, 1);
-            }
+            // one-shot → remove tracker immediately
+            trackers.splice(i, 1);
         }
 
         if (!trackers.length) delete godzilllaState.buy[symbol];
+        return;
     }
 }
-
 
 // ==========================================================
 //  BAZOOKA (GLOBAL ABCDWX burst detector — standalone)
