@@ -1052,12 +1052,14 @@ function processContrarian(symbol, group, ts) {
         return;
     }
 
-    const ACW = ["A", "C", "W"];
-    const BDX = ["B", "D", "X"];
+    const ACWSU = ["A", "C", "W", "S", "U"];
+    const BDXTV = ["B", "D", "X", "T", "V"];
+
 
     // Determine which side we are waiting for
     const wantedGroups =
-        contrarianState.fromGroup === "ACW" ? BDX : ACW;
+    contrarianState.fromGroup === "ACWSU" ? BDXTV : ACWSU;
+
 
     if (!wantedGroups.includes(group)) return;
 
@@ -1325,11 +1327,12 @@ for (const sym of map.keys()) {
     contrarianState.since = ts;
     contrarianState.buf = [];
 
-    if (["A", "C", "W"].includes(group)) {
-        contrarianState.fromGroup = "ACW";
-    } else {
-        contrarianState.fromGroup = "BDX";
-    }
+  if (["A", "C", "W", "S", "U"].includes(group)) {
+    contrarianState.fromGroup = "ACWSU";
+} else {
+    contrarianState.fromGroup = "BDXTV";
+}
+
 }
 
 
@@ -1791,7 +1794,8 @@ const CONTRARIAN_EXPIRY_MS = 3 * 60 * 60 * 1000; // 3 hours
 
 const contrarianState = {
     active: false,
-    fromGroup: null,   // "ACW" or "BDX"
+    fromGroup: null,   // "ACWSU" or "BDXTV"
+
     since: null,
     buf: []            // [{ symbol, group, time }]
 };
