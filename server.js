@@ -476,9 +476,7 @@ const divergenceMonitor = {};
 
 
 
-// SALSA memory (W/X buffered within 20 seconds)
-const salsaBuf = {};
-// salsaBuf[symbol][group] = [ts1, ts2, ...]
+
 
 // TANGO memory (A/B buffered within 8 minutes)
 const tangoBuf = {};
@@ -1240,8 +1238,6 @@ function processGodzilla(symbol, group, ts) {
 //  Window: 50 seconds | Min count: 10 | Bot 6
 // ==========================================================
 
-const BAZOOKA_WINDOW_MS = 50 * 1000;
-const BAZOOKA_MIN_COUNT = 10;
 
 // ==========================================================
 //  BAZOOKA — FROZEN SNAPSHOT (windowed, split-safe)
@@ -1315,7 +1311,12 @@ function processBazooka(symbol, group, ts) {
                 for (const [sym] of entries) {
                     markGodzillaEligible(sym, ts);
                 }
+                
+				for (const [sym] of entries) {
+                salsaState.set(sym, { count: 0, armedAt: ts });
+                }
 
+				
                 // CONTRARIAN activation — once per snapshot
                 contrarianState.active = true;
                 contrarianState.since = ts;
@@ -1712,65 +1713,40 @@ function processLOCKED_BB(symbol, group, ts) {
 }
 
 
+
+
+
 // ==========================================================
 //  GAMMA (E→E or J→J within 3 minutes)
 // ==========================================================
 
-
 // ==========================================================
-//  SALSA (C→C or D→D within 16.5 minutes, buffered)
+//  SALSA 
 // ==========================================================
-
-const SALSA_WINDOW_MS = 16.5 * 60 * 1000;
 
 function processSalsa(symbol, group, ts) {
-    if (group !== "C" && group !== "D") return;
+    // Only track E J Q R
+    if (!["E", "J", "Q", "R"].includes(group)) return;
 
-    if (!salsaBuf[symbol]) {
-        salsaBuf[symbol] = {};
-    }
-    if (!salsaBuf[symbol][group]) {
-        salsaBuf[symbol][group] = [];
-    }
+    const state = salsaState.get(symbol);
+    if (!state) return; // not armed by BAZOOKA
 
-    const buf = salsaBuf[symbol][group];
+    state.count += 1;
 
-    // Ignore exact duplicates / out-of-order
-    if (buf.length && ts <= buf[buf.length - 1]) return;
-
-    // Add hit
-    buf.push(ts);
-
-    // Prune old hits
-    const cutoff = ts - SALSA_WINDOW_MS;
-    while (buf.length && buf[0] < cutoff) {
-        buf.shift();
-    }
-
-    // Need at least 2 hits
-    if (buf.length < 2) return;
-
-    const first = buf[0];
-    const second = buf[1];
-    const diffMs = second - first;
-    const diffMin = Math.floor(diffMs / 60000);
-    const diffSec = Math.floor((diffMs % 60000) / 1000);
-
-    const msg =
-        `💃 SALSA\n` +
+    sendToTelegram3(
+        `💃 SALSA ${state.count}\n` +
         `Symbol: ${symbol}\n` +
         `Group: ${group}\n` +
-        `First hit: ${new Date(first).toLocaleString()}\n` +
-        `Second hit: ${new Date(second).toLocaleString()}\n` +
-           `Gap: ${diffMin}m ${diffSec}s\n` +
-        `Bias: ${biasFromGroup(group)}`;
+        `Hit #: ${state.count}\n` +
+        `Time: ${new Date(ts).toLocaleString()}`
+    );
 
-
-    sendToTelegram3(msg);
-
-    // Slide window
-    buf.shift();
+    // After 2nd hit → disarm
+    if (state.count >= 2) {
+        salsaState.delete(symbol);
+    }
 }
+
 
 // ==========================================================
 //  TANGO (Buffered repeat detector with per-group windows)
@@ -1869,6 +1845,14 @@ const godzillaEligible = new Map();
 // symbol → lastEligibleTime
 const godzillaLastUsed = new Map();
 // symbol → last time we ARMED (used) the symbol
+
+// ==========================================================
+//  SALSA (Post-BAZOOKA EJQR sequence tracker)
+// ==========================================================
+
+// symbol → { count, armedAt }
+const salsaState = new Map();
+
 
 // ==========================================================
 //  WAKANDA ELIGIBILITY (from BABABIA / MAMAMIA only)
