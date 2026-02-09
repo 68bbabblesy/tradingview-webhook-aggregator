@@ -825,7 +825,8 @@ function processDivergenceMonitor(symbol, group, ts) {
 const MATCH_WINDOW_MS = 65 * 1000;
 
 function processMatching1(symbol, group, ts, body) {
-     const AD = ["A", "B", "C", "D", "Q", "R"];
+     const AD = ["A", "B", "C", "D"];
+
 
     const FGH = ["F", "G", "H"];
 
@@ -1335,40 +1336,124 @@ for (const sym of map.keys()) {
 
 }
 
-
 // ==========================================================
-//  WAKANDA (A/B/W/X ↔ A/B/W/X, ≤ 120 seconds, either order)
+//  WAKANDA STATE (direction-neutral structure tracking)
 // ==========================================================
 
-const WAKANDA_WINDOW_MS = 120 * 1000;
+const WAKANDA_WINDOW_MS = 120 * 1000; // 2 minutes
+
+const wakandaState = {};
+// wakandaState[symbol] = {
+//   lastHigh: null,     // "E" or "J"
+//   lastLow: null,      // "Q" or "R"
+//   anchorSeen: false,
+//   anchorTime: null,
+//   fired: false
+// }
+function resetWakanda(symbol) {
+    delete wakandaState[symbol];
+}
 
 function processWakanda(symbol, group, ts) {
-    const ABWX = ["A", "B", "W", "X"];
-    if (!ABWX.includes(group)) return;
+if (!wakandaEligible.has(symbol)) return;
+wakandaEligible.delete(symbol); // one-shot eligibility
 
-    // Find the most recent "other" A/B/W/X alert within 120 seconds
-    const other = ABWX
-        .filter(g => g !== group) // different letter only
-        .map(g => safeGet(symbol, g))
-        .filter(Boolean)
-        .find(x => Math.abs(ts - x.time) <= WAKANDA_WINDOW_MS);
+    // -------------------------
+    // STRUCTURE LETTERS
+    // -------------------------
+    const HIGH_STRUCT = ["E", "J"]; // HH → LH
+    const LOW_STRUCT  = ["Q", "R"]; // LL → HL
 
-    if (!other) return;
+    // -------------------------
+    // ANCHORS (direction-neutral)
+    // -------------------------
+    const ANCHORS = ["A","C","W","S","U","B","D","X","T","V"];
 
-    const diffMs = Math.abs(ts - other.time);
-    const diffMin = Math.floor(diffMs / 60000);
-    const diffSec = Math.floor((diffMs % 60000) / 1000);
+    // -------------------------
+    // INIT STATE
+    // -------------------------
+    if (!wakandaState[symbol]) {
+        wakandaState[symbol] = {
+            lastHigh: null,
+            lastLow: null,
+            anchorSeen: false,
+            anchorTime: null,
+            fired: false
+        };
+    }
 
-    const msg =
-        `🛡️ WAKANDA\n` +
-        `Symbol: ${symbol}\n` +
-        `Pair: ${other.payload.group} ↔ ${group}\n` +
-        `${other.payload.group} Time: ${new Date(other.time).toLocaleString()}\n` +
-        `${group} Time: ${new Date(ts).toLocaleString()}\n` +
-        `Gap: ${diffMin}m ${diffSec}s`;
+    const state = wakandaState[symbol];
 
-    sendToTelegram5(msg);
+    // -------------------------
+    // WINDOW EXPIRY
+    // -------------------------
+    if (state.anchorTime && ts - state.anchorTime > WAKANDA_WINDOW_MS) {
+        resetWakanda(symbol);
+        return;
+    }
+
+    // -------------------------
+    // HANDLE ANCHOR
+    // -------------------------
+    if (ANCHORS.includes(group)) {
+        state.anchorSeen = true;
+        state.anchorTime = ts;
+        return;
+    }
+
+    // -------------------------
+    // IGNORE IF NO ANCHOR YET
+    // -------------------------
+    if (!state.anchorSeen) return;
+
+    // -------------------------
+    // HIGH STRUCTURE TRACKING
+    // -------------------------
+    if (HIGH_STRUCT.includes(group)) {
+
+        // HH → LH combo
+        if (state.lastHigh === "E" && group === "J" && !state.fired) {
+            sendToTelegram5(
+                `🧠 WAKANDA STRUCTURE\n` +
+                `Symbol: ${symbol}\n` +
+                `Pattern: HH → LH\n` +
+                `Anchor Seen: YES\n` +
+                `Time: ${new Date(ts).toLocaleString()}`
+            );
+            state.fired = true;
+            return;
+        }
+
+        // Track latest high structure
+        state.lastHigh = group;
+        return;
+    }
+
+    // -------------------------
+    // LOW STRUCTURE TRACKING
+    // -------------------------
+    if (LOW_STRUCT.includes(group)) {
+
+        // LL → HL combo
+        if (state.lastLow === "Q" && group === "R" && !state.fired) {
+            sendToTelegram5(
+                `🧠 WAKANDA STRUCTURE\n` +
+                `Symbol: ${symbol}\n` +
+                `Pattern: LL → HL\n` +
+                `Anchor Seen: YES\n` +
+                `Time: ${new Date(ts).toLocaleString()}`
+            );
+            state.fired = true;
+            return;
+        }
+
+        // Track latest low structure
+        state.lastLow = group;
+        return;
+    }
 }
+
+
 
 // ==========================================================
 //  BLACK_PANTHER (A/B/C/D/X/Y → 3 distinct groups, ≤ 300s)
@@ -1461,6 +1546,12 @@ function processBababia(symbol, group, ts) {
                 for (const [sym] of entries) {
                     markGodzillaEligible(sym, Date.now());
                 }
+				
+				for (const [sym] of entries) {
+            wakandaEligible.set(sym, Date.now());
+           }
+
+				
             }
 
             state.active = false;
@@ -1621,52 +1712,6 @@ function processLOCKED_BB(symbol, group, ts) {
 //  GAMMA (E→E or J→J within 3 minutes)
 // ==========================================================
 
-const GAMMA_WINDOW_MS = 20 * 1000; // 20 seconds
-
-
-function processGamma(symbol, group, ts) {
-    if (group !== "E" && group !== "J") return;
-
-    if (!gammaLast[symbol]) {
-        gammaLast[symbol] = {};
-    }
-
-    const prevTime = gammaLast[symbol][group];
-
-    // First occurrence → store and wait
-    if (!prevTime) {
-        gammaLast[symbol][group] = ts;
-        return;
-    }
-
-    const diffMs = ts - prevTime;
-	if (diffMs <= 0) return; // same event, do not count as second hit
-
-    if (diffMs > GAMMA_WINDOW_MS) {
-        // Too late → reset start point
-        gammaLast[symbol][group] = ts;
-        return;
-    }
-
-    const diffMin = Math.floor(diffMs / 60000);
-    const diffSec = Math.floor((diffMs % 60000) / 1000);
-
-    const msg =
-    `🟣 GAMMA\n` +
-    `Symbol: ${symbol}\n` +
-    `Group: ${group}\n` +
-    `First hit: ${new Date(prevTime).toLocaleString()}\n` +
-    `Second hit: ${new Date(ts).toLocaleString()}\n` +
-    `Gap: ${diffMin}m ${diffSec}s`;
-
-
-    sendToTelegram7(msg);
-mirrorToBot8IfSpecial(symbol, msg);
-
-
-    // Reset so next pair requires a new first occurrence
-    delete gammaLast[symbol][group];
-}
 
 // ==========================================================
 //  SALSA (C→C or D→D within 16.5 minutes, buffered)
@@ -1821,6 +1866,14 @@ const godzillaEligible = new Map();
 const godzillaLastUsed = new Map();
 // symbol → last time we ARMED (used) the symbol
 
+// ==========================================================
+//  WAKANDA ELIGIBILITY (from BABABIA / MAMAMIA only)
+// ==========================================================
+
+const wakandaEligible = new Map();
+// symbol → lastEligibleTime
+
+
 
 // ==========================================================
 //  SPESH (BTC ↔ ETH same-group within 90 seconds)
@@ -1830,7 +1883,8 @@ const godzillaLastUsed = new Map();
 
 const SPESH_WINDOW_MS = 90 * 1000;
 const SPESH_SYMBOLS = new Set(["BTCUSDT", "ETHUSDT"]);
-const SPESH_GROUPS = new Set(["A", "B", "E", "J", "W", "X"]);
+const SPESH_GROUPS = new Set(["A", "B", "W", "X"]);
+
 
 const speshLast = {
     BTCUSDT: {},
@@ -1876,7 +1930,8 @@ function processSpesh(symbol, group, ts) {
 
 const SNOWFLAKE_WINDOW_MS = 90 * 1000;
 const SNOWFLAKE_SYMBOLS = new Set(["BTCUSDT", "ETHUSDT"]);
-const SNOWFLAKE_GROUPS = new Set(["A", "B", "E", "J", "K", "L", "W", "X"]);
+const SNOWFLAKE_GROUPS = new Set(["A", "B", "K", "L", "W", "X"]);
+
 
 const snowflakeLast = {
     BTCUSDT: {},
