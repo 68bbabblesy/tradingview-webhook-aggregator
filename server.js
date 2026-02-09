@@ -1243,96 +1243,102 @@ function processGodzilla(symbol, group, ts) {
 const BAZOOKA_WINDOW_MS = 50 * 1000;
 const BAZOOKA_MIN_COUNT = 10;
 
-// Independent storage (DO NOT SHARE WITH ANY OTHER ENGINE)
-const bazookaGlobal = {
-    A: new Map(),
-    B: new Map(),
-    C: new Map(),
-    D: new Map(),
-    W: new Map(),
-    X: new Map(),
-    S: new Map(),
-    T: new Map(),
-    U: new Map(),
-    V: new Map()
+// ==========================================================
+//  BAZOOKA — FROZEN SNAPSHOT (windowed, split-safe)
+// ==========================================================
+
+const BAZOOKA_WINDOW_MS = 50 * 1000;
+const BAZOOKA_MIN_COUNT = 10;
+const BAZOOKA_CHUNK_SIZE = 12; // presentation only
+
+const bazookaState = {
+    A: { active: false, symbols: new Map(), timer: null },
+    B: { active: false, symbols: new Map(), timer: null },
+    C: { active: false, symbols: new Map(), timer: null },
+    D: { active: false, symbols: new Map(), timer: null },
+    W: { active: false, symbols: new Map(), timer: null },
+    X: { active: false, symbols: new Map(), timer: null },
+    S: { active: false, symbols: new Map(), timer: null },
+    T: { active: false, symbols: new Map(), timer: null },
+    U: { active: false, symbols: new Map(), timer: null },
+    V: { active: false, symbols: new Map(), timer: null }
 };
 
-// Tracks whether BAZOOKA already fired for the current burst (per group)
-const bazookaFired = {
-    A: false,
-    B: false,
-    C: false,
-    D: false,
-    W: false,
-    X: false,
-    S: false,
-    T: false,
-    U: false,
-    V: false
-};
 
 // bazookaGlobal[group] = Map(symbol → time)
 
 function processBazooka(symbol, group, ts) {
-    if (!bazookaGlobal[group]) return;
+    const state = bazookaState[group];
+    if (!state) return;
 
-    const map = bazookaGlobal[group];
+    // Start snapshot window on first hit
+    if (!state.active) {
+        state.active = true;
+        state.symbols.clear();
 
-    // Record / replace latest timestamp per symbol
-    map.set(symbol, ts);
+        state.timer = setTimeout(() => {
+            const entries = [...state.symbols.entries()];
+            const count = entries.length;
 
-    // Prune old symbols
-    const cutoff = ts - BAZOOKA_WINDOW_MS;
-    for (const [sym, time] of map.entries()) {
-        if (time < cutoff) {
-            map.delete(sym);
-        }
+            // OPTION A: silent discard if below threshold
+            if (count >= BAZOOKA_MIN_COUNT) {
+
+                // Split into presentation chunks only
+                const chunks = [];
+                for (let i = 0; i < entries.length; i += BAZOOKA_CHUNK_SIZE) {
+                    chunks.push(entries.slice(i, i + BAZOOKA_CHUNK_SIZE));
+                }
+
+                chunks.forEach((chunk, idx) => {
+                    const lines = chunk
+                        .sort((a, b) => a[1] - b[1])
+                        .map(([s, t]) =>
+                            `• ${s} @ ${new Date(t).toLocaleTimeString()}`
+                        )
+                        .join("\n");
+
+                    const suffix =
+                        chunks.length > 1
+                            ? ` (Part ${idx + 1}/${chunks.length})`
+                            : "";
+
+                    sendToTelegram6(
+                        `💥 BAZOOKA${suffix}\n` +
+                        `Group: ${group}\n` +
+                        `Total Symbols: ${count}\n` +
+                        `Window: 50s\n` +
+                        `Symbols:\n${lines}`
+                    );
+                });
+
+                // GODZILLA eligibility — once per snapshot
+                for (const [sym] of entries) {
+                    markGodzillaEligible(sym, ts);
+                }
+
+                // CONTRARIAN activation — once per snapshot
+                contrarianState.active = true;
+                contrarianState.since = ts;
+                contrarianState.buf = [];
+                contrarianState.fromGroup =
+                    ["A", "C", "W", "S", "U"].includes(group)
+                        ? "ACWSU"
+                        : "BDXTV";
+            }
+
+            // Reset snapshot state
+            state.active = false;
+            state.symbols.clear();
+            clearTimeout(state.timer);
+            state.timer = null;
+
+        }, BAZOOKA_WINDOW_MS);
     }
 
-    // If we dropped back below threshold, allow next burst to fire
-    if (map.size < BAZOOKA_MIN_COUNT) {
-        bazookaFired[group] = false;
-        return;
-    }
-
-    // Do not refire during the same burst
-    if (bazookaFired[group]) return;
-    bazookaFired[group] = true;
-
-    const lines = [...map.entries()]
-        .sort((a, b) => a[1] - b[1])
-        .map(([sym, time]) =>
-            `• ${sym} @ ${new Date(time).toLocaleTimeString()}`
-        )
-        .join("\n");
-
-    const msg =
-        `💥 BAZOOKA\n` +
-        `Group: ${group}\n` +
-        `Unique Symbols: ${map.size}\n` +
-        `Window: 50s\n` +
-        `Symbols:\n${lines}`;
-
-    sendToTelegram6(msg);
-
-// Mark symbols eligible for GODZILLA
-for (const sym of map.keys()) {
-    markGodzillaEligible(sym, ts);
+    // Collect unique symbols during snapshot window
+    state.symbols.set(symbol, ts);
 }
 
-
-    // Activate CONTRARIAN watcher
-    contrarianState.active = true;
-    contrarianState.since = ts;
-    contrarianState.buf = [];
-
-  if (["A", "C", "W", "S", "U"].includes(group)) {
-    contrarianState.fromGroup = "ACWSU";
-} else {
-    contrarianState.fromGroup = "BDXTV";
-}
-
-}
 
 // ==========================================================
 //  WAKANDA STATE (direction-neutral structure tracking)
