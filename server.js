@@ -474,9 +474,7 @@ const recentGH = {};
 const divergenceMonitor = {};
 // divergenceMonitor[symbol][group] = lastTime
 
-// GAMMA memory (E/J repeat within 3 minutes)
-const gammaLast = {};
-// gammaLast[symbol][group] = lastTime
+
 
 // SALSA memory (W/X buffered within 20 seconds)
 const salsaBuf = {};
