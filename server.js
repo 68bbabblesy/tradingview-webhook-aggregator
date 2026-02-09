@@ -1248,38 +1248,32 @@ const BAZOOKA_MIN_COUNT = 10;
 const BAZOOKA_CHUNK_SIZE = 12; // presentation only
 
 const bazookaState = {
-    A: { active: false, symbols: new Map(), timer: null },
-    B: { active: false, symbols: new Map(), timer: null },
-    C: { active: false, symbols: new Map(), timer: null },
-    D: { active: false, symbols: new Map(), timer: null },
-    W: { active: false, symbols: new Map(), timer: null },
-    X: { active: false, symbols: new Map(), timer: null },
-    S: { active: false, symbols: new Map(), timer: null },
-    T: { active: false, symbols: new Map(), timer: null },
-    U: { active: false, symbols: new Map(), timer: null },
-    V: { active: false, symbols: new Map(), timer: null }
+    active: false,
+    symbols: new Map(), // symbol → { time, group }
+    timer: null
 };
+
 
 
 // bazookaGlobal[group] = Map(symbol → time)
 
 function processBazooka(symbol, group, ts) {
-    const state = bazookaState[group];
-    if (!state) return;
+    // Same global groups as before (matches BABABIA/MAMAMIA universe)
+    if (!["A","B","C","D","W","X","S","T","U","V"].includes(group)) return;
 
-    // Start snapshot window on first hit
-    if (!state.active) {
-        state.active = true;
-        state.symbols.clear();
+    // Start frozen snapshot on FIRST hit
+    if (!bazookaState.active) {
+        bazookaState.active = true;
+        bazookaState.symbols.clear();
 
-        state.timer = setTimeout(() => {
-            const entries = [...state.symbols.entries()];
-            const count = entries.length;
+        bazookaState.timer = setTimeout(() => {
+            const entries = [...bazookaState.symbols.entries()];
+            const total = entries.length;
 
             // OPTION A: silent discard if below threshold
-            if (count >= BAZOOKA_MIN_COUNT) {
+            if (total >= BAZOOKA_MIN_COUNT) {
 
-                // Split into presentation chunks only
+                // Split ONLY for Telegram delivery
                 const chunks = [];
                 for (let i = 0; i < entries.length; i += BAZOOKA_CHUNK_SIZE) {
                     chunks.push(entries.slice(i, i + BAZOOKA_CHUNK_SIZE));
@@ -1287,9 +1281,9 @@ function processBazooka(symbol, group, ts) {
 
                 chunks.forEach((chunk, idx) => {
                     const lines = chunk
-                        .sort((a, b) => a[1] - b[1])
-                        .map(([s, t]) =>
-                            `• ${s} @ ${new Date(t).toLocaleTimeString()}`
+                        .sort((a, b) => a[1].time - b[1].time)
+                        .map(([sym, info]) =>
+                            `• ${sym} (${info.group}) @ ${new Date(info.time).toLocaleTimeString()}`
                         )
                         .join("\n");
 
@@ -1300,44 +1294,42 @@ function processBazooka(symbol, group, ts) {
 
                     sendToTelegram6(
                         `💥 BAZOOKA${suffix}\n` +
-                        `Group: ${group}\n` +
-                        `Total Symbols: ${count}\n` +
+                        `Total Symbols: ${total}\n` +
                         `Window: 50s\n` +
                         `Symbols:\n${lines}`
                     );
                 });
 
-                // GODZILLA eligibility — once per snapshot
+                // GODZILLA eligibility (unchanged semantics)
                 for (const [sym] of entries) {
                     markGodzillaEligible(sym, ts);
                 }
-                
-				for (const [sym] of entries) {
-                salsaState.set(sym, { count: 0, armedAt: ts });
+
+                // SALSA arm (unchanged)
+                for (const [sym] of entries) {
+                    salsaState.set(sym, { count: 0, armedAt: ts });
                 }
 
-				
-                // CONTRARIAN activation — once per snapshot
+                // CONTRARIAN arm (same as original global behavior)
                 contrarianState.active = true;
                 contrarianState.since = ts;
                 contrarianState.buf = [];
-                contrarianState.fromGroup =
-                    ["A", "C", "W", "S", "U"].includes(group)
-                        ? "ACWSU"
-                        : "BDXTV";
+                contrarianState.fromGroup = "ACWSU"; // global, same as before
             }
 
-            // Reset snapshot state
-            state.active = false;
-            state.symbols.clear();
-            clearTimeout(state.timer);
-            state.timer = null;
+            // Reset snapshot (prevents late symbols)
+            bazookaState.active = false;
+            bazookaState.symbols.clear();
+            clearTimeout(bazookaState.timer);
+            bazookaState.timer = null;
 
         }, BAZOOKA_WINDOW_MS);
     }
 
-    // Collect unique symbols during snapshot window
-    state.symbols.set(symbol, ts);
+    // Collect symbol ONCE during the window (no overwrite)
+    if (!bazookaState.symbols.has(symbol)) {
+        bazookaState.symbols.set(symbol, { time: ts, group });
+    }
 }
 
 
