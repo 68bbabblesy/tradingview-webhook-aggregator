@@ -376,72 +376,6 @@ function maxWindowMs() {
 
 
 
-// ==========================================================
-//  BOT 7 — TESTRUN burst engines (isolated, delayed flush)
-// ==========================================================
-
-const TESTRUN_HOLD_MS = 60 * 1000;
-
-// ---- TESTRUN_BB (BABABIA test) ----
-const testrunBB = {
-    A: new Map(), B: new Map(), C: new Map(), D: new Map(),
-    W: new Map(), X: new Map(), S: new Map(), T: new Map(),
-    U: new Map(), V: new Map(),
-    timer: {}
-};
-
-// ---- TESTRUN_MM (MAMAMIA test) ----
-const testrunMM = {
-    A: new Map(), B: new Map(), C: new Map(), D: new Map(),
-    W: new Map(), X: new Map(), S: new Map(), T: new Map(),
-    U: new Map(), V: new Map(),
-    timer: {}
-};
-
-// ---- TESTRUN_BZ (BAZOOKA test) ----
-const testrunBZ = {
-    A: new Map(), B: new Map(), C: new Map(), D: new Map(),
-    W: new Map(), X: new Map(), S: new Map(), T: new Map(),
-    U: new Map(), V: new Map(),
-    timer: {}
-};
-
-// ==========================================================
-//  BOT 7 — LOCKED BATCH (BABABIA only, window-locked)
-// ==========================================================
-
-const LOCKED_BB_WINDOW_MS = 20 * 1000;
-const LOCKED_BB_MIN_COUNT = 5;
-
-const lockedBB = {
-    A: { active: false, symbols: new Map(), timer: null },
-    B: { active: false, symbols: new Map(), timer: null },
-    C: { active: false, symbols: new Map(), timer: null },
-    D: { active: false, symbols: new Map(), timer: null },
-    W: { active: false, symbols: new Map(), timer: null },
-    X: { active: false, symbols: new Map(), timer: null },
-    S: { active: false, symbols: new Map(), timer: null },
-    T: { active: false, symbols: new Map(), timer: null },
-    U: { active: false, symbols: new Map(), timer: null },
-    V: { active: false, symbols: new Map(), timer: null }
-};
-
-// ==========================================================
-//  LOCKED BABABIA / MAMAMIA (Render-safe queue)
-// ==========================================================
-
-const lockedBM = {
-    A: { active: false, symbols: new Map(), timer: null },
-    B: { active: false, symbols: new Map(), timer: null },
-    C: { active: false, symbols: new Map(), timer: null },
-    D: { active: false, symbols: new Map(), timer: null },
-    W: { active: false, symbols: new Map(), timer: null },
-    X: { active: false, symbols: new Map(), timer: null },
-    S: { active: false, symbols: new Map(), timer: null },
-    T: { active: false, symbols: new Map(), timer: null },
-    U: { active: false, symbols: new Map(), timer: null },
-    V: { active: false, symbols: new Map(), timer: null }
-};
 
 
 // ==========================================================
@@ -1553,10 +1487,25 @@ const BABABIA_WINDOW_MS = 20 * 1000;
 const MAMAMIA_WINDOW_MS = 50 * 1000;
 const BABABIA_MIN_COUNT = 5;
 
+const bababiaState = {
+    A: { active: false, symbols: new Map(), timer: null },
+    B: { active: false, symbols: new Map(), timer: null },
+    C: { active: false, symbols: new Map(), timer: null },
+    D: { active: false, symbols: new Map(), timer: null },
+    W: { active: false, symbols: new Map(), timer: null },
+    X: { active: false, symbols: new Map(), timer: null },
+    S: { active: false, symbols: new Map(), timer: null },
+    T: { active: false, symbols: new Map(), timer: null },
+    U: { active: false, symbols: new Map(), timer: null },
+    V: { active: false, symbols: new Map(), timer: null }
+};
+
+
 function processBababia(symbol, group, ts) {
     if (!lockedBM[group]) return;
 
     const state = lockedBM[group];
+	
 
     if (!state.active) {
         state.active = true;
@@ -1609,151 +1558,6 @@ function processBababia(symbol, group, ts) {
 
     state.symbols.set(symbol, ts);
 }
-
-
-function processTESTRUN_BB(symbol, group, ts) {
-    if (!testrunBB[group]) return;
-
-    const map = testrunBB[group];
-    map.set(symbol, ts);
-
-    const cutoff = ts - BABABIA_WINDOW_MS;
-    for (const [s, t] of map.entries()) {
-        if (t < cutoff) map.delete(s);
-    }
-
-    if (map.size < BABABIA_MIN_COUNT) return;
-    if (testrunBB.timer[group]) return;
-
-    testrunBB.timer[group] = setTimeout(() => {
-        const lines = [...map.entries()]
-            .map(([s, t]) => `• ${s} @ ${new Date(t).toLocaleTimeString()}`)
-            .join("\n");
-
-        sendToTelegram7(
-            `🧪 TESTRUN_BB\n` +
-            `Group: ${group}\n` +
-            `Unique Symbols: ${map.size}\n` +
-            `Window: 20s\n` +
-            `Symbols:\n${lines}`
-        );
-
-        map.clear();
-        clearTimeout(testrunBB.timer[group]);
-        testrunBB.timer[group] = null;
-    }, TESTRUN_HOLD_MS);
-}
-
-
-function processTESTRUN_MM(symbol, group, ts) {
-    if (!testrunMM[group]) return;
-
-    const map = testrunMM[group];
-    map.set(symbol, ts);
-
-    const cutoff = ts - MAMAMIA_WINDOW_MS;
-    for (const [s, t] of map.entries()) {
-        if (t < cutoff) map.delete(s);
-    }
-
-    if (map.size < BABABIA_MIN_COUNT) return;
-    if (testrunMM.timer[group]) return;
-
-    testrunMM.timer[group] = setTimeout(() => {
-        const lines = [...map.entries()]
-            .map(([s, t]) => `• ${s} @ ${new Date(t).toLocaleTimeString()}`)
-            .join("\n");
-
-        sendToTelegram7(
-            `🧪 TESTRUN_MM\n` +
-            `Group: ${group}\n` +
-            `Unique Symbols: ${map.size}\n` +
-            `Window: 50s\n` +
-            `Symbols:\n${lines}`
-        );
-
-        map.clear();
-        clearTimeout(testrunMM.timer[group]);
-        testrunMM.timer[group] = null;
-    }, TESTRUN_HOLD_MS);
-}
-
-
-function processTESTRUN_BZ(symbol, group, ts) {
-    if (!testrunBZ[group]) return;
-
-    const map = testrunBZ[group];
-    map.set(symbol, ts);
-
-    const cutoff = ts - BAZOOKA_WINDOW_MS;
-    for (const [s, t] of map.entries()) {
-        if (t < cutoff) map.delete(s);
-    }
-
-    if (map.size < BAZOOKA_MIN_COUNT) return;
-    if (testrunBZ.timer[group]) return;
-
-    testrunBZ.timer[group] = setTimeout(() => {
-        const lines = [...map.entries()]
-            .map(([s, t]) => `• ${s} @ ${new Date(t).toLocaleTimeString()}`)
-            .join("\n");
-
-        sendToTelegram7(
-            `🧪 TESTRUN_BZ\n` +
-            `Group: ${group}\n` +
-            `Unique Symbols: ${map.size}\n` +
-            `Window: 50s\n` +
-            `Symbols:\n${lines}`
-        );
-
-        map.clear();
-        clearTimeout(testrunBZ.timer[group]);
-        testrunBZ.timer[group] = null;
-    }, TESTRUN_HOLD_MS);
-}
-
-function processLOCKED_BB(symbol, group, ts) {
-    const state = lockedBB[group];
-    if (!state) return;
-
-    // First alert → lock the window
-    if (!state.active) {
-        state.active = true;
-        state.symbols.clear();
-
-        state.timer = setTimeout(() => {
-            const count = state.symbols.size;
-
-            if (count >= LOCKED_BB_MIN_COUNT) {
-                const lines = [...state.symbols.entries()]
-                    .sort((a, b) => a[1] - b[1])
-                    .map(([s, t]) => `• ${s} @ ${new Date(t).toLocaleTimeString()}`)
-                    .join("\n");
-
-                sendToTelegram7(
-                    `📦 LOCKED_BB\n` +
-                    `Group: ${group}\n` +
-                    `Unique Symbols: ${count}\n` +
-                    `Window: 20s\n` +
-                    `Symbols:\n${lines}`
-                );
-            }
-
-            // Reset state
-            state.active = false;
-            state.symbols.clear();
-            clearTimeout(state.timer);
-            state.timer = null;
-
-        }, LOCKED_BB_WINDOW_MS);
-    }
-
-    // Collect unique symbols during locked window
-    state.symbols.set(symbol, ts);
-}
-
-
-
 
 
 
@@ -2135,10 +1939,7 @@ app.post("/incoming", (req, res) => {
         processBababia(symbol, group, ts);
 		processGodzilla(symbol, group, ts);
 		processWakanda(symbol, group, ts);
-        processTESTRUN_BB(symbol, group, ts);
-        processTESTRUN_MM(symbol, group, ts);
-        processTESTRUN_BZ(symbol, group, ts);
-        processLOCKED_BB(symbol, group, ts);
+        
 
 		processJupiterSaturn(symbol, group, ts);
 		processTracking4(symbol, group, ts, body);
