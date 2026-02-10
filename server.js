@@ -1498,6 +1498,54 @@ function processBlackPanther(symbol, group, ts) {
 }
 
 // ==========================================================
+//  GAMMA (ACWSU / BDXTV → 4+ distinct groups within 8 minutes)
+// ==========================================================
+
+const GAMMA_WINDOW_MS = 8 * 60 * 1000; // 8 minutes
+
+function processGamma(symbol, group, ts) {
+    const GAMMA_GROUPS = ["A","C","W","S","U","B","D","X","T","V"];
+
+    if (!GAMMA_GROUPS.includes(group)) return;
+
+    // Collect recent distinct groups within window
+    const recent = GAMMA_GROUPS
+        .map(g => safeGet(symbol, g))
+        .filter(Boolean)
+        .filter(x => Math.abs(ts - x.time) <= GAMMA_WINDOW_MS);
+
+    // Build distinct groups
+    const distinct = {};
+    for (const x of recent) {
+        distinct[x.payload.group] = x;
+    }
+
+    const groups = Object.keys(distinct);
+
+    // Need at least 4 distinct groups
+    if (groups.length < 4) return;
+
+    // Pick latest 4 (or more) by time
+    const picked = Object.values(distinct)
+        .sort((a, b) => a.time - b.time)
+        .slice(-groups.length);
+
+    const times = picked.map(p => new Date(p.time).toLocaleString());
+
+    const msg =
+        `🟣 GAMMA\n` +
+        `Symbol: ${symbol}\n` +
+        `Groups: ${picked.map(p => p.payload.group).join(" → ")}\n` +
+        `Count: ${groups.length}\n` +
+        `Window: 8m\n` +
+        `Times:\n` +
+        times.map((t, i) => `${i + 1}) ${t}`).join("\n");
+
+    sendToTelegram5(msg);
+}
+
+
+// ==========================================================
 //  BABABIA / MAMAMIA (GLOBAL ABCDWXSTUV burst detector)
 // ==========================================================
 
@@ -1708,9 +1756,7 @@ function processLOCKED_BB(symbol, group, ts) {
 
 
 
-// ==========================================================
-//  GAMMA (E→E or J→J within 3 minutes)
-// ==========================================================
+
 
 // ==========================================================
 //  SALSA 
@@ -2080,7 +2126,8 @@ app.post("/incoming", (req, res) => {
 		processContrarian(symbol, group, ts);    
        	        
 		processBlackPanther(symbol, group, ts);
-        
+        processGamma(symbol, group, ts);
+
         processSalsa(symbol, group, ts);
         processTango(symbol, group, ts);
         processSpesh(symbol, group, ts);
