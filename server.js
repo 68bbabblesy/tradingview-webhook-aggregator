@@ -1515,7 +1515,9 @@ const lockedBM = {
 
 
 function processBababia(symbol, group, ts) {
-    if (!lockedBM[group]) return;
+    console.log("BABABIA HIT:", symbol, group);
+
+	if (!lockedBM[group]) return;
 
     const state = lockedBM[group];
 	
