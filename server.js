@@ -1500,6 +1500,19 @@ const bababiaState = {
     V: { active: false, symbols: new Map(), timer: null }
 };
 
+const lockedBM = {
+  A: { active: false, symbols: new Map(), timer: null },
+  B: { active: false, symbols: new Map(), timer: null },
+  C: { active: false, symbols: new Map(), timer: null },
+  D: { active: false, symbols: new Map(), timer: null },
+  W: { active: false, symbols: new Map(), timer: null },
+  X: { active: false, symbols: new Map(), timer: null },
+  S: { active: false, symbols: new Map(), timer: null },
+  T: { active: false, symbols: new Map(), timer: null },
+  U: { active: false, symbols: new Map(), timer: null },
+  V: { active: false, symbols: new Map(), timer: null }
+};
+
 
 function processBababia(symbol, group, ts) {
     if (!lockedBM[group]) return;
