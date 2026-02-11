@@ -1565,6 +1565,53 @@ function processZulu(symbol, group, ts) {
     );
 }
 
+// ==========================================================
+//  MAMBA (Same symbol E/H/Q/R → any 2 hits within 50s)
+//  Bot 8
+// ==========================================================
+
+const MAMBA_WINDOW_MS = 50 * 1000;
+
+const mambaBuf = {};
+// mambaBuf[symbol] = [ { group, time }, ... ]
+
+function processMamba(symbol, group, ts) {
+    if (!["E", "H", "Q", "R"].includes(group)) return;
+
+    if (!mambaBuf[symbol]) {
+        mambaBuf[symbol] = [];
+    }
+
+    const buf = mambaBuf[symbol];
+
+    buf.push({ group, time: ts });
+
+    // Remove hits older than 50s
+    const cutoff = ts - MAMBA_WINDOW_MS;
+    while (buf.length && buf[0].time < cutoff) {
+        buf.shift();
+    }
+
+    if (buf.length < 2) return;
+
+    const first = buf[0];
+    const second = buf[1];
+
+    const diffMs = second.time - first.time;
+    const diffSec = Math.floor(diffMs / 1000);
+
+    sendToTelegram8(
+        `🐍 MAMBA\n` +
+        `Symbol: ${symbol}\n` +
+        `1) ${first.group} @ ${new Date(first.time).toLocaleTimeString()}\n` +
+        `2) ${second.group} @ ${new Date(second.time).toLocaleTimeString()}\n` +
+        `Gap: ${diffSec}s`
+    );
+
+    // Slide window (allow overlapping)
+    buf.shift();
+}
+
 
 
 // ==========================================================
@@ -1851,6 +1898,7 @@ app.post("/incoming", (req, res) => {
         processTango(symbol, group, ts);
 		processNeptune(symbol, group, ts);
         processZulu(symbol, group, ts);
+        processMamba(symbol, group, ts);
 
         processSpesh(symbol, group, ts);
         processSnowflake(symbol, group, ts);
