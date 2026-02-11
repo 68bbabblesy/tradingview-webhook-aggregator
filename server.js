@@ -396,9 +396,7 @@ const lastGPLevel = {};
 // Cross-level switch (H ↔ G ↔ P)
 const lastCrossLevel = {}; // symbol → { group, level, time }
 
-// AD2 memory for Divergence Trio
-const recentAD2 = {};
-// recentAD2[symbol] = { time }
+
 
 // G/H memory for Level Correlation
 const recentGH = {};
@@ -418,8 +416,7 @@ const tangoBuf = {};
 
 
 
-// AD2 global burst tracking for BIG MARKET MOVE
-const recentAD2Global = [];
+
 
 
 // -----------------------------
@@ -748,146 +745,6 @@ function processDivergenceMonitor(symbol, group, ts) {
 
 
 
-// ==========================================================
-//  MATCHING ENGINE
-// ==========================================================
-
-const MATCH_WINDOW_MS = 65 * 1000;
-
-function processMatching1(symbol, group, ts, body) {
-     const AD = ["A", "B", "C", "D"];
-
-
-    const FGH = ["F", "G", "H"];
-
-    if (AD.includes(group)) {
-        const candidate = FGH.map(g => safeGet(symbol, g))
-            .filter(Boolean)
-            .find(x => ts - x.time <= MATCH_WINDOW_MS);
-
-        if (candidate) {
-            sendToTelegram4(
-                `🔁 MATCHING 1\nSymbol: ${symbol}\nGroups: ${group} ↔ ${candidate.payload.group}\nTimes:\n - ${group}: ${new Date(ts).toLocaleString()}\n - ${candidate.payload.group}: ${new Date(candidate.time).toLocaleString()}`
-            );
-        }
-        return;
-    }
-
-    if (FGH.includes(group)) {
-        const candidate = AD.map(g => safeGet(symbol, g))
-            .filter(Boolean)
-            .find(x => ts - x.time <= MATCH_WINDOW_MS);
-
-        if (candidate) {
-            sendToTelegram4(
-                `🔁 MATCHING 1\nSymbol: ${symbol}\nGroups: ${candidate.payload.group} ↔ ${group}\nTimes:\n - ${candidate.payload.group}: ${new Date(candidate.time).toLocaleString()}\n - ${group}: ${new Date(ts).toLocaleString()}`
-            );
-        }
-    }
-}
-
-function processMatchingAD2(symbol, group, ts) {
-
-    const WINDOW_MS = 3 * 60 * 1000;
-
-    const SET_ACW = ["A", "C", "W"];
-    const SET_BDX = ["B", "D", "X"];
-
-    let activeSet = null;
-
-    if (SET_ACW.includes(group)) {
-        activeSet = SET_ACW;
-    } else if (SET_BDX.includes(group)) {
-        activeSet = SET_BDX;
-    } else {
-        return;
-    }
-
-    // Look for any OTHER group in the same set
-    const candidate = activeSet
-        .filter(g => g !== group)
-        .map(g => safeGet(symbol, g))
-        .filter(Boolean)
-        .find(x => Math.abs(ts - x.time) <= WINDOW_MS);
-
-    if (!candidate) return;
-
-    const diffMs  = Math.abs(ts - candidate.time);
-    const diffMin = Math.floor(diffMs / 60000);
-    const diffSec = Math.floor((diffMs % 60000) / 1000);
-
-    sendToTelegram4(
-        `🔁 AD2-Divergence\n` +
-        `Symbol: ${symbol}\n` +
-        `Groups: ${candidate.payload.group} ↔ ${group}\n` +
-        `${candidate.payload.group} Time: ${new Date(candidate.time).toLocaleString()}\n` +
-        `${group} Time: ${new Date(ts).toLocaleString()}\n` +
-        `Gap: ${diffMin}m ${diffSec}s`
-    );
-}
-
-
-const TRIO_WINDOW_MS = 3 * 60 * 1000; // 3 minutes
-
-const BIG_MOVE_WINDOW_MS = 45 * 1000;
-const BIG_MOVE_THRESHOLD = 3;
-
-function processBigMarketMove(ts) {
-    // Add timestamp
-    recentAD2Global.push(ts);
-
-    // Keep only recent timestamps
-    const cutoff = ts - BIG_MOVE_WINDOW_MS;
-    while (recentAD2Global.length && recentAD2Global[0] < cutoff) {
-        recentAD2Global.shift();
-    }
-
-    if (recentAD2Global.length < BIG_MOVE_THRESHOLD) return;
-
-    sendToTelegram6(
-        `🚨 BIG MARKET MOVE\n` +
-        `AD2 divergences: ${recentAD2Global.length}\n` +
-        `Window: 45 seconds\n` +
-        `Time: ${new Date(ts).toLocaleString()}`
-    );
-
-    // Reset after firing (once per burst)
-    recentAD2Global.length = 0;
-}
-
-
-
-function processDivergenceTrio(symbol, group, ts, body) {
-    if (!["G", "H"].includes(group)) return;
-
-    const ad2 = recentAD2[symbol];
-    if (!ad2) return;
-
-    const diffMs = ts - ad2.time;
-    if (diffMs > TRIO_WINDOW_MS) return;
-
-    // Extract signed level for G/H
-   let level = body.level || "";
-
-
-    if (level && !String(level).startsWith("-") && !String(level).startsWith("+")) {
-        level = `+${level}`;
-    }
-
-    const diffMin = Math.floor(diffMs / 60000);
-    const diffSec = Math.floor((diffMs % 60000) / 1000);
-
-    sendToTelegram5(
-        `🔺 DIVERGENCE TRIO\n` +
-        `Symbol: ${symbol}\n` +
-        `Trigger: ${group} (${level})\n` +
-        `Gap: ${diffMin}m ${diffSec}s\n` +
-        `Time: ${new Date(ts).toLocaleString()}`
-    );
-
-    // Prevent duplicate trio fires
-    delete recentAD2[symbol];
-}
 
 const LEVEL_CORRELATION_WINDOW_MS = 45 * 1000;
 // ==========================================================
@@ -1652,6 +1509,58 @@ function processTango(symbol, group, ts) {
 }
 
 // ==========================================================
+//  NEPTUNE (R / J → any 2 hits within 180s)
+//  Bot 4
+// ==========================================================
+
+const NEPTUNE_WINDOW_MS = 180 * 1000;
+
+const neptuneBuf = {};
+// neptuneBuf[symbol] = [ts1, ts2, ...]
+
+function processNeptune(symbol, group, ts) {
+    if (!["R", "J"].includes(group)) return;
+
+    if (!neptuneBuf[symbol]) {
+        neptuneBuf[symbol] = [];
+    }
+
+    const buf = neptuneBuf[symbol];
+
+    // Add hit
+    buf.push(ts);
+
+    // Remove hits older than 180s
+    const cutoff = ts - NEPTUNE_WINDOW_MS;
+    while (buf.length && buf[0] < cutoff) {
+        buf.shift();
+    }
+
+    // Need at least 2 hits
+    if (buf.length < 2) return;
+
+    const first = buf[0];
+    const second = buf[1];
+
+    const diffMs = second - first;
+    const diffMin = Math.floor(diffMs / 60000);
+    const diffSec = Math.floor((diffMs % 60000) / 1000);
+
+    sendToTelegram4(
+        `🪐 NEPTUNE\n` +
+        `Symbol: ${symbol}\n` +
+        `Groups: R / J\n` +
+        `First hit: ${new Date(first).toLocaleString()}\n` +
+        `Second hit: ${new Date(second).toLocaleString()}\n` +
+        `Gap: ${diffMin}m ${diffSec}s`
+    );
+
+    // Slide window (allows overlapping sequences)
+    buf.shift();
+}
+
+
+// ==========================================================
 //  CONTRARIAN (post-BAZOOKA opposite-group detector)
 // ==========================================================
 
@@ -1919,8 +1828,8 @@ app.post("/incoming", (req, res) => {
         processTracking1(symbol, group, ts, body);
         processTracking2and3(symbol, group, ts, body);
         processMatching1(symbol, group, ts, body);
-        processMatchingAD2(symbol, group, ts);
-		processDivergenceTrio(symbol, group, ts, body);
+       
+		
 		processLevelCorrelation(symbol, group, ts, body);
        processDivergenceMonitor(symbol, group, ts);
         processMatching2(symbol, group, ts, body);
@@ -1933,6 +1842,8 @@ app.post("/incoming", (req, res) => {
 
         processSalsa(symbol, group, ts);
         processTango(symbol, group, ts);
+		processNeptune(symbol, group, ts);
+
         processSpesh(symbol, group, ts);
         processSnowflake(symbol, group, ts);
         processBababia(symbol, group, ts);
