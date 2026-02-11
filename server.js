@@ -1549,6 +1549,22 @@ function processNeptune(symbol, group, ts) {
     neptuneGlobal.shift();
 }
 
+// ==========================================================
+//  ZULU (Monitor R / J — single hit logger)
+//  Bot 7
+// ==========================================================
+
+function processZulu(symbol, group, ts) {
+    if (!["R", "J"].includes(group)) return;
+
+    sendToTelegram7(
+        `🟡 ZULU\n` +
+        `Symbol: ${symbol}\n` +
+        `Group: ${group}\n` +
+        `Time: ${new Date(ts).toLocaleString()}`
+    );
+}
+
 
 // ==========================================================
 //  CONTRARIAN (post-BAZOOKA opposite-group detector)
@@ -1833,6 +1849,7 @@ app.post("/incoming", (req, res) => {
         processSalsa(symbol, group, ts);
         processTango(symbol, group, ts);
 		processNeptune(symbol, group, ts);
+        processZulu(symbol, group, ts);
 
         processSpesh(symbol, group, ts);
         processSnowflake(symbol, group, ts);
