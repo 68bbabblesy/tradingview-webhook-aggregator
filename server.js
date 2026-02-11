@@ -1509,7 +1509,7 @@ function processTango(symbol, group, ts) {
 }
 
 // ==========================================================
-//  NEPTUNE (GLOBAL R / J → any 2 hits within 180s)
+//  NEPTUNE (GLOBAL E / J / Q / R → any 2 hits within 180s)
 //  Bot 4
 // ==========================================================
 
@@ -1519,7 +1519,7 @@ const neptuneGlobal = [];
 // [{ symbol, group, time }]
 
 function processNeptune(symbol, group, ts) {
-    if (!["R", "J"].includes(group)) return;
+    if (!["E", "J", "Q", "R"].includes(group)) return;
 
     neptuneGlobal.push({ symbol, group, time: ts });
 
@@ -1550,12 +1550,12 @@ function processNeptune(symbol, group, ts) {
 }
 
 // ==========================================================
-//  ZULU (Monitor R / J — single hit logger)
+//  ZULU (Monitor E / J / Q / R — single hit logger)
 //  Bot 7
 // ==========================================================
 
 function processZulu(symbol, group, ts) {
-    if (!["R", "J"].includes(group)) return;
+    if (!["E", "J", "Q", "R"].includes(group)) return;
 
     sendToTelegram7(
         `🟡 ZULU\n` +
@@ -1564,6 +1564,7 @@ function processZulu(symbol, group, ts) {
         `Time: ${new Date(ts).toLocaleString()}`
     );
 }
+
 
 
 // ==========================================================
