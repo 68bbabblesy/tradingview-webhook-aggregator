@@ -1387,18 +1387,18 @@ wakandaEligible.delete(symbol); // one-shot eligibility
 
 
 // ==========================================================
-//  BLACK_PANTHER (A/B/C/D/X/Y → 3 distinct groups, ≤ 300s)
+//  BLACK_PANTHER (10 groups → 3 distinct groups, ≤ 300s)
 // ==========================================================
 
 const BLACK_PANTHER_WINDOW_MS = 300 * 1000;
 
 function processBlackPanther(symbol, group, ts) {
-    const ABCDWX = ["A", "B", "C", "D", "W", "X"];
+    const ABCDWXSTUV = ["A", "B", "C", "D", "W", "X", "S", "T", "U", "V"];
 
-    if (!ABCDWX.includes(group)) return;
+    if (!ABCDWXSTUV.includes(group)) return;
 
     // Collect recent distinct groups within window
-    const recent = ABCDWX
+    const recent = ABCDWXSTUV
         .map(g => safeGet(symbol, g))
         .filter(Boolean)
         .filter(x => Math.abs(ts - x.time) <= BLACK_PANTHER_WINDOW_MS);
