@@ -1500,42 +1500,29 @@ const bababiaState = {
     V: { active: false, symbols: new Map(), timer: null }
 };
 
-const lockedBM = {
-  A: { active: false, symbols: new Map(), timer: null },
-  B: { active: false, symbols: new Map(), timer: null },
-  C: { active: false, symbols: new Map(), timer: null },
-  D: { active: false, symbols: new Map(), timer: null },
-  W: { active: false, symbols: new Map(), timer: null },
-  X: { active: false, symbols: new Map(), timer: null },
-  S: { active: false, symbols: new Map(), timer: null },
-  T: { active: false, symbols: new Map(), timer: null },
-  U: { active: false, symbols: new Map(), timer: null },
-  V: { active: false, symbols: new Map(), timer: null }
-};
-
-
 function processBababia(symbol, group, ts) {
-    console.log("BABABIA HIT:", symbol, group);
 
-	if (!lockedBM[group]) return;
+    if (!bababiaState[group]) return;
 
-    const state = lockedBM[group];
-	
+    const state = bababiaState[group];
 
     if (!state.active) {
         state.active = true;
         state.symbols.clear();
 
         state.timer = setTimeout(() => {
+
             const entries = [...state.symbols.entries()];
             const count = entries.length;
 
             if (count >= BABABIA_MIN_COUNT) {
+
                 const lines = entries
                     .sort((a, b) => a[1] - b[1])
                     .map(([s, t]) => `• ${s} @ ${new Date(t).toLocaleTimeString()}`)
                     .join("\n");
 
+                // BABABIA (20s logic label)
                 sendToTelegram9(
                     `🎉 BABABIA\n` +
                     `Group: ${group}\n` +
@@ -1544,6 +1531,7 @@ function processBababia(symbol, group, ts) {
                     `Symbols:\n${lines}`
                 );
 
+                // MAMAMIA (50s label)
                 sendToTelegram9(
                     `🎶 MAMAMIA\n` +
                     `Group: ${group}\n` +
@@ -1555,12 +1543,10 @@ function processBababia(symbol, group, ts) {
                 for (const [sym] of entries) {
                     markGodzillaEligible(sym, Date.now());
                 }
-				
-				for (const [sym] of entries) {
-            wakandaEligible.set(sym, Date.now());
-           }
 
-				
+                for (const [sym] of entries) {
+                    wakandaEligible.set(sym, Date.now());
+                }
             }
 
             state.active = false;
@@ -1573,8 +1559,6 @@ function processBababia(symbol, group, ts) {
 
     state.symbols.set(symbol, ts);
 }
-
-
 
 
 // ==========================================================
