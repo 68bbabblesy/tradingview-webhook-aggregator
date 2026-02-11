@@ -1509,54 +1509,44 @@ function processTango(symbol, group, ts) {
 }
 
 // ==========================================================
-//  NEPTUNE (R / J → any 2 hits within 180s)
+//  NEPTUNE (GLOBAL R / J → any 2 hits within 180s)
 //  Bot 4
 // ==========================================================
 
 const NEPTUNE_WINDOW_MS = 180 * 1000;
 
-const neptuneBuf = {};
-// neptuneBuf[symbol] = [ts1, ts2, ...]
+const neptuneGlobal = []; 
+// [{ symbol, group, time }]
 
 function processNeptune(symbol, group, ts) {
     if (!["R", "J"].includes(group)) return;
 
-    if (!neptuneBuf[symbol]) {
-        neptuneBuf[symbol] = [];
-    }
+    neptuneGlobal.push({ symbol, group, time: ts });
 
-    const buf = neptuneBuf[symbol];
-
-    // Add hit
-    buf.push(ts);
-
-    // Remove hits older than 180s
     const cutoff = ts - NEPTUNE_WINDOW_MS;
-    while (buf.length && buf[0] < cutoff) {
-        buf.shift();
+
+    while (neptuneGlobal.length && neptuneGlobal[0].time < cutoff) {
+        neptuneGlobal.shift();
     }
 
-    // Need at least 2 hits
-    if (buf.length < 2) return;
+    if (neptuneGlobal.length < 2) return;
 
-    const first = buf[0];
-    const second = buf[1];
+    const first = neptuneGlobal[0];
+    const second = neptuneGlobal[1];
 
-    const diffMs = second - first;
+    const diffMs = second.time - first.time;
     const diffMin = Math.floor(diffMs / 60000);
     const diffSec = Math.floor((diffMs % 60000) / 1000);
 
     sendToTelegram4(
         `🪐 NEPTUNE\n` +
-        `Symbol: ${symbol}\n` +
-        `Groups: R / J\n` +
-        `First hit: ${new Date(first).toLocaleString()}\n` +
-        `Second hit: ${new Date(second).toLocaleString()}\n` +
+        `1) ${first.symbol} (${first.group}) @ ${new Date(first.time).toLocaleString()}\n` +
+        `2) ${second.symbol} (${second.group}) @ ${new Date(second.time).toLocaleString()}\n` +
         `Gap: ${diffMin}m ${diffSec}s`
     );
 
     // Slide window (allows overlapping sequences)
-    buf.shift();
+    neptuneGlobal.shift();
 }
 
 
