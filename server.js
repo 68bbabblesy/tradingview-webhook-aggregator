@@ -1571,24 +1571,74 @@ function processNeptune(symbol, group, ts) {
 }
 
 // ==========================================================
-//  ZULU (Monitor E / J / Q / R — single hit logger)
+//  ZULU (Same symbol match: ACWSU/BDXTV ↔ EJQR within 45s)
+//  Either side can come first
 //  Bot 7
 // ==========================================================
 
-const ZULU_ENABLED = false; // set to true to reactivate
+const ZULU_ENABLED = true;              // set to false to disable
+const ZULU_WINDOW_MS = 45 * 1000;
+
+const ZULU_SIDE1 = new Set(["A", "C", "W", "S", "U", "B", "D", "X", "T", "V"]); // ACWSU + BDXTV
+const ZULU_SIDE2 = new Set(["E", "J", "Q", "R"]);                               // EJQR
+
+// Per-symbol memory
+// zuluLast[symbol] = { side: 1|2, group: "A"/"E"/..., time: ms }
+const zuluLast = {};
 
 function processZulu(symbol, group, ts) {
+  if (!ZULU_ENABLED) return;
 
-    if (!ZULU_ENABLED) return;
+  const isSide1 = ZULU_SIDE1.has(group);
+  const isSide2 = ZULU_SIDE2.has(group);
+  if (!isSide1 && !isSide2) return;
 
-    if (!["E", "J", "Q", "R"].includes(group)) return;
+  const side = isSide1 ? 1 : 2;
 
-    sendToTelegram7(
+  const prev = zuluLast[symbol];
+  if (prev) {
+    const diffMs = Math.abs(ts - prev.time);
+
+    // Opposite side + within window => fire
+    if (prev.side !== side && diffMs <= ZULU_WINDOW_MS) {
+      const diffSec = Math.floor(diffMs / 1000);
+
+      // Ensure message shows "first" and "second" in time order
+      const first = prev.time <= ts
+        ? { group: prev.group, time: prev.time }
+        : { group, time: ts };
+
+      const second = prev.time <= ts
+        ? { group, time: ts }
+        : { group: prev.group, time: prev.time };
+
+      sendToTelegram7(
         `🟡 ZULU\n` +
         `Symbol: ${symbol}\n` +
-        `Group: ${group}\n` +
-        `Time: ${new Date(ts).toLocaleString()}`
-    );
+        `1) ${first.group} @ ${new Date(first.time).toLocaleString()}\n` +
+        `2) ${second.group} @ ${new Date(second.time).toLocaleString()}\n` +
+        `Gap: ${diffSec}s`
+      );
+
+      // Optional: clear after a hit to avoid spam chains
+      // delete zuluLast[symbol];
+      // return;
+
+      // Keep tracking, but slide to latest event
+    }
+  }
+
+  // Update last seen for this symbol (always)
+  zuluLast[symbol] = { side, group, time: ts };
+
+  // Lightweight prune: drop stale entries occasionally
+  // (prevents memory growth if you see many symbols once)
+  if (Object.keys(zuluLast).length > 5000) {
+    const cutoff = ts - (5 * 60 * 1000);
+    for (const sym of Object.keys(zuluLast)) {
+      if (zuluLast[sym].time < cutoff) delete zuluLast[sym];
+    }
+  }
 }
 
 
