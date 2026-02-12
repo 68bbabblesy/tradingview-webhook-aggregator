@@ -1096,10 +1096,17 @@ function processBazooka(symbol, group, ts) {
                     markGodzillaEligible(sym, ts);
                 }
 
-                // SALSA arm (unchanged)
-                for (const [sym] of entries) {
-                    salsaState.set(sym, { count: 0, armedAt: ts });
-                }
+                const armedGroup = group;
+
+for (const [sym] of entries) {
+    salsaState.set(sym, {
+        count: 0,
+        armedAt: ts,
+        armedGroup,
+        firstHit: null
+    });
+}
+
 
                 // CONTRARIAN arm (same as original global behavior)
                 contrarianState.active = true;
@@ -1419,31 +1426,45 @@ function processBababia(symbol, group, ts) {
 
 
 // ==========================================================
-//  SALSA 
+//  SALSA (Post-BAZOOKA EJQR sequence tracker)
 // ==========================================================
 
 function processSalsa(symbol, group, ts) {
-    // Only track E J Q R
     if (!["E", "J", "Q", "R"].includes(group)) return;
 
     const state = salsaState.get(symbol);
-    if (!state) return; // not armed by BAZOOKA
+    if (!state) return;
 
-    state.count += 1;
+    // First hit
+    if (state.count === 0) {
+        state.count = 1;
+        state.firstHit = { group, time: ts };
+        return;
+    }
 
-    sendToTelegram3(
-        `💃 SALSA ${state.count}\n` +
-        `Symbol: ${symbol}\n` +
-        `Group: ${group}\n` +
-        `Hit #: ${state.count}\n` +
-        `Time: ${new Date(ts).toLocaleString()}`
-    );
+    // Second hit
+    if (state.count === 1) {
+        state.count = 2;
 
-    // After 2nd hit → disarm
-    if (state.count >= 2) {
+        const first = state.firstHit;
+        const diffMs = ts - first.time;
+        const diffMin = Math.floor(diffMs / 60000);
+        const diffSec = Math.floor((diffMs % 60000) / 1000);
+
+        sendToTelegram3(
+            `💃 SALSA 2\n` +
+            `Symbol: ${symbol}\n` +
+            `Group: ${state.armedGroup}\n` +
+            `Armed: ${new Date(state.armedAt).toLocaleTimeString()}\n` +
+            `1) ${first.group} @ ${new Date(first.time).toLocaleTimeString()}\n` +
+            `2) ${group} @ ${new Date(ts).toLocaleTimeString()}\n` +
+            `Gap: ${diffMin}m ${diffSec}s`
+        );
+
         salsaState.delete(symbol);
     }
 }
+
 
 
 // ==========================================================
