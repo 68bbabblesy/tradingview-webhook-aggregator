@@ -1575,7 +1575,12 @@ function processNeptune(symbol, group, ts) {
 //  Bot 7
 // ==========================================================
 
+const ZULU_ENABLED = false; // set to true to reactivate
+
 function processZulu(symbol, group, ts) {
+
+    if (!ZULU_ENABLED) return;
+
     if (!["E", "J", "Q", "R"].includes(group)) return;
 
     sendToTelegram7(
@@ -1585,6 +1590,7 @@ function processZulu(symbol, group, ts) {
         `Time: ${new Date(ts).toLocaleString()}`
     );
 }
+
 
 // ==========================================================
 //  MAMBA (Same symbol E/H/Q/R → any 2 hits within 50s)
@@ -1689,50 +1695,53 @@ const wakandaEligible = new Map();
 
 
 // ==========================================================
-//  SPESH (BTC ↔ ETH same-group within 90 seconds)
-//  Groups: A B E J W X
-//  Window-based persistence (overlapping matches allowed)
+//  SPESH (BTCUSDT ↔ TOTAL same-group within 45s)
+//  Groups: AA → NN
+//  Bot 7
 // ==========================================================
 
-const SPESH_WINDOW_MS = 90 * 1000;
-const SPESH_SYMBOLS = new Set(["BTCUSDT", "ETHUSDT"]);
-const SPESH_GROUPS = new Set(["A", "B", "W", "X"]);
+const SPESH_WINDOW_MS = 45 * 1000;
 
+const SPESH_SYMBOLS = new Set(["BTCUSDT", "TOTAL"]);
+
+const SPESH_GROUPS = new Set([
+    "AA","BB","CC","DD","EE","FF","GG",
+    "HH","II","JJ","KK","LL","MM","NN"
+]);
 
 const speshLast = {
     BTCUSDT: {},
-    ETHUSDT: {}
+    TOTAL: {}
 };
 // speshLast[symbol][group] = lastTime
 
 function processSpesh(symbol, group, ts) {
+
     if (!SPESH_SYMBOLS.has(symbol)) return;
     if (!SPESH_GROUPS.has(group)) return;
 
-    const otherSymbol = symbol === "BTCUSDT" ? "ETHUSDT" : "BTCUSDT";
+    const otherSymbol = symbol === "BTCUSDT" ? "TOTAL" : "BTCUSDT";
     const otherTs = speshLast[otherSymbol][group];
 
-    // If other side exists and is within window → fire
+    // Must be exact same group
     if (otherTs && Math.abs(ts - otherTs) <= SPESH_WINDOW_MS) {
+
         const diffMs = Math.abs(ts - otherTs);
         const diffSec = Math.floor(diffMs / 1000);
 
-        const msg =
+        sendToTelegram7(
             `🟢 SPESH\n` +
             `Group: ${group}\n` +
-            `Symbols: BTCUSDT ↔ ETHUSDT\n` +
-            `BTC Time: ${new Date(
+            `BTCUSDT: ${new Date(
                 symbol === "BTCUSDT" ? ts : otherTs
-            ).toLocaleString()}\n` +
-            `ETH Time: ${new Date(
-                symbol === "ETHUSDT" ? ts : otherTs
-            ).toLocaleString()}\n` +
-            `Gap: ${diffSec}s`;
-
-        sendToTelegram2(msg);
+            ).toLocaleTimeString()}\n` +
+            `TOTAL: ${new Date(
+                symbol === "TOTAL" ? ts : otherTs
+            ).toLocaleTimeString()}\n` +
+            `Gap: ${diffSec}s`
+        );
     }
 
-    // Always update latest timestamp (window controls validity)
     speshLast[symbol][group] = ts;
 }
 
