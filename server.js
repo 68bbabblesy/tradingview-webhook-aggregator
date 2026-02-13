@@ -1293,6 +1293,10 @@ function processBlackPanther(symbol, group, ts) {
         `3) ${times[2]}`;
 
     sendToTelegram5(msg);
+	
+	createBoomerangAnchor(symbol, parseFloat(safeGet(symbol, picked[2].payload.group)?.payload?.price), ts, "BLACK_PANTHER");
+
+	
 }
 
 // ==========================================================
@@ -1340,6 +1344,89 @@ function processGamma(symbol, group, ts) {
         times.map((t, i) => `${i + 1}) ${t}`).join("\n");
 
     sendToTelegram5(msg);
+	
+	createBoomerangAnchor(symbol, parseFloat(safeGet(symbol, picked[picked.length - 1].payload.group)?.payload?.price), ts, "GAMMA");
+
+	
+}
+
+function createBoomerangAnchor(symbol, price, ts, source) {
+
+    if (!price) return;
+
+    const state = boomerangState[symbol];
+
+    // Duplicate guard (ignore anchor if within 5 mins of last)
+    if (state && state.lastAnchorTime && (ts - state.lastAnchorTime < BOOMERANG_DUPLICATE_GUARD_MS)) {
+
+        // If GAMMA arrives at same time as BP → upgrade source
+        if (source === "GAMMA") {
+            state.source = "GAMMA";
+        }
+
+        return;
+    }
+
+    boomerangState[symbol] = {
+        anchorPrice: price,
+        anchorTime: ts,
+        source,
+        excursionHit: false,
+        direction: null,
+        lastAnchorTime: ts
+    };
+}
+
+
+function processBoomerang(symbol, group, ts, body) {
+
+    const state = boomerangState[symbol];
+    if (!state) return;
+
+    const price = parseFloat(body.price);
+    if (!price) return;
+
+    const movePct = (price - state.anchorPrice) / state.anchorPrice;
+
+    // Step 1 — excursion detection
+    if (!state.excursionHit) {
+
+        if (movePct >= BOOMERANG_EXCURSION_PCT) {
+            state.excursionHit = true;
+            state.direction = "UP";
+            return;
+        }
+
+        if (movePct <= -BOOMERANG_EXCURSION_PCT) {
+            state.excursionHit = true;
+            state.direction = "DOWN";
+            return;
+        }
+
+        return;
+    }
+
+    // Step 2 — must wait minimum time
+    if (ts - state.anchorTime < BOOMERANG_MIN_WAIT_MS) return;
+
+    // Step 3 — return near anchor
+    const returnDistance = Math.abs(price - state.anchorPrice) / state.anchorPrice;
+
+    if (returnDistance <= BOOMERANG_EXCURSION_PCT / 2) {
+
+        sendToTelegram3(
+            `🪃 BOOMERANG\n` +
+            `Symbol: ${symbol}\n` +
+            `Source: ${state.source}\n` +
+            `Anchor Price: ${state.anchorPrice}\n` +
+            `Current Price: ${price}\n` +
+            `Excursion: ${state.direction}\n` +
+            `Anchor Time: ${new Date(state.anchorTime).toLocaleString()}\n` +
+            `Return Time: ${new Date(ts).toLocaleString()}`
+        );
+
+        delete boomerangState[symbol];
+    }
 }
 
 
@@ -1742,6 +1829,27 @@ const salsaState = new Map();
 const wakandaEligible = new Map();
 // symbol → lastEligibleTime
 
+// ==========================================================
+//  BOOMERANG (U / Inverted U Return Detector)
+//  Anchor from BLACK_PANTHER or GAMMA
+//  0.8% excursion + 45m minimum wait
+//  Bot 3
+// ==========================================================
+
+const BOOMERANG_MIN_WAIT_MS = 45 * 60 * 1000;   // 45 minutes
+const BOOMERANG_EXCURSION_PCT = 0.008;          // 0.8%
+const BOOMERANG_DUPLICATE_GUARD_MS = 5 * 60 * 1000; // 5 min between anchors
+
+// boomerangState[symbol] = {
+//   anchorPrice,
+//   anchorTime,
+//   source,        // "BLACK_PANTHER" or "GAMMA"
+//   excursionHit,
+//   direction,     // "UP" or "DOWN"
+//   lastAnchorTime
+// }
+
+const boomerangState = {};
 
 
 // ==========================================================
@@ -1973,6 +2081,7 @@ app.post("/incoming", (req, res) => {
        	        
 		processBlackPanther(symbol, group, ts);
         processGamma(symbol, group, ts);
+        processBoomerang(symbol, group, ts, body);
 
         processSalsa(symbol, group, ts);
         processTango(symbol, group, ts);
