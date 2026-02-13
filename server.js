@@ -1854,7 +1854,7 @@ const boomerangState = {};
 
 // ==========================================================
 //  SPESH (BTCUSDT ↔ TOTAL same-group within 45s)
-//  Groups: AA → NN
+//  Groups: AA → ZZ
 //  Bot 7
 // ==========================================================
 
@@ -1862,16 +1862,18 @@ const SPESH_WINDOW_MS = 45 * 1000;
 
 const SPESH_SYMBOLS = new Set(["BTCUSDT", "TOTAL"]);
 
-const SPESH_GROUPS = new Set([
-    "AA","BB","CC","DD","EE","FF","GG",
-    "HH","II","JJ","KK","LL","MM","NN"
-]);
+// AA → ZZ auto-generate
+const SPESH_GROUPS = new Set(
+    Array.from({ length: 26 }, (_, i) => {
+        const letter = String.fromCharCode(65 + i);
+        return letter + letter;
+    })
+);
 
 const speshLast = {
     BTCUSDT: {},
     TOTAL: {}
 };
-// speshLast[symbol][group] = lastTime
 
 function processSpesh(symbol, group, ts) {
 
@@ -1881,7 +1883,6 @@ function processSpesh(symbol, group, ts) {
     const otherSymbol = symbol === "BTCUSDT" ? "TOTAL" : "BTCUSDT";
     const otherTs = speshLast[otherSymbol][group];
 
-    // Must be exact same group
     if (otherTs && Math.abs(ts - otherTs) <= SPESH_WINDOW_MS) {
 
         const diffMs = Math.abs(ts - otherTs);
@@ -1901,6 +1902,60 @@ function processSpesh(symbol, group, ts) {
     }
 
     speshLast[symbol][group] = ts;
+}
+
+
+
+// ==========================================================
+//  KOOKY (BTCUSDT ↔ TOTAL same-group within 45s)
+//  Groups: AAA → ZZZ
+//  Bot 7
+// ==========================================================
+
+const KOOKY_WINDOW_MS = 45 * 1000;
+
+const KOOKY_SYMBOLS = new Set(["BTCUSDT", "TOTAL"]);
+
+// AAA → ZZZ auto-generate
+const KOOKY_GROUPS = new Set(
+    Array.from({ length: 26 }, (_, i) => {
+        const letter = String.fromCharCode(65 + i);
+        return letter + letter + letter;
+    })
+);
+
+const kookyLast = {
+    BTCUSDT: {},
+    TOTAL: {}
+};
+
+function processKooky(symbol, group, ts) {
+
+    if (!KOOKY_SYMBOLS.has(symbol)) return;
+    if (!KOOKY_GROUPS.has(group)) return;
+
+    const otherSymbol = symbol === "BTCUSDT" ? "TOTAL" : "BTCUSDT";
+    const otherTs = kookyLast[otherSymbol][group];
+
+    if (otherTs && Math.abs(ts - otherTs) <= KOOKY_WINDOW_MS) {
+
+        const diffMs = Math.abs(ts - otherTs);
+        const diffSec = Math.floor(diffMs / 1000);
+
+        sendToTelegram7(
+            `🟣 KOOKY\n` +
+            `Group: ${group}\n` +
+            `BTCUSDT: ${new Date(
+                symbol === "BTCUSDT" ? ts : otherTs
+            ).toLocaleTimeString()}\n` +
+            `TOTAL: ${new Date(
+                symbol === "TOTAL" ? ts : otherTs
+            ).toLocaleTimeString()}\n` +
+            `Gap: ${diffSec}s`
+        );
+    }
+
+    kookyLast[symbol][group] = ts;
 }
 
 // ==========================================================
@@ -2090,6 +2145,8 @@ app.post("/incoming", (req, res) => {
         processMamba(symbol, group, ts);
 
         processSpesh(symbol, group, ts);
+		processKooky(symbol, group, ts);
+
         processSnowflake(symbol, group, ts);
         processBababia(symbol, group, ts);
 		processGodzilla(symbol, group, ts);
