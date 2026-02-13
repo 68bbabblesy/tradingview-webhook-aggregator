@@ -1740,7 +1740,7 @@ const mambaBuf = {};
 // mambaBuf[symbol] = [ { group, time }, ... ]
 
 function processMamba(symbol, group, ts) {
-    if (!["E", "H", "Q", "R"].includes(group)) return;
+    if (!["E", "J", "Q", "R"].includes(group)) return;
 
     if (!mambaBuf[symbol]) {
         mambaBuf[symbol] = [];
