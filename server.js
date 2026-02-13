@@ -1577,7 +1577,7 @@ function processNeptune(symbol, group, ts) {
 // ==========================================================
 
 const ZULU_ENABLED = true;              // set to false to disable
-const ZULU_WINDOW_MS = 45 * 1000;
+const ZULU_WINDOW_MS = 180 * 1000;
 
 const ZULU_SIDE1 = new Set(["A", "C", "W", "S", "U", "B", "D", "X", "T", "V"]); // ACWSU + BDXTV
 const ZULU_SIDE2 = new Set(["E", "J", "Q", "R"]);                               // EJQR
