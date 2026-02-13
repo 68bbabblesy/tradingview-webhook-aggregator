@@ -1958,51 +1958,59 @@ function processKooky(symbol, group, ts) {
     kookyLast[symbol][group] = ts;
 }
 
+
 // ==========================================================
-//  SNOWFLAKE (BTC ↔ ETH exact-group within 90 seconds)
-//  Groups: A B E J K L W X
+//  TESTING (BTCUSDT ↔ TOTAL any double-letter group within 90s)
+//  AA → ZZ (does NOT require same group)
+//  Bot 3
 // ==========================================================
 
-const SNOWFLAKE_WINDOW_MS = 90 * 1000;
-const SNOWFLAKE_SYMBOLS = new Set(["BTCUSDT", "ETHUSDT"]);
-const SNOWFLAKE_GROUPS = new Set(["A", "B", "K", "L", "W", "X"]);
+const TESTING_WINDOW_MS = 90 * 1000;
 
+const TESTING_SYMBOLS = new Set(["BTCUSDT", "TOTAL"]);
 
-const snowflakeLast = {
-    BTCUSDT: {},
-    ETHUSDT: {}
-};
-// snowflakeLast[symbol][group] = lastTime
+// Check if group is double letter like AA, BB, CC...
+function isDoubleLetter(group) {
+    return /^[A-Z]{2}$/.test(group) && group[0] === group[1];
+}
 
-function processSnowflake(symbol, group, ts) {
-    if (!SNOWFLAKE_SYMBOLS.has(symbol)) return;
-    if (!SNOWFLAKE_GROUPS.has(group)) return;
+const testingGlobal = []; 
+// [{ symbol, group, time }]
 
-    const otherSymbol = symbol === "BTCUSDT" ? "ETHUSDT" : "BTCUSDT";
-    const otherTs = snowflakeLast[otherSymbol][group];
+function processTesting(symbol, group, ts) {
 
-    // Fire if counterpart exists within window
-    if (otherTs && Math.abs(ts - otherTs) <= SNOWFLAKE_WINDOW_MS) {
-        const diffMs = Math.abs(ts - otherTs);
-        const diffSec = Math.floor(diffMs / 1000);
+    if (!TESTING_SYMBOLS.has(symbol)) return;
+    if (!isDoubleLetter(group)) return;
 
-        const msg =
-            `❄️ SNOWFLAKE\n` +
-            `Group: ${group}\n` +
-            `Symbols: BTCUSDT ↔ ETHUSDT\n` +
-            `BTC Time: ${new Date(
-                symbol === "BTCUSDT" ? ts : otherTs
-            ).toLocaleString()}\n` +
-            `ETH Time: ${new Date(
-                symbol === "ETHUSDT" ? ts : otherTs
-            ).toLocaleString()}\n` +
-            `Gap: ${diffSec}s`;
+    testingGlobal.push({ symbol, group, time: ts });
 
-        sendToTelegram2(msg);
+    const cutoff = ts - TESTING_WINDOW_MS;
+
+    // Remove old entries
+    while (testingGlobal.length && testingGlobal[0].time < cutoff) {
+        testingGlobal.shift();
     }
 
-    // Window-based persistence
-    snowflakeLast[symbol][group] = ts;
+    if (testingGlobal.length < 2) return;
+
+    const first = testingGlobal[0];
+    const second = testingGlobal[1];
+
+    // Must be different symbols
+    if (first.symbol === second.symbol) return;
+
+    const diffMs = second.time - first.time;
+    const diffSec = Math.floor(diffMs / 1000);
+
+    sendToTelegram3(
+        `🧪 TESTING\n` +
+        `1) ${first.symbol} (${first.group}) @ ${new Date(first.time).toLocaleTimeString()}\n` +
+        `2) ${second.symbol} (${second.group}) @ ${new Date(second.time).toLocaleTimeString()}\n` +
+        `Gap: ${diffSec}s`
+    );
+
+    // Slide window
+    testingGlobal.shift();
 }
 
 
@@ -2147,7 +2155,9 @@ app.post("/incoming", (req, res) => {
         processSpesh(symbol, group, ts);
 		processKooky(symbol, group, ts);
 
-        processSnowflake(symbol, group, ts);
+        
+		processTesting(symbol, group, ts);
+
         processBababia(symbol, group, ts);
 		processGodzilla(symbol, group, ts);
 		processWakanda(symbol, group, ts);
