@@ -1958,6 +1958,28 @@ function processKooky(symbol, group, ts) {
     kookyLast[symbol][group] = ts;
 }
 
+// ==========================================================
+//  AUDIT (Raw BTCUSDT + TOTAL logger)
+//  Bot 3
+// ==========================================================
+
+const AUDIT_SYMBOLS = new Set(["BTCUSDT", "TOTAL"]);
+
+function processAudit(symbol, group, ts, body) {
+
+    if (!AUDIT_SYMBOLS.has(symbol)) return;
+
+    const price = body.price || "n/a";
+
+    sendToTelegram3(
+        `📋 AUDIT\n` +
+        `Symbol: ${symbol}\n` +
+        `Group: ${group}\n` +
+        `Price: ${price}\n` +
+        `Time: ${new Date(ts).toLocaleString()}`
+    );
+}
+
 
 // ==========================================================
 //  TESTING (BTCUSDT ↔ TOTAL any double-letter group within 90s)
@@ -2131,38 +2153,28 @@ app.post("/incoming", (req, res) => {
         saveState();
 
         processTracking1(symbol, group, ts, body);
-        processTracking2and3(symbol, group, ts, body);
-        
-       
-		
+        processTracking2and3(symbol, group, ts, body);		
 		processLevelCorrelation(symbol, group, ts, body);
        processDivergenceMonitor(symbol, group, ts);
         processMatching2(symbol, group, ts, body);
         processMatching3(symbol, group, ts, body);
 		processBazooka(symbol, group, ts, body);
-		processContrarian(symbol, group, ts);    
-       	        
+		processContrarian(symbol, group, ts);       	        
 		processBlackPanther(symbol, group, ts);
         processGamma(symbol, group, ts);
         processBoomerang(symbol, group, ts, body);
-
         processSalsa(symbol, group, ts);
         processTango(symbol, group, ts);
 		processNeptune(symbol, group, ts);
         processZulu(symbol, group, ts);
         processMamba(symbol, group, ts);
-
         processSpesh(symbol, group, ts);
-		processKooky(symbol, group, ts);
-
-        
+		processKooky(symbol, group, ts);        
 		processTesting(symbol, group, ts);
-
+        processAudit(symbol, group, ts, body);
         processBababia(symbol, group, ts);
 		processGodzilla(symbol, group, ts);
 		processWakanda(symbol, group, ts);
-        
-
 		processJupiterSaturn(symbol, group, ts);
 		processTracking4(symbol, group, ts, body);
 		processTracking5(symbol, group, ts, body);
