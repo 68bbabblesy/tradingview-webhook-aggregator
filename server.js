@@ -1728,52 +1728,103 @@ function processZulu(symbol, group, ts) {
   }
 }
 
-
 // ==========================================================
-//  MAMBA (Same symbol E/H/Q/R → any 2 hits within 50s)
+//  MAMBA (Same symbol — EJ pair OR QR pair within 6 minutes)
 //  Bot 8
+//  No cross-mixing between EJ and QR
 // ==========================================================
 
-const MAMBA_WINDOW_MS = 50 * 1000;
+const MAMBA_WINDOW_MS = 6 * 60 * 1000; // 6 minutes
 
-const mambaBuf = {};
-// mambaBuf[symbol] = [ { group, time }, ... ]
+// Per symbol tracking
+// mambaState[symbol] = {
+//   EJ: { E: time|null, J: time|null },
+//   QR: { Q: time|null, R: time|null }
+// }
+
+const mambaState = {};
 
 function processMamba(symbol, group, ts) {
+
     if (!["E", "J", "Q", "R"].includes(group)) return;
 
-    if (!mambaBuf[symbol]) {
-        mambaBuf[symbol] = [];
+    if (!mambaState[symbol]) {
+        mambaState[symbol] = {
+            EJ: { E: null, J: null },
+            QR: { Q: null, R: null }
+        };
     }
 
-    const buf = mambaBuf[symbol];
+    const state = mambaState[symbol];
 
-    buf.push({ group, time: ts });
+    // -------------------------
+    // EJ PAIR
+    // -------------------------
+    if (group === "E" || group === "J") {
 
-    // Remove hits older than 50s
-    const cutoff = ts - MAMBA_WINDOW_MS;
-    while (buf.length && buf[0].time < cutoff) {
-        buf.shift();
+        const other = group === "E" ? "J" : "E";
+        const otherTime = state.EJ[other];
+
+        // If counterpart exists within window → fire
+        if (otherTime && Math.abs(ts - otherTime) <= MAMBA_WINDOW_MS) {
+
+            const firstTime  = Math.min(ts, otherTime);
+            const secondTime = Math.max(ts, otherTime);
+            const diffMs = Math.abs(ts - otherTime);
+            const diffMin = Math.floor(diffMs / 60000);
+            const diffSec = Math.floor((diffMs % 60000) / 1000);
+
+            sendToTelegram8(
+                `🐍 MAMBA (EJ)\n` +
+                `Symbol: ${symbol}\n` +
+                `1) ${group === "E" ? "E" : "J"} @ ${new Date(firstTime).toLocaleTimeString()}\n` +
+                `2) ${group === "E" ? "J" : "E"} @ ${new Date(secondTime).toLocaleTimeString()}\n` +
+                `Gap: ${diffMin}m ${diffSec}s`
+            );
+
+            // Reset EJ pair after fire
+            state.EJ.E = null;
+            state.EJ.J = null;
+            return;
+        }
+
+        // Otherwise store current hit
+        state.EJ[group] = ts;
+        return;
     }
 
-    if (buf.length < 2) return;
+    // -------------------------
+    // QR PAIR
+    // -------------------------
+    if (group === "Q" || group === "R") {
 
-    const first = buf[0];
-    const second = buf[1];
+        const other = group === "Q" ? "R" : "Q";
+        const otherTime = state.QR[other];
 
-    const diffMs = second.time - first.time;
-    const diffSec = Math.floor(diffMs / 1000);
+        if (otherTime && Math.abs(ts - otherTime) <= MAMBA_WINDOW_MS) {
 
-    sendToTelegram8(
-        `🐍 MAMBA\n` +
-        `Symbol: ${symbol}\n` +
-        `1) ${first.group} @ ${new Date(first.time).toLocaleTimeString()}\n` +
-        `2) ${second.group} @ ${new Date(second.time).toLocaleTimeString()}\n` +
-        `Gap: ${diffSec}s`
-    );
+            const firstTime  = Math.min(ts, otherTime);
+            const secondTime = Math.max(ts, otherTime);
+            const diffMs = Math.abs(ts - otherTime);
+            const diffMin = Math.floor(diffMs / 60000);
+            const diffSec = Math.floor((diffMs % 60000) / 1000);
 
-    // Slide window (allow overlapping)
-    buf.shift();
+            sendToTelegram8(
+                `🐍 MAMBA (QR)\n` +
+                `Symbol: ${symbol}\n` +
+                `1) ${group === "Q" ? "Q" : "R"} @ ${new Date(firstTime).toLocaleTimeString()}\n` +
+                `2) ${group === "Q" ? "R" : "Q"} @ ${new Date(secondTime).toLocaleTimeString()}\n` +
+                `Gap: ${diffMin}m ${diffSec}s`
+            );
+
+            state.QR.Q = null;
+            state.QR.R = null;
+            return;
+        }
+
+        state.QR[group] = ts;
+        return;
+    }
 }
 
 
