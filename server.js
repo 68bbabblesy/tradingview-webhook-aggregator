@@ -1435,7 +1435,7 @@ function processBoomerang(symbol, group, ts, body) {
 // ==========================================================
 
 const BABABIA_WINDOW_MS = 50 * 1000;
-const BABABIA_MIN_COUNT = 15;
+const BABABIA_MIN_COUNT = 2;
 
 const bababiaGlobal = {
     O: new Map(),
