@@ -1435,7 +1435,7 @@ function processBoomerang(symbol, group, ts, body) {
 // ==========================================================
 
 const BABABIA_WINDOW_MS = 50 * 1000;
-const BABABIA_MIN_COUNT = 12;
+const BABABIA_MIN_COUNT = 15;
 
 const bababiaGlobal = {
     O: new Map(),
@@ -1490,6 +1490,67 @@ function processBababia(symbol, group, ts) {
     );
 }
 
+// ==========================================================
+//  MAMAMIA (Standalone Burst Engine — E / Q)
+//  Window: 50 seconds | Min count: 15
+//  Bot 9
+// ==========================================================
+
+const MAMAMIA_WINDOW_MS = 50 * 1000;
+const MAMAMIA_MIN_COUNT = 15;
+
+const mamamiaGlobal = {
+    E: new Map(),
+    Q: new Map()
+};
+
+const mamamiaFired = {
+    E: false,
+    Q: false
+};
+
+function processMAMAMIA(symbol, group, ts) {
+
+    if (!mamamiaGlobal[group]) return;
+
+    const map = mamamiaGlobal[group];
+
+    // record / replace symbol timestamp
+    map.set(symbol, ts);
+
+    // prune old entries
+    const cutoff = ts - MAMAMIA_WINDOW_MS;
+    for (const [sym, time] of map.entries()) {
+        if (time < cutoff) {
+            map.delete(sym);
+        }
+    }
+
+    // reset fire state if below threshold
+    if (map.size < MAMAMIA_MIN_COUNT) {
+        mamamiaFired[group] = false;
+        return;
+    }
+
+    // prevent duplicate firing inside same burst
+    if (mamamiaFired[group]) return;
+    mamamiaFired[group] = true;
+
+    const lines = [...map.entries()]
+        .sort((a, b) => a[1] - b[1])
+        .map(([sym, time]) =>
+            `• ${sym} @ ${new Date(time).toLocaleTimeString()}`
+        )
+        .join("\n");
+
+    sendToTelegram9(
+        `🎶 MAMAMIA\n` +
+        `Group: ${group}\n` +
+        `Unique Symbols: ${map.size}\n` +
+        `Window: 50s\n` +
+        `Symbols:\n${lines}`
+    );
+}
 
 
 // ==========================================================
@@ -2204,6 +2265,7 @@ app.post("/incoming", (req, res) => {
 		processTesting(symbol, group, ts);
         processAudit(symbol, group, ts, body);
         processBababia(symbol, group, ts);
+		processMAMAMIA(symbol, group, ts);
 		processGodzilla(symbol, group, ts);
 		processWakanda(symbol, group, ts);
 		processJupiterSaturn(symbol, group, ts);
