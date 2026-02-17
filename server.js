@@ -306,7 +306,7 @@ function processTracking4(symbol, group, ts, body) {
     };
 }
 function processTracking5(symbol, group, ts, body) {
-    const allowed = ["G", "P"];
+    const allowed = ["G"];
     if (!allowed.includes(group)) return;
 
     const { numericLevels } = normalizeFibLevel(group, body);
@@ -633,7 +633,7 @@ function processTracking2and3(symbol, group, ts, body) {
 }
 
 function processCrossSwitch1(symbol, group, ts, body) {
-    const allowed = ["H", "G", "P"];
+    const allowed = ["H", "G",];
     if (!allowed.includes(group)) return;
 
     const { numericLevels } = normalizeFibLevel(group, body);
@@ -1429,87 +1429,67 @@ function processBoomerang(symbol, group, ts, body) {
     }
 }
 
-
 // ==========================================================
-//  BABABIA / MAMAMIA (GLOBAL ABCDWXSTUV burst detector)
+//  BABABIA (Standalone Burst Engine)
+//  Window: 50 seconds | Min count: 15
 // ==========================================================
 
-const BABABIA_WINDOW_MS = 20 * 1000;
-const MAMAMIA_WINDOW_MS = 50 * 1000;
-const BABABIA_MIN_COUNT = 5;
+const BABABIA_WINDOW_MS = 50 * 1000;
+const BABABIA_MIN_COUNT = 15;
 
-const bababiaState = {
-    A: { active: false, symbols: new Map(), timer: null },
-    B: { active: false, symbols: new Map(), timer: null },
-    C: { active: false, symbols: new Map(), timer: null },
-    D: { active: false, symbols: new Map(), timer: null },
-    W: { active: false, symbols: new Map(), timer: null },
-    X: { active: false, symbols: new Map(), timer: null },
-    S: { active: false, symbols: new Map(), timer: null },
-    T: { active: false, symbols: new Map(), timer: null },
-    U: { active: false, symbols: new Map(), timer: null },
-    V: { active: false, symbols: new Map(), timer: null }
+const bababiaGlobal = {
+    O: new Map(),
+    P: new Map()
+};
+
+const bababiaFired = {
+    O: false,
+    P: false
 };
 
 function processBababia(symbol, group, ts) {
 
-    if (!bababiaState[group]) return;
+    if (!bababiaGlobal[group]) return;
 
-    const state = bababiaState[group];
+    const map = bababiaGlobal[group];
 
-    if (!state.active) {
-        state.active = true;
-        state.symbols.clear();
+    // record / replace symbol timestamp
+    map.set(symbol, ts);
 
-        state.timer = setTimeout(() => {
-
-            const entries = [...state.symbols.entries()];
-            const count = entries.length;
-
-            if (count >= BABABIA_MIN_COUNT) {
-
-                const lines = entries
-                    .sort((a, b) => a[1] - b[1])
-                    .map(([s, t]) => `• ${s} @ ${new Date(t).toLocaleTimeString()}`)
-                    .join("\n");
-
-                // BABABIA (20s logic label)
-                sendToTelegram9(
-                    `🎉 BABABIA\n` +
-                    `Group: ${group}\n` +
-                    `Unique Symbols: ${count}\n` +
-                    `Window: 20s\n` +
-                    `Symbols:\n${lines}`
-                );
-
-                // MAMAMIA (50s label)
-                sendToTelegram9(
-                    `🎶 MAMAMIA\n` +
-                    `Group: ${group}\n` +
-                    `Unique Symbols: ${count}\n` +
-                    `Window: 50s\n` +
-                    `Symbols:\n${lines}`
-                );
-
-                for (const [sym] of entries) {
-                    markGodzillaEligible(sym, Date.now());
-                }
-
-                for (const [sym] of entries) {
-                    wakandaEligible.set(sym, Date.now());
-                }
-            }
-
-            state.active = false;
-            state.symbols.clear();
-            clearTimeout(state.timer);
-            state.timer = null;
-
-        }, MAMAMIA_WINDOW_MS);
+    // prune old entries
+    const cutoff = ts - BABABIA_WINDOW_MS;
+    for (const [sym, time] of map.entries()) {
+        if (time < cutoff) {
+            map.delete(sym);
+        }
     }
 
-    state.symbols.set(symbol, ts);
+    // reset fire state if below threshold
+    if (map.size < BABABIA_MIN_COUNT) {
+        bababiaFired[group] = false;
+        return;
+    }
+
+    // prevent duplicate firing inside same burst
+    if (bababiaFired[group]) return;
+    bababiaFired[group] = true;
+
+    const lines = [...map.entries()]
+        .sort((a, b) => a[1] - b[1])
+        .map(([sym, time]) =>
+            `• ${sym} @ ${new Date(time).toLocaleTimeString()}`
+        )
+        .join("\n");
+
+    sendToTelegram9(
+        `🎉 BABABIA\n` +
+        `Group: ${group}\n` +
+        `Unique Symbols: ${map.size}\n` +
+        `Window: 50s\n` +
+        `Symbols:\n${lines}`
+    );
 }
+
 
 
 // ==========================================================
