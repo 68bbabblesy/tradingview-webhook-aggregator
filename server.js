@@ -1430,126 +1430,155 @@ function processBoomerang(symbol, group, ts, body) {
 }
 
 // ==========================================================
-//  BABABIA (Standalone Burst Engine)
-//  Window: 50 seconds | Min count: 15
+//  BABABIA (O / P burst engine — FROZEN SNAPSHOT STYLE)
+//  Exact BAZOOKA behaviour
+//  Bot 9
 // ==========================================================
 
 const BABABIA_WINDOW_MS = 50 * 1000;
 const BABABIA_MIN_COUNT = 15;
+const BABABIA_CHUNK_SIZE = 12;
 
-const bababiaGlobal = {
-    O: new Map(),
-    P: new Map()
-};
-
-const bababiaFired = {
-    O: false,
-    P: false
+const bababiaState = {
+    O: { active: false, symbols: new Map(), timer: null },
+    P: { active: false, symbols: new Map(), timer: null }
 };
 
 function processBababia(symbol, group, ts) {
 
-    if (!bababiaGlobal[group]) return;
+    if (!bababiaState[group]) return;
 
-    const map = bababiaGlobal[group];
+    const state = bababiaState[group];
 
-    // record / replace symbol timestamp
-    map.set(symbol, ts);
+    // Start frozen snapshot on FIRST hit
+    if (!state.active) {
+        state.active = true;
+        state.symbols.clear();
 
-    // prune old entries
-    const cutoff = ts - BABABIA_WINDOW_MS;
-    for (const [sym, time] of map.entries()) {
-        if (time < cutoff) {
-            map.delete(sym);
-        }
+        state.timer = setTimeout(() => {
+
+            const entries = [...state.symbols.entries()];
+            const total = entries.length;
+
+            if (total >= BABABIA_MIN_COUNT) {
+
+                const chunks = [];
+                for (let i = 0; i < entries.length; i += BABABIA_CHUNK_SIZE) {
+                    chunks.push(entries.slice(i, i + BABABIA_CHUNK_SIZE));
+                }
+
+                chunks.forEach((chunk, idx) => {
+
+                    const lines = chunk
+                        .sort((a, b) => a[1] - b[1])
+                        .map(([sym, time]) =>
+                            `• ${sym} @ ${new Date(time).toLocaleTimeString()}`
+                        )
+                        .join("\n");
+
+                    const suffix =
+                        chunks.length > 1
+                            ? ` (Part ${idx + 1}/${chunks.length})`
+                            : "";
+
+                    sendToTelegram9(
+                        `🎉 BABABIA${suffix}\n` +
+                        `Group: ${group}\n` +
+                        `Total Symbols: ${total}\n` +
+                        `Window: 50s\n` +
+                        `Symbols:\n${lines}`
+                    );
+                });
+            }
+
+            // Reset after window closes
+            state.active = false;
+            state.symbols.clear();
+            clearTimeout(state.timer);
+            state.timer = null;
+
+        }, BABABIA_WINDOW_MS);
     }
 
-    // reset fire state if below threshold
-    if (map.size < BABABIA_MIN_COUNT) {
-        bababiaFired[group] = false;
-        return;
+    // Collect symbol once during window
+    if (!state.symbols.has(symbol)) {
+        state.symbols.set(symbol, ts);
     }
-
-    // prevent duplicate firing inside same burst
-    if (bababiaFired[group]) return;
-    bababiaFired[group] = true;
-
-    const lines = [...map.entries()]
-        .sort((a, b) => a[1] - b[1])
-        .map(([sym, time]) =>
-            `• ${sym} @ ${new Date(time).toLocaleTimeString()}`
-        )
-        .join("\n");
-
-    sendToTelegram9(
-        `🎉 BABABIA\n` +
-        `Group: ${group}\n` +
-        `Unique Symbols: ${map.size}\n` +
-        `Window: 50s\n` +
-        `Symbols:\n${lines}`
-    );
 }
 
 // ==========================================================
-//  MAMAMIA (Standalone Burst Engine — E / Q)
-//  Window: 50 seconds | Min count: 15
+//  MAMAMIA (E / Q burst engine — FROZEN SNAPSHOT STYLE)
+//  Exact BAZOOKA behaviour
 //  Bot 9
 // ==========================================================
 
 const MAMAMIA_WINDOW_MS = 50 * 1000;
 const MAMAMIA_MIN_COUNT = 15;
+const MAMAMIA_CHUNK_SIZE = 12;
 
-const mamamiaGlobal = {
-    E: new Map(),
-    Q: new Map()
-};
-
-const mamamiaFired = {
-    E: false,
-    Q: false
+const mamamiaState = {
+    E: { active: false, symbols: new Map(), timer: null },
+    Q: { active: false, symbols: new Map(), timer: null }
 };
 
 function processMAMAMIA(symbol, group, ts) {
 
-    if (!mamamiaGlobal[group]) return;
+    if (!mamamiaState[group]) return;
 
-    const map = mamamiaGlobal[group];
+    const state = mamamiaState[group];
 
-    // record / replace symbol timestamp
-    map.set(symbol, ts);
+    // Start frozen snapshot on FIRST hit
+    if (!state.active) {
+        state.active = true;
+        state.symbols.clear();
 
-    // prune old entries
-    const cutoff = ts - MAMAMIA_WINDOW_MS;
-    for (const [sym, time] of map.entries()) {
-        if (time < cutoff) {
-            map.delete(sym);
-        }
+        state.timer = setTimeout(() => {
+
+            const entries = [...state.symbols.entries()];
+            const total = entries.length;
+
+            if (total >= MAMAMIA_MIN_COUNT) {
+
+                const chunks = [];
+                for (let i = 0; i < entries.length; i += MAMAMIA_CHUNK_SIZE) {
+                    chunks.push(entries.slice(i, i + MAMAMIA_CHUNK_SIZE));
+                }
+
+                chunks.forEach((chunk, idx) => {
+
+                    const lines = chunk
+                        .sort((a, b) => a[1] - b[1])
+                        .map(([sym, time]) =>
+                            `• ${sym} @ ${new Date(time).toLocaleTimeString()}`
+                        )
+                        .join("\n");
+
+                    const suffix =
+                        chunks.length > 1
+                            ? ` (Part ${idx + 1}/${chunks.length})`
+                            : "";
+
+                    sendToTelegram9(
+                        `🎶 MAMAMIA${suffix}\n` +
+                        `Group: ${group}\n` +
+                        `Total Symbols: ${total}\n` +
+                        `Window: 50s\n` +
+                        `Symbols:\n${lines}`
+                    );
+                });
+            }
+
+            state.active = false;
+            state.symbols.clear();
+            clearTimeout(state.timer);
+            state.timer = null;
+
+        }, MAMAMIA_WINDOW_MS);
     }
 
-    // reset fire state if below threshold
-    if (map.size < MAMAMIA_MIN_COUNT) {
-        mamamiaFired[group] = false;
-        return;
+    if (!state.symbols.has(symbol)) {
+        state.symbols.set(symbol, ts);
     }
-
-    // prevent duplicate firing inside same burst
-    if (mamamiaFired[group]) return;
-    mamamiaFired[group] = true;
-
-    const lines = [...map.entries()]
-        .sort((a, b) => a[1] - b[1])
-        .map(([sym, time]) =>
-            `• ${sym} @ ${new Date(time).toLocaleTimeString()}`
-        )
-        .join("\n");
-
-    sendToTelegram9(
-        `🎶 MAMAMIA\n` +
-        `Group: ${group}\n` +
-        `Unique Symbols: ${map.size}\n` +
-        `Window: 50s\n` +
-        `Symbols:\n${lines}`
-    );
 }
 
 
