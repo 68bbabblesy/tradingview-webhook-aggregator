@@ -1454,7 +1454,7 @@ function processBoomerang(symbol, group, ts, body) {
 
 const BABABIA_WINDOW_MS = 50 * 1000;
 const BABABIA_BUFFER_MS = 60 * 1000;
-const BABABIA_MIN_COUNT = 15;
+const BABABIA_MIN_COUNT = 10;
 
 const bababiaState = {
     O: { active: false, symbols: new Map(), startTime: null, timer: null },
@@ -1522,7 +1522,7 @@ function processBababia(symbol, group, ts) {
 
 const MAMAMIA_WINDOW_MS = 50 * 1000;
 const MAMAMIA_BUFFER_MS = 60 * 1000;
-const MAMAMIA_MIN_COUNT = 15;
+const MAMAMIA_MIN_COUNT = 10;
 
 const mamamiaState = {
     E: { active: false, symbols: new Map(), startTime: null, timer: null },
