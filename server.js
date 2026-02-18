@@ -1687,45 +1687,77 @@ function processTango(symbol, group, ts) {
 }
 
 // ==========================================================
-//  NEPTUNE (GLOBAL E / J / Q / R → any 2 hits within 180s)
+//  NEPTUNE (Same symbol — ACWSU OR BDXTV → 2 distinct groups within 50s)
+//  No cross-mixing between sides
 //  Bot 4
 // ==========================================================
 
-const NEPTUNE_WINDOW_MS = 180 * 1000;
+const NEPTUNE_WINDOW_MS = 50 * 1000;
 
-const neptuneGlobal = []; 
-// [{ symbol, group, time }]
+const NEPTUNE_SIDE1 = new Set(["A","C","W","S","U"]); // ACWSU
+const NEPTUNE_SIDE2 = new Set(["B","D","X","T","V"]); // BDXTV
+
+// Per-symbol tracking
+// neptuneState[symbol] = {
+//    side1: { group: time },
+//    side2: { group: time }
+// }
+
+const neptuneState = {};
 
 function processNeptune(symbol, group, ts) {
-    if (!["E", "J", "Q", "R"].includes(group)) return;
 
-    neptuneGlobal.push({ symbol, group, time: ts });
+    const isSide1 = NEPTUNE_SIDE1.has(group);
+    const isSide2 = NEPTUNE_SIDE2.has(group);
 
-    const cutoff = ts - NEPTUNE_WINDOW_MS;
+    if (!isSide1 && !isSide2) return;
 
-    while (neptuneGlobal.length && neptuneGlobal[0].time < cutoff) {
-        neptuneGlobal.shift();
+    if (!neptuneState[symbol]) {
+        neptuneState[symbol] = {
+            side1: {},
+            side2: {}
+        };
     }
 
-    if (neptuneGlobal.length < 2) return;
+    const state = neptuneState[symbol];
+    const bucket = isSide1 ? state.side1 : state.side2;
 
-    const first = neptuneGlobal[0];
-    const second = neptuneGlobal[1];
+    // Store latest timestamp for this group
+    bucket[group] = ts;
 
-    const diffMs = second.time - first.time;
-    const diffMin = Math.floor(diffMs / 60000);
-    const diffSec = Math.floor((diffMs % 60000) / 1000);
+    // Collect recent distinct groups within window
+    const recent = Object.entries(bucket)
+        .filter(([g, time]) => Math.abs(ts - time) <= NEPTUNE_WINDOW_MS);
+
+    if (recent.length < 2) return;
+
+    // Sort by time and pick latest two
+    const picked = recent
+        .sort((a, b) => a[1] - b[1])
+        .slice(-2);
+
+    const firstTime  = picked[0][1];
+    const secondTime = picked[1][1];
+    const diffMs = secondTime - firstTime;
+    const diffSec = Math.floor(diffMs / 1000);
 
     sendToTelegram4(
-        `🪐 NEPTUNE\n` +
-        `1) ${first.symbol} (${first.group}) @ ${new Date(first.time).toLocaleString()}\n` +
-        `2) ${second.symbol} (${second.group}) @ ${new Date(second.time).toLocaleString()}\n` +
-        `Gap: ${diffMin}m ${diffSec}s`
+        `🌊 NEPTUNE\n` +
+        `Symbol: ${symbol}\n` +
+        `Side: ${isSide1 ? "ACWSU" : "BDXTV"}\n` +
+        `1) ${picked[0][0]} @ ${new Date(firstTime).toLocaleTimeString()}\n` +
+        `2) ${picked[1][0]} @ ${new Date(secondTime).toLocaleTimeString()}\n` +
+        `Gap: ${diffSec}s`
     );
 
-    // Slide window (allows overlapping sequences)
-    neptuneGlobal.shift();
+    // Reset this side only (Gamma-style burst reset per symbol per side)
+    if (isSide1) {
+        state.side1 = {};
+    } else {
+        state.side2 = {};
+    }
 }
+
 
 // ==========================================================
 //  ZULU (Same symbol match: ACWSU/BDXTV ↔ EJQR within 45s)
