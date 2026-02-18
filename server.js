@@ -123,6 +123,23 @@ const nowMs  = () => Date.now();
 const nowSec = () => Math.floor(Date.now() / 1000);
 
 // -----------------------------
+// SYMBOL NORMALIZATION
+// Removes exchange + .P suffix
+// -----------------------------
+function normalizeSymbol(raw) {
+    if (!raw) return "";
+
+    // Remove exchange prefix if present
+    let s = raw.includes(":") ? raw.split(":")[1] : raw;
+
+    // Remove .P suffix if present
+    s = s.replace(".P", "");
+
+    return s.trim().toUpperCase();
+}
+
+
+// -----------------------------
 // TELEGRAM SENDERS
 // -----------------------------
 async function sendToTelegram1(text) {
@@ -1430,18 +1447,18 @@ function processBoomerang(symbol, group, ts, body) {
 }
 
 // ==========================================================
-//  BABABIA (O / P burst engine — FROZEN SNAPSHOT STYLE)
-//  Exact BAZOOKA behaviour
-//  Bot 9
+//  BABABIA (Buffered Burst Engine)
+//  Logical Window: 50 seconds
+//  Delivery Buffer: 60 seconds
 // ==========================================================
 
 const BABABIA_WINDOW_MS = 50 * 1000;
+const BABABIA_BUFFER_MS = 60 * 1000;
 const BABABIA_MIN_COUNT = 15;
-const BABABIA_CHUNK_SIZE = 12;
 
 const bababiaState = {
-    O: { active: false, symbols: new Map(), timer: null },
-    P: { active: false, symbols: new Map(), timer: null }
+    O: { active: false, symbols: new Map(), startTime: null, timer: null },
+    P: { active: false, symbols: new Map(), startTime: null, timer: null }
 };
 
 function processBababia(symbol, group, ts) {
@@ -1450,75 +1467,66 @@ function processBababia(symbol, group, ts) {
 
     const state = bababiaState[group];
 
-    // Start frozen snapshot on FIRST hit
+    // Start burst on first hit
     if (!state.active) {
         state.active = true;
+        state.startTime = ts;
         state.symbols.clear();
 
         state.timer = setTimeout(() => {
 
-            const entries = [...state.symbols.entries()];
-            const total = entries.length;
+            // Only count hits within logical 50s window
+            const cutoff = state.startTime + BABABIA_WINDOW_MS;
 
-            if (total >= BABABIA_MIN_COUNT) {
+            const entries = [...state.symbols.entries()]
+                .filter(([_, time]) => time <= cutoff);
 
-                const chunks = [];
-                for (let i = 0; i < entries.length; i += BABABIA_CHUNK_SIZE) {
-                    chunks.push(entries.slice(i, i + BABABIA_CHUNK_SIZE));
-                }
+            if (entries.length >= BABABIA_MIN_COUNT) {
 
-                chunks.forEach((chunk, idx) => {
+                const lines = entries
+                    .sort((a, b) => a[1] - b[1])
+                    .map(([sym, time]) =>
+                        `• ${sym} @ ${new Date(time).toLocaleTimeString()}`
+                    )
+                    .join("\n");
 
-                    const lines = chunk
-                        .sort((a, b) => a[1] - b[1])
-                        .map(([sym, time]) =>
-                            `• ${sym} @ ${new Date(time).toLocaleTimeString()}`
-                        )
-                        .join("\n");
-
-                    const suffix =
-                        chunks.length > 1
-                            ? ` (Part ${idx + 1}/${chunks.length})`
-                            : "";
-
-                    sendToTelegram9(
-                        `🎉 BABABIA${suffix}\n` +
-                        `Group: ${group}\n` +
-                        `Total Symbols: ${total}\n` +
-                        `Window: 50s\n` +
-                        `Symbols:\n${lines}`
-                    );
-                });
+                sendToTelegram9(
+                    `🎉 BABABIA\n` +
+                    `Group: ${group}\n` +
+                    `Unique Symbols: ${entries.length}\n` +
+                    `Window: 50s\n` +
+                    `Symbols:\n${lines}`
+                );
             }
 
-            // Reset after window closes
+            // Reset
             state.active = false;
             state.symbols.clear();
+            state.startTime = null;
             clearTimeout(state.timer);
             state.timer = null;
 
-        }, BABABIA_WINDOW_MS);
+        }, BABABIA_WINDOW_MS + BABABIA_BUFFER_MS);
     }
 
-    // Collect symbol once during window
-    if (!state.symbols.has(symbol)) {
-        state.symbols.set(symbol, ts);
-    }
+    // Always collect (we filter later)
+    state.symbols.set(symbol, ts);
 }
 
+
 // ==========================================================
-//  MAMAMIA (E / Q burst engine — FROZEN SNAPSHOT STYLE)
-//  Exact BAZOOKA behaviour
-//  Bot 9
+//  MAMAMIA (Buffered Burst Engine — E / Q)
+//  Logical Window: 50 seconds
+//  Delivery Buffer: 60 seconds
 // ==========================================================
 
 const MAMAMIA_WINDOW_MS = 50 * 1000;
+const MAMAMIA_BUFFER_MS = 60 * 1000;
 const MAMAMIA_MIN_COUNT = 15;
-const MAMAMIA_CHUNK_SIZE = 12;
 
 const mamamiaState = {
-    E: { active: false, symbols: new Map(), timer: null },
-    Q: { active: false, symbols: new Map(), timer: null }
+    E: { active: false, symbols: new Map(), startTime: null, timer: null },
+    Q: { active: false, symbols: new Map(), startTime: null, timer: null }
 };
 
 function processMAMAMIA(symbol, group, ts) {
@@ -1527,58 +1535,46 @@ function processMAMAMIA(symbol, group, ts) {
 
     const state = mamamiaState[group];
 
-    // Start frozen snapshot on FIRST hit
     if (!state.active) {
         state.active = true;
+        state.startTime = ts;
         state.symbols.clear();
 
         state.timer = setTimeout(() => {
 
-            const entries = [...state.symbols.entries()];
-            const total = entries.length;
+            const cutoff = state.startTime + MAMAMIA_WINDOW_MS;
 
-            if (total >= MAMAMIA_MIN_COUNT) {
+            const entries = [...state.symbols.entries()]
+                .filter(([_, time]) => time <= cutoff);
 
-                const chunks = [];
-                for (let i = 0; i < entries.length; i += MAMAMIA_CHUNK_SIZE) {
-                    chunks.push(entries.slice(i, i + MAMAMIA_CHUNK_SIZE));
-                }
+            if (entries.length >= MAMAMIA_MIN_COUNT) {
 
-                chunks.forEach((chunk, idx) => {
+                const lines = entries
+                    .sort((a, b) => a[1] - b[1])
+                    .map(([sym, time]) =>
+                        `• ${sym} @ ${new Date(time).toLocaleTimeString()}`
+                    )
+                    .join("\n");
 
-                    const lines = chunk
-                        .sort((a, b) => a[1] - b[1])
-                        .map(([sym, time]) =>
-                            `• ${sym} @ ${new Date(time).toLocaleTimeString()}`
-                        )
-                        .join("\n");
-
-                    const suffix =
-                        chunks.length > 1
-                            ? ` (Part ${idx + 1}/${chunks.length})`
-                            : "";
-
-                    sendToTelegram9(
-                        `🎶 MAMAMIA${suffix}\n` +
-                        `Group: ${group}\n` +
-                        `Total Symbols: ${total}\n` +
-                        `Window: 50s\n` +
-                        `Symbols:\n${lines}`
-                    );
-                });
+                sendToTelegram9(
+                    `🎶 MAMAMIA\n` +
+                    `Group: ${group}\n` +
+                    `Unique Symbols: ${entries.length}\n` +
+                    `Window: 50s\n` +
+                    `Symbols:\n${lines}`
+                );
             }
 
             state.active = false;
             state.symbols.clear();
+            state.startTime = null;
             clearTimeout(state.timer);
             state.timer = null;
 
-        }, MAMAMIA_WINDOW_MS);
+        }, MAMAMIA_WINDOW_MS + MAMAMIA_BUFFER_MS);
     }
 
-    if (!state.symbols.has(symbol)) {
-        state.symbols.set(symbol, ts);
-    }
+    state.symbols.set(symbol, ts);
 }
 
 
@@ -2284,7 +2280,8 @@ app.post("/incoming", (req, res) => {
 
 
         const group  = (body.group || "").trim();
-        const symbol = (body.symbol || "").trim();
+        const symbol = normalizeSymbol(body.symbol);
+
         const ts = nowMs();
 
         const hash = alertHash(symbol, group, ts);
