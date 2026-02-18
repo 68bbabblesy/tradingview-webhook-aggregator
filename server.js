@@ -1741,14 +1741,19 @@ function processNeptune(symbol, group, ts) {
     const diffMs = secondTime - firstTime;
     const diffSec = Math.floor(diffMs / 1000);
 
+    const side = isSide1 ? "ACWSU" : "BDXTV";
+
     sendToTelegram4(
         `🌊 NEPTUNE\n` +
         `Symbol: ${symbol}\n` +
-        `Side: ${isSide1 ? "ACWSU" : "BDXTV"}\n` +
+        `Side: ${side}\n` +
         `1) ${picked[0][0]} @ ${new Date(firstTime).toLocaleTimeString()}\n` +
         `2) ${picked[1][0]} @ ${new Date(secondTime).toLocaleTimeString()}\n` +
         `Gap: ${diffSec}s`
     );
+
+    // 🔔 Arm MAMBA — EACH Neptune is independent
+    armMambaFromNeptune(symbol, side, ts);
 
     // Reset this side only (Gamma-style burst reset per symbol per side)
     if (isSide1) {
@@ -1831,104 +1836,99 @@ function processZulu(symbol, group, ts) {
 }
 
 // ==========================================================
-//  MAMBA (Same symbol — EJ pair OR QR pair within 6 minutes)
+//  MAMBA (Neptune-based Tracker)
 //  Bot 8
-//  No cross-mixing between EJ and QR
+//  Two Behaviours:
+//  1️⃣ First O or P after Neptune
+//  2️⃣ Second hit (O / P / E / Q)
+//  Each Neptune tracked independently
 // ==========================================================
 
-const MAMBA_WINDOW_MS = 6 * 60 * 1000; // 6 minutes
+// mambaTrackers[symbol] = [
+//   {
+//     side,
+//     neptuneTime,
+//     firstOP: null,
+//     completed: false
+//   }
+// ]
 
-// Per symbol tracking
-// mambaState[symbol] = {
-//   EJ: { E: time|null, J: time|null },
-//   QR: { Q: time|null, R: time|null }
-// }
+const mambaTrackers = {};
 
-const mambaState = {};
+function armMambaFromNeptune(symbol, side, ts) {
+
+    if (!mambaTrackers[symbol]) {
+        mambaTrackers[symbol] = [];
+    }
+
+    mambaTrackers[symbol].push({
+        side,
+        neptuneTime: ts,
+        firstOP: null,
+        completed: false
+    });
+}
 
 function processMamba(symbol, group, ts) {
 
-    if (!["E", "J", "Q", "R"].includes(group)) return;
+    if (!mambaTrackers[symbol]) return;
 
-    if (!mambaState[symbol]) {
-        mambaState[symbol] = {
-            EJ: { E: null, J: null },
-            QR: { Q: null, R: null }
-        };
-    }
+    const trackers = mambaTrackers[symbol];
 
-    const state = mambaState[symbol];
+    for (const tracker of trackers) {
 
-    // -------------------------
-    // EJ PAIR
-    // -------------------------
-    if (group === "E" || group === "J") {
+        if (tracker.completed) continue;
 
-        const other = group === "E" ? "J" : "E";
-        const otherTime = state.EJ[other];
+        // -------------------------
+        // FIRST HIT: O or P
+        // -------------------------
+        if (!tracker.firstOP && (group === "O" || group === "P")) {
 
-        // If counterpart exists within window → fire
-        if (otherTime && Math.abs(ts - otherTime) <= MAMBA_WINDOW_MS) {
+            tracker.firstOP = {
+                group,
+                time: ts
+            };
 
-            const firstTime  = Math.min(ts, otherTime);
-            const secondTime = Math.max(ts, otherTime);
-            const diffMs = Math.abs(ts - otherTime);
+            sendToTelegram8(
+                `🐍 MAMBA (1st O/P)\n` +
+                `Symbol: ${symbol}\n` +
+                `Neptune Side: ${tracker.side}\n` +
+                `Neptune Time: ${new Date(tracker.neptuneTime).toLocaleTimeString()}\n` +
+                `1st Hit: ${group} @ ${new Date(ts).toLocaleTimeString()}`
+            );
+
+            continue;
+        }
+
+        // -------------------------
+        // SECOND HIT: O / P / E / Q
+        // -------------------------
+        if (tracker.firstOP &&
+            !tracker.completed &&
+            ["O","P","E","Q"].includes(group)) {
+
+            const diffMs = ts - tracker.firstOP.time;
             const diffMin = Math.floor(diffMs / 60000);
             const diffSec = Math.floor((diffMs % 60000) / 1000);
 
             sendToTelegram8(
-                `🐍 MAMBA (EJ)\n` +
+                `🐍 MAMBA (2nd Hit)\n` +
                 `Symbol: ${symbol}\n` +
-                `1) ${group === "E" ? "E" : "J"} @ ${new Date(firstTime).toLocaleTimeString()}\n` +
-                `2) ${group === "E" ? "J" : "E"} @ ${new Date(secondTime).toLocaleTimeString()}\n` +
+                `Neptune Side: ${tracker.side}\n` +
+                `Neptune Time: ${new Date(tracker.neptuneTime).toLocaleTimeString()}\n` +
+                `1) ${tracker.firstOP.group} @ ${new Date(tracker.firstOP.time).toLocaleTimeString()}\n` +
+                `2) ${group} @ ${new Date(ts).toLocaleTimeString()}\n` +
                 `Gap: ${diffMin}m ${diffSec}s`
             );
 
-            // Reset EJ pair after fire
-            state.EJ.E = null;
-            state.EJ.J = null;
-            return;
+            tracker.completed = true;
         }
-
-        // Otherwise store current hit
-        state.EJ[group] = ts;
-        return;
     }
 
-    // -------------------------
-    // QR PAIR
-    // -------------------------
-    if (group === "Q" || group === "R") {
-
-        const other = group === "Q" ? "R" : "Q";
-        const otherTime = state.QR[other];
-
-        if (otherTime && Math.abs(ts - otherTime) <= MAMBA_WINDOW_MS) {
-
-            const firstTime  = Math.min(ts, otherTime);
-            const secondTime = Math.max(ts, otherTime);
-            const diffMs = Math.abs(ts - otherTime);
-            const diffMin = Math.floor(diffMs / 60000);
-            const diffSec = Math.floor((diffMs % 60000) / 1000);
-
-            sendToTelegram8(
-                `🐍 MAMBA (QR)\n` +
-                `Symbol: ${symbol}\n` +
-                `1) ${group === "Q" ? "Q" : "R"} @ ${new Date(firstTime).toLocaleTimeString()}\n` +
-                `2) ${group === "Q" ? "R" : "Q"} @ ${new Date(secondTime).toLocaleTimeString()}\n` +
-                `Gap: ${diffMin}m ${diffSec}s`
-            );
-
-            state.QR.Q = null;
-            state.QR.R = null;
-            return;
-        }
-
-        state.QR[group] = ts;
-        return;
-    }
+    // Cleanup completed trackers
+    mambaTrackers[symbol] =
+        mambaTrackers[symbol].filter(t => !t.completed);
 }
-
 
 
 // ==========================================================
