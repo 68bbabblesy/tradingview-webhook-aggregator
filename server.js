@@ -1622,15 +1622,21 @@ function processSalsa(symbol, group, ts) {
 
 // ==========================================================
 //  TANGO (Buffered repeat detector with per-group windows)
-//  A/B → 3.5 minutes
-//  W/X → 2.5 minutes
+//  ACWSU + BDXTV
+//  All groups → 3.5 minutes
 // ==========================================================
 
 const TANGO_WINDOWS_MS = {
     A: 3.5 * 60 * 1000,
+    C: 3.5 * 60 * 1000,
+    W: 3.5 * 60 * 1000,
+    S: 3.5 * 60 * 1000,
+    U: 3.5 * 60 * 1000,
     B: 3.5 * 60 * 1000,
-    W: 2.5 * 60 * 1000,
-    X: 2.5 * 60 * 1000
+    D: 3.5 * 60 * 1000,
+    X: 3.5 * 60 * 1000,
+    T: 3.5 * 60 * 1000,
+    V: 3.5 * 60 * 1000
 };
 
 function processTango(symbol, group, ts) {
@@ -1651,7 +1657,7 @@ function processTango(symbol, group, ts) {
     // Add hit
     buf.push(ts);
 
-    // Prune old hits based on group-specific window
+    // Prune old hits based on uniform window
     const cutoff = ts - TANGO_WINDOWS_MS[group];
     while (buf.length && buf[0] < cutoff) {
         buf.shift();
@@ -1672,9 +1678,8 @@ function processTango(symbol, group, ts) {
         `Group: ${group}\n` +
         `First hit: ${new Date(first).toLocaleString()}\n` +
         `Second hit: ${new Date(second).toLocaleString()}\n` +
-           `Gap: ${diffMin}m ${diffSec}s\n` +
+        `Gap: ${diffMin}m ${diffSec}s\n` +
         `Bias: ${biasFromGroup(group)}`;
-
 
     sendToTelegram3(msg);
 
