@@ -1022,7 +1022,6 @@ const bazookaState = {
 // bazookaGlobal[group] = Map(symbol → time)
 
 function processBazooka(symbol, group, ts) {
-    // Same global groups as before (matches BABABIA/MAMAMIA universe)
     if (!["A","B","C","D","W","X","S","T","U","V"].includes(group)) return;
 
     // Start frozen snapshot on FIRST hit
@@ -1031,13 +1030,12 @@ function processBazooka(symbol, group, ts) {
         bazookaState.symbols.clear();
 
         bazookaState.timer = setTimeout(() => {
+
             const entries = [...bazookaState.symbols.entries()];
             const total = entries.length;
 
-            // OPTION A: silent discard if below threshold
             if (total >= BAZOOKA_MIN_COUNT) {
 
-                // Split ONLY for Telegram delivery
                 const chunks = [];
                 for (let i = 0; i < entries.length; i += BAZOOKA_CHUNK_SIZE) {
                     chunks.push(entries.slice(i, i + BAZOOKA_CHUNK_SIZE));
@@ -1064,22 +1062,34 @@ function processBazooka(symbol, group, ts) {
                     );
                 });
 
-                // GODZILLA eligibility (unchanged semantics)
+                // GODZILLA eligibility
                 for (const [sym] of entries) {
                     markGodzillaEligible(sym, ts);
                 }
 
                 const armedGroup = group;
 
-for (const [sym] of entries) {
-    salsaState.set(sym, {
-        count: 0,
-        armedAt: ts,
-        armedGroup,
-        firstHit: null
-    });
-}
+                for (const [sym] of entries) {
+                    salsaState.set(sym, {
+                        count: 0,
+                        armedAt: ts,
+                        armedGroup,
+                        firstHit: null
+                    });
+                }
+            }
 
+            // Reset state after snapshot
+            bazookaState.active = false;
+            bazookaState.symbols.clear();
+            bazookaState.timer = null;
+
+        }, BAZOOKA_WINDOW_MS);
+    }
+
+    // Always collect symbol
+    bazookaState.symbols.set(symbol, { time: ts, group });
+}
 
             
 
