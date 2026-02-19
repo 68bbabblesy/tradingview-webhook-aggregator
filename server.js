@@ -849,67 +849,6 @@ function processGodzilla(symbol, group, ts) {
         return;
     }
 
-// ==========================================================
-//  JUPITER (Standalone — Same group repeat within 50 minutes)
-//  Groups: ACSW + BDXT
-//  Same symbol only
-//  Bot 2
-// ==========================================================
-
-const JUPITER_WINDOW_MS = 50 * 60 * 1000; // 50 minutes
-
-const JUPITER_GROUPS = new Set([
-    "A","C","S","W",
-    "B","D","X","T"
-]);
-
-// jupiterState[symbol][group] = lastTimestamp
-const jupiterState = {};
-
-function processJupiter(symbol, group, ts) {
-
-    if (!JUPITER_GROUPS.has(group)) return;
-
-    if (!jupiterState[symbol]) {
-        jupiterState[symbol] = {};
-    }
-
-    const lastTime = jupiterState[symbol][group];
-
-    if (lastTime && (ts - lastTime <= JUPITER_WINDOW_MS)) {
-
-        const diffMs  = ts - lastTime;
-        const diffMin = Math.floor(diffMs / 60000);
-        const diffSec = Math.floor((diffMs % 60000) / 1000);
-
-        sendToTelegram2(
-            `🟠 JUPITER\n` +
-            `Symbol: ${symbol}\n` +
-            `Group: ${group} → ${group}\n` +
-            `First: ${new Date(lastTime).toLocaleString()}\n` +
-            `Second: ${new Date(ts).toLocaleString()}\n` +
-            `Gap: ${diffMin}m ${diffSec}s`
-        );
-    }
-
-    // Always update last occurrence
-    jupiterState[symbol][group] = ts;
-
-    // Optional lightweight pruning
-    if (Object.keys(jupiterState).length > 3000) {
-        const cutoff = ts - (2 * 60 * 60 * 1000);
-        for (const sym of Object.keys(jupiterState)) {
-            for (const g of Object.keys(jupiterState[sym])) {
-                if (jupiterState[sym][g] < cutoff) {
-                    delete jupiterState[sym][g];
-                }
-            }
-            if (!Object.keys(jupiterState[sym]).length) {
-                delete jupiterState[sym];
-            }
-        }
-    }
-}
 
 
     // -------------------------
@@ -994,6 +933,69 @@ function processJupiter(symbol, group, ts) {
         return;
     }
 }
+
+// ==========================================================
+//  JUPITER (Standalone — Same group repeat within 50 minutes)
+//  Groups: ACSW + BDXT
+//  Same symbol only
+//  Bot 2
+// ==========================================================
+
+const JUPITER_WINDOW_MS = 50 * 60 * 1000; // 50 minutes
+
+const JUPITER_GROUPS = new Set([
+    "A","C","S","W",
+    "B","D","X","T"
+]);
+
+// jupiterState[symbol][group] = lastTimestamp
+const jupiterState = {};
+
+function processJupiter(symbol, group, ts) {
+
+    if (!JUPITER_GROUPS.has(group)) return;
+
+    if (!jupiterState[symbol]) {
+        jupiterState[symbol] = {};
+    }
+
+    const lastTime = jupiterState[symbol][group];
+
+    if (lastTime && (ts - lastTime <= JUPITER_WINDOW_MS)) {
+
+        const diffMs  = ts - lastTime;
+        const diffMin = Math.floor(diffMs / 60000);
+        const diffSec = Math.floor((diffMs % 60000) / 1000);
+
+        sendToTelegram2(
+            `🟠 JUPITER\n` +
+            `Symbol: ${symbol}\n` +
+            `Group: ${group} → ${group}\n` +
+            `First: ${new Date(lastTime).toLocaleString()}\n` +
+            `Second: ${new Date(ts).toLocaleString()}\n` +
+            `Gap: ${diffMin}m ${diffSec}s`
+        );
+    }
+
+    // Always update last occurrence
+    jupiterState[symbol][group] = ts;
+
+    // Optional lightweight pruning
+    if (Object.keys(jupiterState).length > 3000) {
+        const cutoff = ts - (2 * 60 * 60 * 1000);
+        for (const sym of Object.keys(jupiterState)) {
+            for (const g of Object.keys(jupiterState[sym])) {
+                if (jupiterState[sym][g] < cutoff) {
+                    delete jupiterState[sym][g];
+                }
+            }
+            if (!Object.keys(jupiterState[sym]).length) {
+                delete jupiterState[sym];
+            }
+        }
+    }
+}
+
 
 // ==========================================================
 //  BAZOOKA (GLOBAL ABCDWX burst detector — standalone)
