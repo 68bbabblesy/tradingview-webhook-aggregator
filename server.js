@@ -763,64 +763,6 @@ function processDivergenceMonitor(symbol, group, ts) {
 
 
 
-const LEVEL_CORRELATION_WINDOW_MS = 45 * 1000;
-// ==========================================================
-//  JUPITER / SATURN WINDOWS (G/H → A–D directional tracking)
-// ==========================================================
-
-const JUPITER_WINDOW_MS = 5 * 60 * 1000;    // 5 minutes
-const SATURN_WINDOW_MS  = 50 * 60 * 1000;   // 50 minutes
-
-
-function processLevelCorrelation(symbol, group, ts, body) {
-    if (!["G", "H"].includes(group)) return;
-
-    const { numericLevels } = normalizeFibLevel(group, body);
-    if (!numericLevels.length) return;
-
-    const level = numericLevels[0];
-    const prev = recentGH[symbol];
-
-    // First sighting → store and wait
-    if (!prev) {
-        recentGH[symbol] = { group, level, time: ts };
-        return;
-    }
-
-    // Must be opposite group (G ↔ H)
-    if (prev.group === group) {
-        recentGH[symbol] = { group, level, time: ts };
-        return;
-    }
-
-    // Must be same level
-    if (prev.level !== level) {
-        recentGH[symbol] = { group, level, time: ts };
-        return;
-    }
-
-    // Must be within window
-    const diffMs = Math.abs(ts - prev.time);
-    if (diffMs > LEVEL_CORRELATION_WINDOW_MS) {
-        recentGH[symbol] = { group, level, time: ts };
-        return;
-    }
-
-    const diffSec = Math.floor(diffMs / 1000);
-
-    sendToTelegram5(
-        `🎯 LEVEL CORRELATION\n` +
-        `Symbol: ${symbol}\n` +
-        `Groups: ${prev.group} ↔ ${group}\n` +
-        `Level: ${level > 0 ? "+" : ""}${level}\n` +
-        `Gap: ${diffSec}s\n` +
-        `Time: ${new Date(ts).toLocaleString()}`
-    );
-
-    // Prevent duplicate fires
-    delete recentGH[symbol];
-}
-
 
 function processMatching2(symbol, group, ts, body) {
     const FGH = ["F", "G", "H"];
@@ -847,57 +789,6 @@ function processMatching2(symbol, group, ts, body) {
     );
 }
 
-function processContrarian(symbol, group, ts) {
-    if (!contrarianState.active) return;
-
-    // Expiry
-    if (ts - contrarianState.since > CONTRARIAN_EXPIRY_MS) {
-        contrarianState.active = false;
-        contrarianState.buf = [];
-        return;
-    }
-
-    const ACWSU = ["A", "C", "W", "S", "U"];
-    const BDXTV = ["B", "D", "X", "T", "V"];
-
-
-    // Determine which side we are waiting for
-    const wantedGroups =
-    contrarianState.fromGroup === "ACWSU" ? BDXTV : ACWSU;
-
-
-    if (!wantedGroups.includes(group)) return;
-
-    // Enforce different symbols
-    if (contrarianState.buf.some(e => e.symbol === symbol)) return;
-
-    // Add hit
-    contrarianState.buf.push({ symbol, group, time: ts });
-
-    // Prune to 50s window
-    const cutoff = ts - CONTRARIAN_WINDOW_MS;
-    contrarianState.buf = contrarianState.buf.filter(
-        e => e.time >= cutoff
-    );
-
-    if (contrarianState.buf.length < 2) return;
-
-    const lines = contrarianState.buf
-        .map(e => `• ${e.symbol} (${e.group}) @ ${new Date(e.time).toLocaleTimeString()}`)
-        .join("\n");
-
-    sendToTelegram2(
-        `⚖️ CONTRARIAN\n` +
-        `After BAZOOKA from: ${contrarianState.fromGroup}\n` +
-        `Matches: ${contrarianState.buf.length}\n` +
-        `Window: 50s\n` +
-        `Symbols:\n${lines}`
-    );
-
-    // One-shot per Bazooka
-    contrarianState.active = false;
-    contrarianState.buf = [];
-}
 
 
 function processMatching3(symbol, group, ts, body) {
@@ -957,6 +848,69 @@ function processGodzilla(symbol, group, ts) {
         consumeGodzillaEligibility(symbol, ts);
         return;
     }
+
+// ==========================================================
+//  JUPITER (Standalone — Same group repeat within 50 minutes)
+//  Groups: ACSW + BDXT
+//  Same symbol only
+//  Bot 2
+// ==========================================================
+
+const JUPITER_WINDOW_MS = 50 * 60 * 1000; // 50 minutes
+
+const JUPITER_GROUPS = new Set([
+    "A","C","S","W",
+    "B","D","X","T"
+]);
+
+// jupiterState[symbol][group] = lastTimestamp
+const jupiterState = {};
+
+function processJupiter(symbol, group, ts) {
+
+    if (!JUPITER_GROUPS.has(group)) return;
+
+    if (!jupiterState[symbol]) {
+        jupiterState[symbol] = {};
+    }
+
+    const lastTime = jupiterState[symbol][group];
+
+    if (lastTime && (ts - lastTime <= JUPITER_WINDOW_MS)) {
+
+        const diffMs  = ts - lastTime;
+        const diffMin = Math.floor(diffMs / 60000);
+        const diffSec = Math.floor((diffMs % 60000) / 1000);
+
+        sendToTelegram2(
+            `🟠 JUPITER\n` +
+            `Symbol: ${symbol}\n` +
+            `Group: ${group} → ${group}\n` +
+            `First: ${new Date(lastTime).toLocaleString()}\n` +
+            `Second: ${new Date(ts).toLocaleString()}\n` +
+            `Gap: ${diffMin}m ${diffSec}s`
+        );
+    }
+
+    // Always update last occurrence
+    jupiterState[symbol][group] = ts;
+
+    // Optional lightweight pruning
+    if (Object.keys(jupiterState).length > 3000) {
+        const cutoff = ts - (2 * 60 * 60 * 1000);
+        for (const sym of Object.keys(jupiterState)) {
+            for (const g of Object.keys(jupiterState[sym])) {
+                if (jupiterState[sym][g] < cutoff) {
+                    delete jupiterState[sym][g];
+                }
+            }
+            if (!Object.keys(jupiterState[sym]).length) {
+                delete jupiterState[sym];
+            }
+        }
+    }
+}
+
 
     // -------------------------
     // ARM BUY TRACKER (BDX)
@@ -1125,28 +1079,7 @@ for (const [sym] of entries) {
 }
 
 
-                // CONTRARIAN arm (same as original global behavior)
-                contrarianState.active = true;
-                contrarianState.since = ts;
-                contrarianState.buf = [];
-                contrarianState.fromGroup = "ACWSU"; // global, same as before
-            }
-
-            // Reset snapshot (prevents late symbols)
-            bazookaState.active = false;
-            bazookaState.symbols.clear();
-            clearTimeout(bazookaState.timer);
-            bazookaState.timer = null;
-
-        }, BAZOOKA_WINDOW_MS);
-    }
-
-    // Collect symbol ONCE during the window (no overwrite)
-    if (!bazookaState.symbols.has(symbol)) {
-        bazookaState.symbols.set(symbol, { time: ts, group });
-    }
-}
-
+            
 
 // ==========================================================
 //  WAKANDA STATE (direction-neutral structure tracking)
@@ -1927,20 +1860,7 @@ function processMamba(symbol, group, ts) {
 }
 
 
-// ==========================================================
-//  CONTRARIAN (post-BAZOOKA opposite-group detector)
-// ==========================================================
 
-const CONTRARIAN_WINDOW_MS = 50 * 1000;
-const CONTRARIAN_EXPIRY_MS = 3 * 60 * 60 * 1000; // 3 hours
-
-const contrarianState = {
-    active: false,
-    fromGroup: null,   // "ACWSU" or "BDXTV"
-
-    since: null,
-    buf: []            // [{ symbol, group, time }]
-};
 
 // ==========================================================
 //  GODZILLA STATE (ACW → M, BDX → N)
@@ -2185,70 +2105,6 @@ function processTesting(symbol, group, ts) {
 }
 
 
-// ==========================================================
-//  JUPITER & SATURN (Directional: G/H tracks A–D)
-// ==========================================================
-
-function processJupiterSaturn(symbol, group, ts) {
-    // ONLY G or H can trigger
-    if (!["G", "H"].includes(group)) return;
-
-    const AD = ["A", "B", "C", "D"];
-
-    // Collect all past A–D alerts for this symbol
-    const ads = AD
-        .map(g => safeGet(symbol, g))
-        .filter(Boolean)
-        .filter(x => x.time <= ts); // look BACK only
-
-    if (!ads.length) return;
-
-    let firedJupiter = false;
-    let firedSaturn  = false;
-
-    for (const ad of ads) {
-        const diffMs = ts - ad.time;
-        if (diffMs < 0) continue; // safety
-
-        const diffMin = Math.floor(diffMs / 60000);
-        const diffSec = Math.floor((diffMs % 60000) / 1000);
-
-        // JUPITER (≤ 5 minutes)
-        if (diffMs <= JUPITER_WINDOW_MS && !firedJupiter) {
-            firedJupiter = true;
-           const msg =
-    `🟠 JUPITER\n` +
-    `Symbol: ${symbol}\n` +
-    `AD Group: ${ad.payload.group}\n` +
-    `GH Group: ${group}\n` +
-    `Gap: ${diffMin}m ${diffSec}s\n` +
-    `AD Time: ${new Date(ad.time).toLocaleString()}\n` +
-    `GH Time: ${new Date(ts).toLocaleString()}`;
-
-sendToTelegram7(msg);
-mirrorToBot8IfSpecial(symbol, msg);
-
-        }
-
-        // SATURN (≤ 50 minutes)
-        if (diffMs <= SATURN_WINDOW_MS && !firedSaturn) {
-            firedSaturn = true;
-            const msg =
-    `🪐 SATURN\n` +
-    `Symbol: ${symbol}\n` +
-    `AD Group: ${ad.payload.group}\n` +
-    `GH Group: ${group}\n` +
-    `Gap: ${diffMin}m ${diffSec}s`;
-
-sendToTelegram7(msg);
-mirrorToBot8IfSpecial(symbol, msg);
-
-        }
-
-        // If both fired for this G/H, stop
-        if (firedJupiter && firedSaturn) break;
-    }
-}
 
 
 // ==========================================================
@@ -2308,8 +2164,7 @@ app.post("/incoming", (req, res) => {
        processDivergenceMonitor(symbol, group, ts);
         processMatching2(symbol, group, ts, body);
         processMatching3(symbol, group, ts, body);
-		processBazooka(symbol, group, ts, body);
-		processContrarian(symbol, group, ts);       	        
+		processBazooka(symbol, group, ts, body);		 	        
 		processBlackPanther(symbol, group, ts);
         processGamma(symbol, group, ts);
         processBoomerang(symbol, group, ts, body);
@@ -2326,7 +2181,7 @@ app.post("/incoming", (req, res) => {
 		processMAMAMIA(symbol, group, ts);
 		processGodzilla(symbol, group, ts);
 		processWakanda(symbol, group, ts);
-		processJupiterSaturn(symbol, group, ts);
+		processJupiter(symbol, group, ts);
 		processTracking4(symbol, group, ts, body);
 		processTracking5(symbol, group, ts, body);
 
