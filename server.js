@@ -1688,17 +1688,17 @@ function processTango(symbol, group, ts) {
 }
 
 // ==========================================================
-//  NEPTUNE (Same symbol — ACWSU OR BDXTV → 2 distinct groups within 50s)
+//  NEPTUNE (Same symbol — ACSW OR BDXT → 2 distinct groups within 50s)
 //  No cross-mixing between sides
+//  Registers MAMBA tracking
 //  Bot 4
 // ==========================================================
 
 const NEPTUNE_WINDOW_MS = 50 * 1000;
 
-const NEPTUNE_SIDE1 = new Set(["A","C","W","S","U"]); // ACWSU
-const NEPTUNE_SIDE2 = new Set(["B","D","X","T","V"]); // BDXTV
+const NEPTUNE_SIDE1 = new Set(["A","C","S","W"]); // ACSW
+const NEPTUNE_SIDE2 = new Set(["B","D","X","T"]); // BDXT
 
-// Per-symbol tracking
 // neptuneState[symbol] = {
 //    side1: { group: time },
 //    side2: { group: time }
@@ -1723,40 +1723,37 @@ function processNeptune(symbol, group, ts) {
     const state = neptuneState[symbol];
     const bucket = isSide1 ? state.side1 : state.side2;
 
-    // Store latest timestamp for this group
     bucket[group] = ts;
 
-    // Collect recent distinct groups within window
+    // collect recent distinct groups
     const recent = Object.entries(bucket)
-        .filter(([g, time]) => Math.abs(ts - time) <= NEPTUNE_WINDOW_MS);
+        .filter(([g, time]) => ts - time <= NEPTUNE_WINDOW_MS);
 
     if (recent.length < 2) return;
 
-    // Sort by time and pick latest two
     const picked = recent
         .sort((a, b) => a[1] - b[1])
         .slice(-2);
 
     const firstTime  = picked[0][1];
     const secondTime = picked[1][1];
-    const diffMs = secondTime - firstTime;
-    const diffSec = Math.floor(diffMs / 1000);
+    const diffSec = Math.floor((secondTime - firstTime) / 1000);
 
-    const side = isSide1 ? "ACWSU" : "BDXTV";
+    const sideName = isSide1 ? "ACSW" : "BDXT";
 
     sendToTelegram4(
         `🌊 NEPTUNE\n` +
         `Symbol: ${symbol}\n` +
-        `Side: ${side}\n` +
+        `Side: ${sideName}\n` +
         `1) ${picked[0][0]} @ ${new Date(firstTime).toLocaleTimeString()}\n` +
         `2) ${picked[1][0]} @ ${new Date(secondTime).toLocaleTimeString()}\n` +
         `Gap: ${diffSec}s`
     );
 
-    // 🔔 Arm MAMBA — EACH Neptune is independent
-    armMambaFromNeptune(symbol, side, ts);
+    // 🔥 Register MAMBA tracking
+    registerMambaFromNeptune(symbol, sideName, ts);
 
-    // Reset this side only (Gamma-style burst reset per symbol per side)
+    // Reset this side only (burst behavior)
     if (isSide1) {
         state.side1 = {};
     } else {
@@ -1837,26 +1834,21 @@ function processZulu(symbol, group, ts) {
 }
 
 // ==========================================================
-//  MAMBA (Neptune-based Tracker)
+//  MAMBA (Triggered ONLY from NEPTUNE)
+//  ACSW tracks → P and Q
+//  BDXT tracks → E and O
+//  Each Neptune event tracked independently
 //  Bot 8
-//  Two Behaviours:
-//  1️⃣ First O or P after Neptune
-//  2️⃣ Second hit (O / P / E / Q)
-//  Each Neptune tracked independently
 // ==========================================================
 
 // mambaTrackers[symbol] = [
-//   {
-//     side,
-//     neptuneTime,
-//     firstOP: null,
-//     completed: false
-//   }
+//   { side: "ACSW" | "BDXT", armedAt, hits: { P:false,Q:false,E:false,O:false } }
 // ]
 
 const mambaTrackers = {};
 
-function armMambaFromNeptune(symbol, side, ts) {
+// Called from NEPTUNE
+function registerMambaFromNeptune(symbol, side, ts) {
 
     if (!mambaTrackers[symbol]) {
         mambaTrackers[symbol] = [];
@@ -1864,71 +1856,74 @@ function armMambaFromNeptune(symbol, side, ts) {
 
     mambaTrackers[symbol].push({
         side,
-        neptuneTime: ts,
-        firstOP: null,
-        completed: false
+        armedAt: ts,
+        hits: { P:false, Q:false, E:false, O:false }
     });
 }
 
 function processMamba(symbol, group, ts) {
 
-    if (!mambaTrackers[symbol]) return;
+    if (!["P","Q","E","O"].includes(group)) return;
 
     const trackers = mambaTrackers[symbol];
+    if (!trackers || !trackers.length) return;
 
     for (const tracker of trackers) {
 
-        if (tracker.completed) continue;
+        // ACSW → P and Q
+        if (tracker.side === "ACSW") {
 
-        // -------------------------
-        // FIRST HIT: O or P
-        // -------------------------
-        if (!tracker.firstOP && (group === "O" || group === "P")) {
+            if ((group === "P" || group === "Q") && !tracker.hits[group]) {
 
-            tracker.firstOP = {
-                group,
-                time: ts
-            };
+                tracker.hits[group] = true;
 
-            sendToTelegram8(
-                `🐍 MAMBA (1st O/P)\n` +
-                `Symbol: ${symbol}\n` +
-                `Neptune Side: ${tracker.side}\n` +
-                `Neptune Time: ${new Date(tracker.neptuneTime).toLocaleTimeString()}\n` +
-                `1st Hit: ${group} @ ${new Date(ts).toLocaleTimeString()}`
-            );
-
-            continue;
+                sendToTelegram8(
+                    `🐍 MAMBA\n` +
+                    `Symbol: ${symbol}\n` +
+                    `Origin: NEPTUNE (ACSW)\n` +
+                    `Hit: ${group}\n` +
+                    `Neptune Time: ${new Date(tracker.armedAt).toLocaleTimeString()}\n` +
+                    `Hit Time: ${new Date(ts).toLocaleTimeString()}`
+                );
+            }
         }
 
-        // -------------------------
-        // SECOND HIT: O / P / E / Q
-        // -------------------------
-        if (tracker.firstOP &&
-            !tracker.completed &&
-            ["O","P","E","Q"].includes(group)) {
+        // BDXT → E and O
+        if (tracker.side === "BDXT") {
 
-            const diffMs = ts - tracker.firstOP.time;
-            const diffMin = Math.floor(diffMs / 60000);
-            const diffSec = Math.floor((diffMs % 60000) / 1000);
+            if ((group === "E" || group === "O") && !tracker.hits[group]) {
 
-            sendToTelegram8(
-                `🐍 MAMBA (2nd Hit)\n` +
-                `Symbol: ${symbol}\n` +
-                `Neptune Side: ${tracker.side}\n` +
-                `Neptune Time: ${new Date(tracker.neptuneTime).toLocaleTimeString()}\n` +
-                `1) ${tracker.firstOP.group} @ ${new Date(tracker.firstOP.time).toLocaleTimeString()}\n` +
-                `2) ${group} @ ${new Date(ts).toLocaleTimeString()}\n` +
-                `Gap: ${diffMin}m ${diffSec}s`
-            );
+                tracker.hits[group] = true;
 
-            tracker.completed = true;
+                sendToTelegram8(
+                    `🐍 MAMBA\n` +
+                    `Symbol: ${symbol}\n` +
+                    `Origin: NEPTUNE (BDXT)\n` +
+                    `Hit: ${group}\n` +
+                    `Neptune Time: ${new Date(tracker.armedAt).toLocaleTimeString()}\n` +
+                    `Hit Time: ${new Date(ts).toLocaleTimeString()}`
+                );
+            }
         }
     }
 
-    // Cleanup completed trackers
-    mambaTrackers[symbol] =
-        mambaTrackers[symbol].filter(t => !t.completed);
+    // Clean fully completed trackers
+    mambaTrackers[symbol] = trackers.filter(t => {
+
+        if (t.side === "ACSW") {
+            return !(t.hits.P && t.hits.Q);
+        }
+
+        if (t.side === "BDXT") {
+            return !(t.hits.E && t.hits.O);
+        }
+
+        return true;
+    });
+
+    if (!mambaTrackers[symbol].length) {
+        delete mambaTrackers[symbol];
+    }
 }
 
 
