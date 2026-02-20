@@ -765,11 +765,6 @@ function processDivergenceMonitor(symbol, group, ts) {
 
 const LEVEL_CORRELATION_WINDOW_MS = 45 * 1000;
 // ==========================================================
-//  JUPITER / SATURN WINDOWS (G/H → A–D directional tracking)
-// ==========================================================
-
-const JUPITER_WINDOW_MS = 5 * 60 * 1000;    // 5 minutes
-const SATURN_WINDOW_MS  = 50 * 60 * 1000;   // 50 minutes
 
 
 function processLevelCorrelation(symbol, group, ts, body) {
@@ -2240,69 +2235,56 @@ function processTesting(symbol, group, ts) {
     testingGlobal.shift();
 }
 
-
 // ==========================================================
-//  JUPITER & SATURN (Directional: G/H tracks A–D)
+//  JUPITER (Same symbol + same group repeat within 1 hour)
+//  Groups: A C S W B D X T
+//  Bot 7
 // ==========================================================
 
-function processJupiterSaturn(symbol, group, ts) {
-    // ONLY G or H can trigger
-    if (!["G", "H"].includes(group)) return;
+const JUPITER_WINDOW_MS = 60 * 60 * 1000; // 1 hour
 
-    const AD = ["A", "B", "C", "D"];
+const JUPITER_GROUPS = new Set(["A","C","S","W","B","D","X","T"]);
 
-    // Collect all past A–D alerts for this symbol
-    const ads = AD
-        .map(g => safeGet(symbol, g))
-        .filter(Boolean)
-        .filter(x => x.time <= ts); // look BACK only
+// jupiterMemory[symbol][group] = lastTimestamp
+const jupiterMemory = {};
 
-    if (!ads.length) return;
+function processJupiter(symbol, group, ts) {
 
-    let firedJupiter = false;
-    let firedSaturn  = false;
+    if (!JUPITER_GROUPS.has(group)) return;
 
-    for (const ad of ads) {
-        const diffMs = ts - ad.time;
-        if (diffMs < 0) continue; // safety
+    if (!jupiterMemory[symbol]) {
+        jupiterMemory[symbol] = {};
+    }
 
+    const last = jupiterMemory[symbol][group];
+
+    if (last && (ts - last <= JUPITER_WINDOW_MS)) {
+
+        const diffMs = ts - last;
         const diffMin = Math.floor(diffMs / 60000);
         const diffSec = Math.floor((diffMs % 60000) / 1000);
 
-        // JUPITER (≤ 5 minutes)
-        if (diffMs <= JUPITER_WINDOW_MS && !firedJupiter) {
-            firedJupiter = true;
-           const msg =
-    `🟠 JUPITER\n` +
-    `Symbol: ${symbol}\n` +
-    `AD Group: ${ad.payload.group}\n` +
-    `GH Group: ${group}\n` +
-    `Gap: ${diffMin}m ${diffSec}s\n` +
-    `AD Time: ${new Date(ad.time).toLocaleString()}\n` +
-    `GH Time: ${new Date(ts).toLocaleString()}`;
+        sendToTelegram7(
+            `🟠 JUPITER\n` +
+            `Symbol: ${symbol}\n` +
+            `Group: ${group}\n` +
+            `First Hit: ${new Date(last).toLocaleString()}\n` +
+            `Second Hit: ${new Date(ts).toLocaleString()}\n` +
+            `Gap: ${diffMin}m ${diffSec}s`
+        );
+    }
 
-sendToTelegram7(msg);
-mirrorToBot8IfSpecial(symbol, msg);
+    // Always update
+    jupiterMemory[symbol][group] = ts;
 
+    // Safety prune (optional but safe)
+    if (Object.keys(jupiterMemory).length > 5000) {
+        const cutoff = ts - (2 * 60 * 60 * 1000);
+        for (const sym of Object.keys(jupiterMemory)) {
+            const groups = jupiterMemory[sym];
+            const latest = Math.max(...Object.values(groups));
+            if (latest < cutoff) delete jupiterMemory[sym];
         }
-
-        // SATURN (≤ 50 minutes)
-        if (diffMs <= SATURN_WINDOW_MS && !firedSaturn) {
-            firedSaturn = true;
-            const msg =
-    `🪐 SATURN\n` +
-    `Symbol: ${symbol}\n` +
-    `AD Group: ${ad.payload.group}\n` +
-    `GH Group: ${group}\n` +
-    `Gap: ${diffMin}m ${diffSec}s`;
-
-sendToTelegram7(msg);
-mirrorToBot8IfSpecial(symbol, msg);
-
-        }
-
-        // If both fired for this G/H, stop
-        if (firedJupiter && firedSaturn) break;
     }
 }
 
@@ -2382,7 +2364,7 @@ app.post("/incoming", (req, res) => {
 		processMAMAMIA(symbol, group, ts);
 		processGodzilla(symbol, group, ts);
 		processWakanda(symbol, group, ts);
-		processJupiterSaturn(symbol, group, ts);
+		processJupiter(symbol, group, ts);
 		processTracking4(symbol, group, ts, body);
 		processTracking5(symbol, group, ts, body);
 
