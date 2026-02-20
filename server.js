@@ -1710,72 +1710,107 @@ registerContrarianFromNeptune(symbol, sideName, ts);
 
 
 // ==========================================================
-//  ZULU (Same symbol match: ACWSU/BDXTV ↔ EJQR within 45s)
-//  Either side can come first
+//  ZULU (Same symbol match: PQ OR EO within 20 minutes)
+//  Either order allowed
 //  Bot 7
 // ==========================================================
 
-const ZULU_ENABLED = true;              // set to false to disable
-const ZULU_WINDOW_MS = 180 * 1000;
+const ZULU_WINDOW_MS = 20 * 60 * 1000; // 20 minutes
 
-const ZULU_SIDE1 = new Set(["A", "C", "W", "S", "U", "B", "D", "X", "T", "V"]); // ACWSU + BDXTV
-const ZULU_SIDE2 = new Set(["E", "J", "Q", "R"]);                               // EJQR
+// zuluMemory[symbol] = {
+//   P: timestamp,
+//   Q: timestamp,
+//   E: timestamp,
+//   O: timestamp
+// }
 
-// Per-symbol memory
-// zuluLast[symbol] = { side: 1|2, group: "A"/"E"/..., time: ms }
-const zuluLast = {};
+const zuluMemory = {};
 
 function processZulu(symbol, group, ts) {
-  if (!ZULU_ENABLED) return;
 
-  const isSide1 = ZULU_SIDE1.has(group);
-  const isSide2 = ZULU_SIDE2.has(group);
-  if (!isSide1 && !isSide2) return;
+  // Only care about P, Q, E, O
+  if (!["P", "Q", "E", "O"].includes(group)) return;
 
-  const side = isSide1 ? 1 : 2;
+  if (!zuluMemory[symbol]) {
+    zuluMemory[symbol] = {};
+  }
 
-  const prev = zuluLast[symbol];
-  if (prev) {
-    const diffMs = Math.abs(ts - prev.time);
+  const mem = zuluMemory[symbol];
 
-    // Opposite side + within window => fire
-    if (prev.side !== side && diffMs <= ZULU_WINDOW_MS) {
-      const diffSec = Math.floor(diffMs / 1000);
+  // Store latest occurrence
+  mem[group] = ts;
 
-      // Ensure message shows "first" and "second" in time order
-      const first = prev.time <= ts
-        ? { group: prev.group, time: prev.time }
-        : { group, time: ts };
+  // ========================
+  // CHECK PQ
+  // ========================
+  if (mem.P && mem.Q) {
 
-      const second = prev.time <= ts
-        ? { group, time: ts }
-        : { group: prev.group, time: prev.time };
+    const diffMs = Math.abs(mem.P - mem.Q);
+
+    if (diffMs <= ZULU_WINDOW_MS) {
+
+      const firstGroup  = mem.P <= mem.Q ? "P" : "Q";
+      const secondGroup = mem.P <= mem.Q ? "Q" : "P";
+
+      const firstTime  = mem.P <= mem.Q ? mem.P : mem.Q;
+      const secondTime = mem.P <= mem.Q ? mem.Q : mem.P;
+
+      const diffMin = Math.floor(diffMs / 60000);
+      const diffSec = Math.floor((diffMs % 60000) / 1000);
 
       sendToTelegram7(
-        `🟡 ZULU\n` +
+        `🟡 ZULU (PQ)\n` +
         `Symbol: ${symbol}\n` +
-        `1) ${first.group} @ ${new Date(first.time).toLocaleString()}\n` +
-        `2) ${second.group} @ ${new Date(second.time).toLocaleString()}\n` +
-        `Gap: ${diffSec}s`
+        `1) ${firstGroup} @ ${new Date(firstTime).toLocaleString()}\n` +
+        `2) ${secondGroup} @ ${new Date(secondTime).toLocaleString()}\n` +
+        `Gap: ${diffMin}m ${diffSec}s`
       );
 
-      // Optional: clear after a hit to avoid spam chains
-      // delete zuluLast[symbol];
-      // return;
-
-      // Keep tracking, but slide to latest event
+      // Reset pair after firing
+      delete mem.P;
+      delete mem.Q;
     }
   }
 
-  // Update last seen for this symbol (always)
-  zuluLast[symbol] = { side, group, time: ts };
+  // ========================
+  // CHECK EO
+  // ========================
+  if (mem.E && mem.O) {
 
-  // Lightweight prune: drop stale entries occasionally
-  // (prevents memory growth if you see many symbols once)
-  if (Object.keys(zuluLast).length > 5000) {
-    const cutoff = ts - (5 * 60 * 1000);
-    for (const sym of Object.keys(zuluLast)) {
-      if (zuluLast[sym].time < cutoff) delete zuluLast[sym];
+    const diffMs = Math.abs(mem.E - mem.O);
+
+    if (diffMs <= ZULU_WINDOW_MS) {
+
+      const firstGroup  = mem.E <= mem.O ? "E" : "O";
+      const secondGroup = mem.E <= mem.O ? "O" : "E";
+
+      const firstTime  = mem.E <= mem.O ? mem.E : mem.O;
+      const secondTime = mem.E <= mem.O ? mem.O : mem.E;
+
+      const diffMin = Math.floor(diffMs / 60000);
+      const diffSec = Math.floor((diffMs % 60000) / 1000);
+
+      sendToTelegram7(
+        `🟡 ZULU (EO)\n` +
+        `Symbol: ${symbol}\n` +
+        `1) ${firstGroup} @ ${new Date(firstTime).toLocaleString()}\n` +
+        `2) ${secondGroup} @ ${new Date(secondTime).toLocaleString()}\n` +
+        `Gap: ${diffMin}m ${diffSec}s`
+      );
+
+      // Reset pair after firing
+      delete mem.E;
+      delete mem.O;
+    }
+  }
+
+  // Optional memory pruning (safety guard)
+  if (Object.keys(zuluMemory).length > 5000) {
+    const cutoff = ts - (60 * 60 * 1000);
+    for (const sym of Object.keys(zuluMemory)) {
+      const s = zuluMemory[sym];
+      const latest = Math.max(s.P || 0, s.Q || 0, s.E || 0, s.O || 0);
+      if (latest < cutoff) delete zuluMemory[sym];
     }
   }
 }
