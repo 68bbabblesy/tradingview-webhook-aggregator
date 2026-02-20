@@ -763,6 +763,64 @@ function processDivergenceMonitor(symbol, group, ts) {
 
 
 
+const LEVEL_CORRELATION_WINDOW_MS = 45 * 1000;
+// ==========================================================
+//  JUPITER / SATURN WINDOWS (G/H → A–D directional tracking)
+// ==========================================================
+
+const JUPITER_WINDOW_MS = 5 * 60 * 1000;    // 5 minutes
+const SATURN_WINDOW_MS  = 50 * 60 * 1000;   // 50 minutes
+
+
+function processLevelCorrelation(symbol, group, ts, body) {
+    if (!["G", "H"].includes(group)) return;
+
+    const { numericLevels } = normalizeFibLevel(group, body);
+    if (!numericLevels.length) return;
+
+    const level = numericLevels[0];
+    const prev = recentGH[symbol];
+
+    // First sighting → store and wait
+    if (!prev) {
+        recentGH[symbol] = { group, level, time: ts };
+        return;
+    }
+
+    // Must be opposite group (G ↔ H)
+    if (prev.group === group) {
+        recentGH[symbol] = { group, level, time: ts };
+        return;
+    }
+
+    // Must be same level
+    if (prev.level !== level) {
+        recentGH[symbol] = { group, level, time: ts };
+        return;
+    }
+
+    // Must be within window
+    const diffMs = Math.abs(ts - prev.time);
+    if (diffMs > LEVEL_CORRELATION_WINDOW_MS) {
+        recentGH[symbol] = { group, level, time: ts };
+        return;
+    }
+
+    const diffSec = Math.floor(diffMs / 1000);
+
+    sendToTelegram5(
+        `🎯 LEVEL CORRELATION\n` +
+        `Symbol: ${symbol}\n` +
+        `Groups: ${prev.group} ↔ ${group}\n` +
+        `Level: ${level > 0 ? "+" : ""}${level}\n` +
+        `Gap: ${diffSec}s\n` +
+        `Time: ${new Date(ts).toLocaleString()}`
+    );
+
+    // Prevent duplicate fires
+    delete recentGH[symbol];
+}
+
 
 function processMatching2(symbol, group, ts, body) {
     const FGH = ["F", "G", "H"];
@@ -788,7 +846,6 @@ function processMatching2(symbol, group, ts, body) {
         `🔁 MATCHING 2\nSymbol: ${symbol}\nLevels: ±${lvls[0]}\nGroups: ${candidate.payload.group} ↔ ${group}\nTimes:\n - ${candidate.payload.group}: ${new Date(candidate.time).toLocaleString()}\n - ${group}: ${new Date(ts).toLocaleString()}`
     );
 }
-
 
 
 function processMatching3(symbol, group, ts, body) {
@@ -848,8 +905,6 @@ function processGodzilla(symbol, group, ts) {
         consumeGodzillaEligibility(symbol, ts);
         return;
     }
-
-
 
     // -------------------------
     // ARM BUY TRACKER (BDX)
@@ -935,69 +990,6 @@ function processGodzilla(symbol, group, ts) {
 }
 
 // ==========================================================
-//  JUPITER (Standalone — Same group repeat within 50 minutes)
-//  Groups: ACSW + BDXT
-//  Same symbol only
-//  Bot 2
-// ==========================================================
-
-const JUPITER_WINDOW_MS = 50 * 60 * 1000; // 50 minutes
-
-const JUPITER_GROUPS = new Set([
-    "A","C","S","W",
-    "B","D","X","T"
-]);
-
-// jupiterState[symbol][group] = lastTimestamp
-const jupiterState = {};
-
-function processJupiter(symbol, group, ts) {
-
-    if (!JUPITER_GROUPS.has(group)) return;
-
-    if (!jupiterState[symbol]) {
-        jupiterState[symbol] = {};
-    }
-
-    const lastTime = jupiterState[symbol][group];
-
-    if (lastTime && (ts - lastTime <= JUPITER_WINDOW_MS)) {
-
-        const diffMs  = ts - lastTime;
-        const diffMin = Math.floor(diffMs / 60000);
-        const diffSec = Math.floor((diffMs % 60000) / 1000);
-
-        sendToTelegram2(
-            `🟠 JUPITER\n` +
-            `Symbol: ${symbol}\n` +
-            `Group: ${group} → ${group}\n` +
-            `First: ${new Date(lastTime).toLocaleString()}\n` +
-            `Second: ${new Date(ts).toLocaleString()}\n` +
-            `Gap: ${diffMin}m ${diffSec}s`
-        );
-    }
-
-    // Always update last occurrence
-    jupiterState[symbol][group] = ts;
-
-    // Optional lightweight pruning
-    if (Object.keys(jupiterState).length > 3000) {
-        const cutoff = ts - (2 * 60 * 60 * 1000);
-        for (const sym of Object.keys(jupiterState)) {
-            for (const g of Object.keys(jupiterState[sym])) {
-                if (jupiterState[sym][g] < cutoff) {
-                    delete jupiterState[sym][g];
-                }
-            }
-            if (!Object.keys(jupiterState[sym]).length) {
-                delete jupiterState[sym];
-            }
-        }
-    }
-}
-
-
-// ==========================================================
 //  BAZOOKA (GLOBAL ABCDWX burst detector — standalone)
 //  Window: 50 seconds | Min count: 10 | Bot 6
 // ==========================================================
@@ -1022,6 +1014,7 @@ const bazookaState = {
 // bazookaGlobal[group] = Map(symbol → time)
 
 function processBazooka(symbol, group, ts) {
+    // Same global groups as before (matches BABABIA/MAMAMIA universe)
     if (!["A","B","C","D","W","X","S","T","U","V"].includes(group)) return;
 
     // Start frozen snapshot on FIRST hit
@@ -1030,12 +1023,13 @@ function processBazooka(symbol, group, ts) {
         bazookaState.symbols.clear();
 
         bazookaState.timer = setTimeout(() => {
-
             const entries = [...bazookaState.symbols.entries()];
             const total = entries.length;
 
+            // OPTION A: silent discard if below threshold
             if (total >= BAZOOKA_MIN_COUNT) {
 
+                // Split ONLY for Telegram delivery
                 const chunks = [];
                 for (let i = 0; i < entries.length; i += BAZOOKA_CHUNK_SIZE) {
                     chunks.push(entries.slice(i, i + BAZOOKA_CHUNK_SIZE));
@@ -1062,36 +1056,41 @@ function processBazooka(symbol, group, ts) {
                     );
                 });
 
-                // GODZILLA eligibility
+                // GODZILLA eligibility (unchanged semantics)
                 for (const [sym] of entries) {
                     markGodzillaEligible(sym, ts);
                 }
 
                 const armedGroup = group;
 
-                for (const [sym] of entries) {
-                    salsaState.set(sym, {
-                        count: 0,
-                        armedAt: ts,
-                        armedGroup,
-                        firstHit: null
-                    });
-                }
+for (const [sym] of entries) {
+    salsaState.set(sym, {
+        count: 0,
+        armedAt: ts,
+        armedGroup,
+        firstHit: null
+    });
+}
+
+
+                
             }
 
-            // Reset state after snapshot
+            // Reset snapshot (prevents late symbols)
             bazookaState.active = false;
             bazookaState.symbols.clear();
+            clearTimeout(bazookaState.timer);
             bazookaState.timer = null;
 
         }, BAZOOKA_WINDOW_MS);
     }
 
-    // Always collect symbol
-    bazookaState.symbols.set(symbol, { time: ts, group });
+    // Collect symbol ONCE during the window (no overwrite)
+    if (!bazookaState.symbols.has(symbol)) {
+        bazookaState.symbols.set(symbol, { time: ts, group });
+    }
 }
 
-            
 
 // ==========================================================
 //  WAKANDA STATE (direction-neutral structure tracking)
@@ -1697,6 +1696,9 @@ function processNeptune(symbol, group, ts) {
 
     // 🔥 Register MAMBA tracking
     registerMambaFromNeptune(symbol, sideName, ts);
+	
+	// 🔥 Register CONTRARIAN tracking (opposite mapping)
+registerContrarianFromNeptune(symbol, sideName, ts);
 
     // Reset this side only (burst behavior)
     if (isSide1) {
@@ -1785,6 +1787,93 @@ function processZulu(symbol, group, ts) {
 //  Each Neptune event tracked independently
 //  Bot 8
 // ==========================================================
+
+// ==========================================================
+//  CONTRARIAN (Triggered ONLY from NEPTUNE)
+//  Opposite mapping only:
+//    ACSW → waits for E
+//    BDXT → waits for Q
+//  (Intentionally excludes O and P)
+//  Bot 2
+// ==========================================================
+
+const CONTRARIAN_EXPIRY_MS = 3 * 60 * 60 * 1000; // 3 hours
+
+// contrarianTrackers[symbol] = [
+//   { side: "ACSW" | "BDXT", armedAt, done: false }
+// ]
+const contrarianTrackers = {};
+
+// Called from NEPTUNE
+function registerContrarianFromNeptune(symbol, side, ts) {
+    if (side !== "ACSW" && side !== "BDXT") return;
+
+    if (!contrarianTrackers[symbol]) {
+        contrarianTrackers[symbol] = [];
+    }
+
+    contrarianTrackers[symbol].push({
+        side,
+        armedAt: ts,
+        done: false
+    });
+}
+
+function processContrarian(symbol, group, ts) {
+
+    // Only the “opposite” targets matter
+    if (group !== "E" && group !== "Q") return;
+
+    const trackers = contrarianTrackers[symbol];
+    if (!trackers || !trackers.length) return;
+
+    // Clean expired first
+    const fresh = trackers.filter(t => (ts - t.armedAt) <= CONTRARIAN_EXPIRY_MS && !t.done);
+
+    if (!fresh.length) {
+        delete contrarianTrackers[symbol];
+        return;
+    }
+
+    for (const t of fresh) {
+
+        // ACSW → E
+        if (t.side === "ACSW" && group === "E") {
+            t.done = true;
+
+            sendToTelegram2(
+                `⚖️ CONTRARIAN\n` +
+                `Symbol: ${symbol}\n` +
+                `Origin: NEPTUNE (ACSW)\n` +
+                `Opposite Hit: E\n` +
+                `Neptune Time: ${new Date(t.armedAt).toLocaleTimeString()}\n` +
+                `Hit Time: ${new Date(ts).toLocaleTimeString()}`
+            );
+        }
+
+        // BDXT → Q
+        if (t.side === "BDXT" && group === "Q") {
+            t.done = true;
+
+            sendToTelegram2(
+                `⚖️ CONTRARIAN\n` +
+                `Symbol: ${symbol}\n` +
+                `Origin: NEPTUNE (BDXT)\n` +
+                `Opposite Hit: Q\n` +
+                `Neptune Time: ${new Date(t.armedAt).toLocaleTimeString()}\n` +
+                `Hit Time: ${new Date(ts).toLocaleTimeString()}`
+            );
+        }
+    }
+
+    // Keep only unfinished + unexpired trackers
+    contrarianTrackers[symbol] = fresh.filter(t => !t.done);
+
+    if (!contrarianTrackers[symbol].length) {
+        delete contrarianTrackers[symbol];
+    }
+}
+
 
 // mambaTrackers[symbol] = [
 //   { side: "ACSW" | "BDXT", armedAt, hits: { P:false,Q:false,E:false,O:false } }
@@ -2117,6 +2206,70 @@ function processTesting(symbol, group, ts) {
 }
 
 
+// ==========================================================
+//  JUPITER & SATURN (Directional: G/H tracks A–D)
+// ==========================================================
+
+function processJupiterSaturn(symbol, group, ts) {
+    // ONLY G or H can trigger
+    if (!["G", "H"].includes(group)) return;
+
+    const AD = ["A", "B", "C", "D"];
+
+    // Collect all past A–D alerts for this symbol
+    const ads = AD
+        .map(g => safeGet(symbol, g))
+        .filter(Boolean)
+        .filter(x => x.time <= ts); // look BACK only
+
+    if (!ads.length) return;
+
+    let firedJupiter = false;
+    let firedSaturn  = false;
+
+    for (const ad of ads) {
+        const diffMs = ts - ad.time;
+        if (diffMs < 0) continue; // safety
+
+        const diffMin = Math.floor(diffMs / 60000);
+        const diffSec = Math.floor((diffMs % 60000) / 1000);
+
+        // JUPITER (≤ 5 minutes)
+        if (diffMs <= JUPITER_WINDOW_MS && !firedJupiter) {
+            firedJupiter = true;
+           const msg =
+    `🟠 JUPITER\n` +
+    `Symbol: ${symbol}\n` +
+    `AD Group: ${ad.payload.group}\n` +
+    `GH Group: ${group}\n` +
+    `Gap: ${diffMin}m ${diffSec}s\n` +
+    `AD Time: ${new Date(ad.time).toLocaleString()}\n` +
+    `GH Time: ${new Date(ts).toLocaleString()}`;
+
+sendToTelegram7(msg);
+mirrorToBot8IfSpecial(symbol, msg);
+
+        }
+
+        // SATURN (≤ 50 minutes)
+        if (diffMs <= SATURN_WINDOW_MS && !firedSaturn) {
+            firedSaturn = true;
+            const msg =
+    `🪐 SATURN\n` +
+    `Symbol: ${symbol}\n` +
+    `AD Group: ${ad.payload.group}\n` +
+    `GH Group: ${group}\n` +
+    `Gap: ${diffMin}m ${diffSec}s`;
+
+sendToTelegram7(msg);
+mirrorToBot8IfSpecial(symbol, msg);
+
+        }
+
+        // If both fired for this G/H, stop
+        if (firedJupiter && firedSaturn) break;
+    }
+}
 
 
 // ==========================================================
@@ -2176,7 +2329,8 @@ app.post("/incoming", (req, res) => {
        processDivergenceMonitor(symbol, group, ts);
         processMatching2(symbol, group, ts, body);
         processMatching3(symbol, group, ts, body);
-		processBazooka(symbol, group, ts, body);		 	        
+		processBazooka(symbol, group, ts, body);
+		processContrarian(symbol, group, ts);       	        
 		processBlackPanther(symbol, group, ts);
         processGamma(symbol, group, ts);
         processBoomerang(symbol, group, ts, body);
@@ -2193,7 +2347,7 @@ app.post("/incoming", (req, res) => {
 		processMAMAMIA(symbol, group, ts);
 		processGodzilla(symbol, group, ts);
 		processWakanda(symbol, group, ts);
-		processJupiter(symbol, group, ts);
+		processJupiterSaturn(symbol, group, ts);
 		processTracking4(symbol, group, ts, body);
 		processTracking5(symbol, group, ts, body);
 
