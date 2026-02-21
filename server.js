@@ -1248,7 +1248,7 @@ function processBlackPanther(symbol, group, ts) {
         `2) ${times[1]}\n` +
         `3) ${times[2]}`;
 
-    sendToTelegram5(msg);
+    sendToTelegram4(msg);
 	
 	createBoomerangAnchor(symbol, parseFloat(safeGet(symbol, picked[2].payload.group)?.payload?.price), ts, "BLACK_PANTHER");
 
@@ -1299,7 +1299,7 @@ function processGamma(symbol, group, ts) {
         `Times:\n` +
         times.map((t, i) => `${i + 1}) ${t}`).join("\n");
 
-    sendToTelegram5(msg);
+    sendToTelegram4(msg);
 	
 	createBoomerangAnchor(symbol, parseFloat(safeGet(symbol, picked[picked.length - 1].payload.group)?.payload?.price), ts, "GAMMA");
 
@@ -1923,6 +1923,109 @@ function processContrarian(symbol, group, ts) {
 
 
 // ==========================================================
+//  REBEL (Triggered ONLY from JUPITER)
+//  Opposite mapping:
+//    ACSW → waits for E and O (separate fires)
+//    BDXT → waits for P and Q (separate fires)
+//  Bot 5
+// ==========================================================
+
+const REBEL_EXPIRY_MS = 3 * 60 * 60 * 1000; // 3 hours
+
+// rebelTrackers[symbol] = [
+//   { side: "ACSW" | "BDXT", armedAt, hits: { P:false,Q:false,E:false,O:false } }
+// ]
+const rebelTrackers = {};
+
+// Called from JUPITER
+function registerRebelFromJupiter(symbol, side, ts) {
+    if (side !== "ACSW" && side !== "BDXT") return;
+
+    if (!rebelTrackers[symbol]) {
+        rebelTrackers[symbol] = [];
+    }
+
+    rebelTrackers[symbol].push({
+        side,
+        armedAt: ts,
+        hits: { P:false, Q:false, E:false, O:false }
+    });
+}
+
+function processRebel(symbol, group, ts) {
+
+    if (!["P","Q","E","O"].includes(group)) return;
+
+    const trackers = rebelTrackers[symbol];
+    if (!trackers || !trackers.length) return;
+
+    // Remove expired trackers first
+    const fresh = trackers.filter(t => (ts - t.armedAt) <= REBEL_EXPIRY_MS);
+
+    if (!fresh.length) {
+        delete rebelTrackers[symbol];
+        return;
+    }
+
+    for (const t of fresh) {
+
+        // ACSW → E and O
+        if (t.side === "ACSW") {
+
+            if ((group === "E" || group === "O") && !t.hits[group]) {
+
+                t.hits[group] = true;
+
+                sendToTelegram5(
+                    `🟥 REBEL\n` +
+                    `Symbol: ${symbol}\n` +
+                    `Origin: JUPITER (ACSW)\n` +
+                    `Hit: ${group}\n` +
+                    `Jupiter Time: ${new Date(t.armedAt).toLocaleTimeString()}\n` +
+                    `Hit Time: ${new Date(ts).toLocaleTimeString()}`
+                );
+            }
+        }
+
+        // BDXT → P and Q
+        if (t.side === "BDXT") {
+
+            if ((group === "P" || group === "Q") && !t.hits[group]) {
+
+                t.hits[group] = true;
+
+                sendToTelegram5(
+                    `🟥 REBEL\n` +
+                    `Symbol: ${symbol}\n` +
+                    `Origin: JUPITER (BDXT)\n` +
+                    `Hit: ${group}\n` +
+                    `Jupiter Time: ${new Date(t.armedAt).toLocaleTimeString()}\n` +
+                    `Hit Time: ${new Date(ts).toLocaleTimeString()}`
+                );
+            }
+        }
+    }
+
+    // Remove trackers that have fired both valid hits
+    rebelTrackers[symbol] = fresh.filter(t => {
+
+        if (t.side === "ACSW") {
+            return !(t.hits.E && t.hits.O);
+        }
+
+        if (t.side === "BDXT") {
+            return !(t.hits.P && t.hits.Q);
+        }
+
+        return true;
+    });
+
+    if (!rebelTrackers[symbol].length) {
+        delete rebelTrackers[symbol];
+    }
+}
+
+// ==========================================================
 //  MAMBA (unchanged)
 // ==========================================================
 
@@ -2282,14 +2385,21 @@ function processJupiter(symbol, group, ts) {
         const diffMin = Math.floor(diffMs / 60000);
         const diffSec = Math.floor((diffMs % 60000) / 1000);
 
-        sendToTelegram4(
-            `🟠 JUPITER\n` +
-            `Symbol: ${symbol}\n` +
-            `Group: ${group}\n` +
-            `First Hit: ${new Date(last).toLocaleString()}\n` +
-            `Second Hit: ${new Date(ts).toLocaleString()}\n` +
-            `Gap: ${diffMin}m ${diffSec}s`
-        );
+       sendToTelegram4(
+    `🟠 JUPITER\n` +
+    `Symbol: ${symbol}\n` +
+    `Group: ${group}\n` +
+    `First Hit: ${new Date(last).toLocaleString()}\n` +
+    `Second Hit: ${new Date(ts).toLocaleString()}\n` +
+    `Gap: ${diffMin}m ${diffSec}s`
+);
+
+// 🔥 ARM REBEL HERE
+const sideName = ["A","C","S","W"].includes(group)
+    ? "ACSW"
+    : "BDXT";
+
+registerRebelFromJupiter(symbol, sideName, ts);
     }
 
     // Always update
@@ -2365,7 +2475,8 @@ app.post("/incoming", (req, res) => {
         processMatching2(symbol, group, ts, body);
         processMatching3(symbol, group, ts, body);
 		processBazooka(symbol, group, ts, body);
-		processContrarian(symbol, group, ts);       	        
+		processContrarian(symbol, group, ts);
+        processRebel(symbol, group, ts);
 		processBlackPanther(symbol, group, ts);
         processGamma(symbol, group, ts);
         processBoomerang(symbol, group, ts, body);
