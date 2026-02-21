@@ -1820,17 +1820,16 @@ function processZulu(symbol, group, ts) {
 
 // ==========================================================
 //  CONTRARIAN (Triggered ONLY from NEPTUNE)
-//  Opposite mapping only:
-//    ACSW → waits for E
-//    BDXT → waits for Q
-//  (Intentionally excludes O and P)
+//  Opposite mapping:
+//    ACSW → waits for E and O (separate fires)
+//    BDXT → waits for P and Q (separate fires)
 //  Bot 2
 // ==========================================================
 
 const CONTRARIAN_EXPIRY_MS = 3 * 60 * 60 * 1000; // 3 hours
 
 // contrarianTrackers[symbol] = [
-//   { side: "ACSW" | "BDXT", armedAt, done: false }
+//   { side: "ACSW" | "BDXT", armedAt, hits: { P:false,Q:false,E:false,O:false } }
 // ]
 const contrarianTrackers = {};
 
@@ -1845,20 +1844,19 @@ function registerContrarianFromNeptune(symbol, side, ts) {
     contrarianTrackers[symbol].push({
         side,
         armedAt: ts,
-        done: false
+        hits: { P:false, Q:false, E:false, O:false }
     });
 }
 
 function processContrarian(symbol, group, ts) {
 
-    // Only the “opposite” targets matter
-    if (group !== "E" && group !== "Q") return;
+    if (!["P","Q","E","O"].includes(group)) return;
 
     const trackers = contrarianTrackers[symbol];
     if (!trackers || !trackers.length) return;
 
-    // Clean expired first
-    const fresh = trackers.filter(t => (ts - t.armedAt) <= CONTRARIAN_EXPIRY_MS && !t.done);
+    // Remove expired trackers first
+    const fresh = trackers.filter(t => (ts - t.armedAt) <= CONTRARIAN_EXPIRY_MS);
 
     if (!fresh.length) {
         delete contrarianTrackers[symbol];
@@ -1867,43 +1865,66 @@ function processContrarian(symbol, group, ts) {
 
     for (const t of fresh) {
 
-        // ACSW → E
-        if (t.side === "ACSW" && group === "E") {
-            t.done = true;
+        // ACSW → E and O
+        if (t.side === "ACSW") {
 
-            sendToTelegram2(
-                `⚖️ CONTRARIAN\n` +
-                `Symbol: ${symbol}\n` +
-                `Origin: NEPTUNE (ACSW)\n` +
-                `Opposite Hit: E\n` +
-                `Neptune Time: ${new Date(t.armedAt).toLocaleTimeString()}\n` +
-                `Hit Time: ${new Date(ts).toLocaleTimeString()}`
-            );
+            if ((group === "E" || group === "O") && !t.hits[group]) {
+
+                t.hits[group] = true;
+
+                sendToTelegram2(
+                    `⚖️ CONTRARIAN\n` +
+                    `Symbol: ${symbol}\n` +
+                    `Origin: NEPTUNE (ACSW)\n` +
+                    `Opposite Hit: ${group}\n` +
+                    `Neptune Time: ${new Date(t.armedAt).toLocaleTimeString()}\n` +
+                    `Hit Time: ${new Date(ts).toLocaleTimeString()}`
+                );
+            }
         }
 
-        // BDXT → Q
-        if (t.side === "BDXT" && group === "Q") {
-            t.done = true;
+        // BDXT → P and Q
+        if (t.side === "BDXT") {
 
-            sendToTelegram2(
-                `⚖️ CONTRARIAN\n` +
-                `Symbol: ${symbol}\n` +
-                `Origin: NEPTUNE (BDXT)\n` +
-                `Opposite Hit: Q\n` +
-                `Neptune Time: ${new Date(t.armedAt).toLocaleTimeString()}\n` +
-                `Hit Time: ${new Date(ts).toLocaleTimeString()}`
-            );
+            if ((group === "P" || group === "Q") && !t.hits[group]) {
+
+                t.hits[group] = true;
+
+                sendToTelegram2(
+                    `⚖️ CONTRARIAN\n` +
+                    `Symbol: ${symbol}\n` +
+                    `Origin: NEPTUNE (BDXT)\n` +
+                    `Opposite Hit: ${group}\n` +
+                    `Neptune Time: ${new Date(t.armedAt).toLocaleTimeString()}\n` +
+                    `Hit Time: ${new Date(ts).toLocaleTimeString()}`
+                );
+            }
         }
     }
 
-    // Keep only unfinished + unexpired trackers
-    contrarianTrackers[symbol] = fresh.filter(t => !t.done);
+    // Remove trackers that have fired both valid opposite hits
+    contrarianTrackers[symbol] = fresh.filter(t => {
+
+        if (t.side === "ACSW") {
+            return !(t.hits.E && t.hits.O);
+        }
+
+        if (t.side === "BDXT") {
+            return !(t.hits.P && t.hits.Q);
+        }
+
+        return true;
+    });
 
     if (!contrarianTrackers[symbol].length) {
         delete contrarianTrackers[symbol];
     }
 }
 
+
+// ==========================================================
+//  MAMBA (unchanged)
+// ==========================================================
 
 // mambaTrackers[symbol] = [
 //   { side: "ACSW" | "BDXT", armedAt, hits: { P:false,Q:false,E:false,O:false } }
@@ -1989,9 +2010,6 @@ function processMamba(symbol, group, ts) {
         delete mambaTrackers[symbol];
     }
 }
-
-
-
 
 // ==========================================================
 //  GODZILLA STATE (ACW → M, BDX → N)
