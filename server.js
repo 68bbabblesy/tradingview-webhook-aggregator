@@ -2264,7 +2264,7 @@ function processJupiter(symbol, group, ts) {
         const diffMin = Math.floor(diffMs / 60000);
         const diffSec = Math.floor((diffMs % 60000) / 1000);
 
-        sendToTelegram7(
+        sendToTelegram4(
             `🟠 JUPITER\n` +
             `Symbol: ${symbol}\n` +
             `Group: ${group}\n` +
