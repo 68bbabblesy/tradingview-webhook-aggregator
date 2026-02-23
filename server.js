@@ -828,6 +828,85 @@ function processMatching3(symbol, group, ts, body) {
     );
 }
 
+// ==========================================================
+//  GODZILLA (Frozen Snapshot Burst — A-Z)
+//  Window: 50 seconds
+//  Min Count: 20
+//  Bot 9
+// ==========================================================
+
+const GODZILLA_WINDOW_MS = 50 * 1000;
+const GODZILLA_MIN_COUNT = 20;
+const GODZILLA_CHUNK_SIZE = 12; // unchanged presentation logic
+
+const GODZILLA_GROUPS = new Set(
+    Array.from({ length: 26 }, (_, i) =>
+        String.fromCharCode(65 + i)
+    )
+);
+
+const godzillaState = {
+    active: false,
+    symbols: new Map(),
+    timer: null
+};
+
+function processGodzilla(symbol, group, ts) {
+
+    if (!GODZILLA_GROUPS.has(group)) return;
+
+    if (!godzillaState.active) {
+
+        godzillaState.active = true;
+        godzillaState.symbols.clear();
+
+        godzillaState.timer = setTimeout(() => {
+
+            const entries = [...godzillaState.symbols.entries()];
+            const total = entries.length;
+
+            if (total >= GODZILLA_MIN_COUNT) {
+
+                const chunks = [];
+                for (let i = 0; i < entries.length; i += GODZILLA_CHUNK_SIZE) {
+                    chunks.push(entries.slice(i, i + GODZILLA_CHUNK_SIZE));
+                }
+
+                chunks.forEach((chunk, idx) => {
+
+                    const lines = chunk
+                        .sort((a, b) => a[1] - b[1])
+                        .map(([sym, time]) =>
+                            `• ${sym} @ ${new Date(time).toLocaleTimeString()}`
+                        )
+                        .join("\n");
+
+                    const suffix =
+                        chunks.length > 1
+                            ? ` (Part ${idx + 1}/${chunks.length})`
+                            : "";
+
+                    sendToTelegram6(
+                        `🦖 GODZILLA${suffix}\n` +
+                        `Total Symbols: ${total}\n` +
+                        `Window: 50s\n` +
+                        `Symbols:\n${lines}`
+                    );
+                }
+            }
+
+            godzillaState.active = false;
+            godzillaState.symbols.clear();
+            clearTimeout(godzillaState.timer);
+            godzillaState.timer = null;
+
+        }, GODZILLA_WINDOW_MS);
+    }
+
+    if (!godzillaState.symbols.has(symbol)) {
+        godzillaState.symbols.set(symbol, ts);
+    }
+}
 
 // ==========================================================
 //  BAZOOKA (GLOBAL ABCDWX burst detector — standalone)
@@ -928,7 +1007,77 @@ for (const [sym] of entries) {
     }
 }
 
+// ==========================================================
+//  WAKANDA (Buffered Burst Engine — A-Z)
+//  Logical Window: 50 seconds
+//  Delivery Buffer: 60 seconds
+//  Min Count: 20
+//  Bot 9
+// ==========================================================
 
+const WAKANDA_WINDOW_MS = 50 * 1000;
+const WAKANDA_BUFFER_MS = 60 * 1000;
+const WAKANDA_MIN_COUNT = 20;
+
+// A-Z auto generate
+const WAKANDA_GROUPS = new Set(
+    Array.from({ length: 26 }, (_, i) =>
+        String.fromCharCode(65 + i)
+    )
+);
+
+const wakandaState = {
+    active: false,
+    symbols: new Map(),
+    startTime: null,
+    timer: null
+};
+
+function processWakanda(symbol, group, ts) {
+
+    if (!WAKANDA_GROUPS.has(group)) return;
+
+    if (!wakandaState.active) {
+
+        wakandaState.active = true;
+        wakandaState.startTime = ts;
+        wakandaState.symbols.clear();
+
+        wakandaState.timer = setTimeout(() => {
+
+            const cutoff = wakandaState.startTime + WAKANDA_WINDOW_MS;
+
+            const entries = [...wakandaState.symbols.entries()]
+                .filter(([_, time]) => time <= cutoff);
+
+            if (entries.length >= WAKANDA_MIN_COUNT) {
+
+                const lines = entries
+                    .sort((a, b) => a[1] - b[1])
+                    .map(([sym, time]) =>
+                        `• ${sym} @ ${new Date(time).toLocaleTimeString()}`
+                    )
+                    .join("\n");
+
+                sendToTelegram6(
+                    `🌍 WAKANDA\n` +
+                    `Unique Symbols: ${entries.length}\n` +
+                    `Window: 50s\n` +
+                    `Symbols:\n${lines}`
+                );
+            }
+
+            wakandaState.active = false;
+            wakandaState.symbols.clear();
+            wakandaState.startTime = null;
+            clearTimeout(wakandaState.timer);
+            wakandaState.timer = null;
+
+        }, WAKANDA_WINDOW_MS + WAKANDA_BUFFER_MS);
+    }
+
+    wakandaState.symbols.set(symbol, ts);
+}
 
 
 // ==========================================================
@@ -2191,8 +2340,8 @@ app.post("/incoming", (req, res) => {
         processAudit(symbol, group, ts, body);
         processBababia(symbol, group, ts);
 		processMAMAMIA(symbol, group, ts);
-		
-		
+		processWakanda(symbol, group, ts);
+        processGodzilla(symbol, group, ts);		
 		processJupiter(symbol, group, ts);
 		processTracking4(symbol, group, ts, body);
 		processTracking5(symbol, group, ts, body);
