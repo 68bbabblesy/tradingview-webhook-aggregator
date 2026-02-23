@@ -829,7 +829,8 @@ function processMatching3(symbol, group, ts, body) {
 }
 
 // ==========================================================
-//  GODZILLA (Frozen Snapshot Burst — A-Z)
+//  GODZILLA — FROZEN SNAPSHOT (Exact BAZOOKA clone)
+//  Groups: A-Z
 //  Window: 50 seconds
 //  Min Count: 20
 //  Bot 9
@@ -837,7 +838,7 @@ function processMatching3(symbol, group, ts, body) {
 
 const GODZILLA_WINDOW_MS = 50 * 1000;
 const GODZILLA_MIN_COUNT = 20;
-const GODZILLA_CHUNK_SIZE = 12; // unchanged presentation logic
+const GODZILLA_CHUNK_SIZE = 12; // presentation only (unchanged)
 
 const GODZILLA_GROUPS = new Set(
     Array.from({ length: 26 }, (_, i) =>
@@ -855,9 +856,8 @@ function processGodzilla(symbol, group, ts) {
 
     if (!GODZILLA_GROUPS.has(group)) return;
 
-    // Start frozen snapshot on first hit
+    // Start frozen snapshot on FIRST hit
     if (!godzillaState.active) {
-
         godzillaState.active = true;
         godzillaState.symbols.clear();
 
@@ -866,6 +866,7 @@ function processGodzilla(symbol, group, ts) {
             const entries = [...godzillaState.symbols.entries()];
             const total = entries.length;
 
+            // EXACT same threshold logic as Bazooka
             if (total >= GODZILLA_MIN_COUNT) {
 
                 const chunks = [];
@@ -876,9 +877,9 @@ function processGodzilla(symbol, group, ts) {
                 chunks.forEach((chunk, idx) => {
 
                     const lines = chunk
-                        .sort((a, b) => a[1] - b[1])
-                        .map(([sym, time]) =>
-                            `• ${sym} @ ${new Date(time).toLocaleTimeString()}`
+                        .sort((a, b) => a[1].time - b[1].time)
+                        .map(([sym, info]) =>
+                            `• ${sym} (${info.group}) @ ${new Date(info.time).toLocaleTimeString()}`
                         )
                         .join("\n");
 
@@ -887,17 +888,17 @@ function processGodzilla(symbol, group, ts) {
                             ? ` (Part ${idx + 1}/${chunks.length})`
                             : "";
 
-                    sendToTelegram9(
-                        `🦖 GODZILLA${suffix}\n` +
+                    sendToTelegram6(
+                        `💥 GODZILLA${suffix}\n` +
                         `Total Symbols: ${total}\n` +
                         `Window: 50s\n` +
                         `Symbols:\n${lines}`
                     );
-
                 });
+
             }
 
-            // Reset snapshot
+            // Reset snapshot (identical to Bazooka)
             godzillaState.active = false;
             godzillaState.symbols.clear();
             clearTimeout(godzillaState.timer);
@@ -906,11 +907,13 @@ function processGodzilla(symbol, group, ts) {
         }, GODZILLA_WINDOW_MS);
     }
 
-    // Collect symbol once during window
+    // Collect symbol ONCE during window (no overwrite)
     if (!godzillaState.symbols.has(symbol)) {
-        godzillaState.symbols.set(symbol, ts);
+        godzillaState.symbols.set(symbol, { time: ts, group });
     }
 }
+
+
 // ==========================================================
 //  BAZOOKA (GLOBAL ABCDWX burst detector — standalone)
 //  Window: 50 seconds | Min count: 10 | Bot 6
@@ -1011,9 +1014,10 @@ for (const [sym] of entries) {
 }
 
 // ==========================================================
-//  WAKANDA (Buffered Burst Engine — A-Z)
+//  WAKANDA (Buffered Burst Engine)
 //  Logical Window: 50 seconds
 //  Delivery Buffer: 60 seconds
+//  Groups: A-Z
 //  Min Count: 20
 //  Bot 9
 // ==========================================================
@@ -1022,35 +1026,40 @@ const WAKANDA_WINDOW_MS = 50 * 1000;
 const WAKANDA_BUFFER_MS = 60 * 1000;
 const WAKANDA_MIN_COUNT = 20;
 
-// A-Z auto generate
 const WAKANDA_GROUPS = new Set(
     Array.from({ length: 26 }, (_, i) =>
         String.fromCharCode(65 + i)
     )
 );
 
-const wakandaState = {
-    active: false,
-    symbols: new Map(),
-    startTime: null,
-    timer: null
-};
+const wakandaState = {};
 
 function processWakanda(symbol, group, ts) {
 
     if (!WAKANDA_GROUPS.has(group)) return;
 
-    if (!wakandaState.active) {
+    if (!wakandaState[group]) {
+        wakandaState[group] = {
+            active: false,
+            symbols: new Map(),
+            startTime: null,
+            timer: null
+        };
+    }
 
-        wakandaState.active = true;
-        wakandaState.startTime = ts;
-        wakandaState.symbols.clear();
+    const state = wakandaState[group];
 
-        wakandaState.timer = setTimeout(() => {
+    // Start burst on first hit
+    if (!state.active) {
+        state.active = true;
+        state.startTime = ts;
+        state.symbols.clear();
 
-            const cutoff = wakandaState.startTime + WAKANDA_WINDOW_MS;
+        state.timer = setTimeout(() => {
 
-            const entries = [...wakandaState.symbols.entries()]
+            const cutoff = state.startTime + WAKANDA_WINDOW_MS;
+
+            const entries = [...state.symbols.entries()]
                 .filter(([_, time]) => time <= cutoff);
 
             if (entries.length >= WAKANDA_MIN_COUNT) {
@@ -1063,26 +1072,25 @@ function processWakanda(symbol, group, ts) {
                     .join("\n");
 
                 sendToTelegram6(
-                    `🌍 WAKANDA\n` +
+                    `🎉 WAKANDA\n` +
+                    `Group: ${group}\n` +
                     `Unique Symbols: ${entries.length}\n` +
                     `Window: 50s\n` +
                     `Symbols:\n${lines}`
                 );
             }
 
-            wakandaState.active = false;
-            wakandaState.symbols.clear();
-            wakandaState.startTime = null;
-            clearTimeout(wakandaState.timer);
-            wakandaState.timer = null;
+            state.active = false;
+            state.symbols.clear();
+            state.startTime = null;
+            clearTimeout(state.timer);
+            state.timer = null;
 
         }, WAKANDA_WINDOW_MS + WAKANDA_BUFFER_MS);
     }
 
-    wakandaState.symbols.set(symbol, ts);
+    state.symbols.set(symbol, ts);
 }
-
-
 // ==========================================================
 //  BLACK_PANTHER (10 groups → 3 distinct groups, ≤ 300s)
 // ==========================================================
