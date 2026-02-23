@@ -855,6 +855,7 @@ function processGodzilla(symbol, group, ts) {
 
     if (!GODZILLA_GROUPS.has(group)) return;
 
+    // Start frozen snapshot on first hit
     if (!godzillaState.active) {
 
         godzillaState.active = true;
@@ -886,15 +887,17 @@ function processGodzilla(symbol, group, ts) {
                             ? ` (Part ${idx + 1}/${chunks.length})`
                             : "";
 
-                    sendToTelegram6(
+                    sendToTelegram9(
                         `🦖 GODZILLA${suffix}\n` +
                         `Total Symbols: ${total}\n` +
                         `Window: 50s\n` +
                         `Symbols:\n${lines}`
                     );
-                }
+
+                });
             }
 
+            // Reset snapshot
             godzillaState.active = false;
             godzillaState.symbols.clear();
             clearTimeout(godzillaState.timer);
@@ -903,11 +906,11 @@ function processGodzilla(symbol, group, ts) {
         }, GODZILLA_WINDOW_MS);
     }
 
+    // Collect symbol once during window
     if (!godzillaState.symbols.has(symbol)) {
         godzillaState.symbols.set(symbol, ts);
     }
 }
-
 // ==========================================================
 //  BAZOOKA (GLOBAL ABCDWX burst detector — standalone)
 //  Window: 50 seconds | Min count: 10 | Bot 6
