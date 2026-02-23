@@ -464,45 +464,6 @@ function safeGet(symbol, group) {
     return lastAlert[symbol]?.[group] || null;
 }
 
-// -----------------------------
-// GODZILLA ELIGIBILITY HELPERS
-// -----------------------------
-function markGodzillaEligible(symbol, ts) {
-    // If symbol was already used recently, ignore new eligibility marks
-    const lastUsed = godzillaLastUsed.get(symbol);
-    if (lastUsed && ts - lastUsed < GODZILLA_ARM_COOLDOWN_MS) return;
-
-    // Only set if not already eligible (keeps the earliest eligible time)
-    if (!godzillaEligible.has(symbol)) {
-        godzillaEligible.set(symbol, ts);
-    }
-}
-
-function isGodzillaEligible(symbol, ts) {
-    const eligibleAt = godzillaEligible.get(symbol);
-    if (!eligibleAt) return false;
-
-    // Expire eligibility after TTL
-    if (ts - eligibleAt > GODZILLA_SOURCE_TTL_MS) {
-        godzillaEligible.delete(symbol);
-        return false;
-    }
-
-    return true;
-}
-
-function canArmGodzilla(symbol, ts) {
-    const lastUsed = godzillaLastUsed.get(symbol);
-    if (!lastUsed) return true; // never used before
-
-    return (ts - lastUsed) >= GODZILLA_ARM_COOLDOWN_MS;
-}
-
-function consumeGodzillaEligibility(symbol, ts) {
-    godzillaLastUsed.set(symbol, ts);
-    godzillaEligible.delete(symbol); // one-shot until re-eligible later
-}
-
 
 function formatLevel(group, payload) {
     // No payload or no numericLevels => no level (A–D etc.)
@@ -867,122 +828,6 @@ function processMatching3(symbol, group, ts, body) {
     );
 }
 
-// ==========================================================
-//  GODZILLA (ACW → M = SELL, BDX → N = BUY)
-//  Fires on FIRST M / N (one-shot)
-//  Multiple concurrent trackers per symbol
-//  Bot 8
-// ==========================================================
-
-function processGodzilla(symbol, group, ts) {
-
-    const ACW = ["A", "C", "W"];
-    const BDX = ["B", "D", "X"];
-
-    // -------------------------
-    // ARM SELL TRACKER (ACW)
-    // -------------------------
-    if (ACW.includes(group)) {
-        if (!isGodzillaEligible(symbol, ts)) return;
-        if (!canArmGodzilla(symbol, ts)) return;
-
-        if (!godzilllaState.sell[symbol]) {
-            godzilllaState.sell[symbol] = [];
-        }
-
-        godzilllaState.sell[symbol].push({
-            count: 0,
-            times: [],
-            startTime: ts
-        });
-
-        // consume eligibility immediately (prevents reuse)
-        consumeGodzillaEligibility(symbol, ts);
-        return;
-    }
-
-    // -------------------------
-    // ARM BUY TRACKER (BDX)
-    // -------------------------
-    if (BDX.includes(group)) {
-        if (!isGodzillaEligible(symbol, ts)) return;
-        if (!canArmGodzilla(symbol, ts)) return;
-
-        if (!godzilllaState.buy[symbol]) {
-            godzilllaState.buy[symbol] = [];
-        }
-
-        godzilllaState.buy[symbol].push({
-            count: 0,
-            times: [],
-            startTime: ts
-        });
-
-        // consume eligibility immediately
-        consumeGodzillaEligibility(symbol, ts);
-        return;
-    }
-
-    // -------------------------
-    // PROCESS M (SELL) — FIRE ON FIRST M
-    // -------------------------
-    if (group === "M" && godzilllaState.sell[symbol]) {
-        const trackers = godzilllaState.sell[symbol];
-
-        for (let i = trackers.length - 1; i >= 0; i--) {
-            const t = trackers[i];
-
-            t.count++;
-            t.times.push(ts);
-
-            sendToTelegram8(
-                `🦖 GODZILLA_SELL\n` +
-                `Symbol: ${symbol}\n` +
-                `Anchor: ACW\n` +
-                `Anchor Time: ${new Date(t.startTime).toLocaleString()}\n` +
-                `\n` +
-                `M Time:\n` +
-                `1) ${new Date(ts).toLocaleString()}`
-            );
-
-            // one-shot → remove tracker immediately
-            trackers.splice(i, 1);
-        }
-
-        if (!trackers.length) delete godzilllaState.sell[symbol];
-        return;
-    }
-
-    // -------------------------
-    // PROCESS N (BUY) — FIRE ON FIRST N
-    // -------------------------
-    if (group === "N" && godzilllaState.buy[symbol]) {
-        const trackers = godzilllaState.buy[symbol];
-
-        for (let i = trackers.length - 1; i >= 0; i--) {
-            const t = trackers[i];
-
-            t.count++;
-            t.times.push(ts);
-
-            sendToTelegram8(
-                `🦖 GODZILLA_BUY\n` +
-                `Symbol: ${symbol}\n` +
-                `Anchor: BDX\n` +
-                `Anchor Time: ${new Date(t.startTime).toLocaleString()}\n` +
-                `\n` +
-                `N Time:\n` +
-                `1) ${new Date(ts).toLocaleString()}`
-            );
-
-            // one-shot → remove tracker immediately
-            trackers.splice(i, 1);
-        }
-
-        if (!trackers.length) delete godzilllaState.buy[symbol];
-        return;
-    }
-}
 
 // ==========================================================
 //  BAZOOKA (GLOBAL ABCDWX burst detector — standalone)
@@ -1043,7 +888,7 @@ function processBazooka(symbol, group, ts) {
                             ? ` (Part ${idx + 1}/${chunks.length})`
                             : "";
 
-                    sendToTelegram6(
+                    sendToTelegram9(
                         `💥 BAZOOKA${suffix}\n` +
                         `Total Symbols: ${total}\n` +
                         `Window: 50s\n` +
@@ -1051,10 +896,7 @@ function processBazooka(symbol, group, ts) {
                     );
                 });
 
-                // GODZILLA eligibility (unchanged semantics)
-                for (const [sym] of entries) {
-                    markGodzillaEligible(sym, ts);
-                }
+                
 
                 const armedGroup = group;
 
@@ -1086,123 +928,6 @@ for (const [sym] of entries) {
     }
 }
 
-
-// ==========================================================
-//  WAKANDA STATE (direction-neutral structure tracking)
-// ==========================================================
-
-const WAKANDA_WINDOW_MS = 120 * 1000; // 2 minutes
-
-const wakandaState = {};
-// wakandaState[symbol] = {
-//   lastHigh: null,     // "E" or "J"
-//   lastLow: null,      // "Q" or "R"
-//   anchorSeen: false,
-//   anchorTime: null,
-//   fired: false
-// }
-function resetWakanda(symbol) {
-    delete wakandaState[symbol];
-}
-
-function processWakanda(symbol, group, ts) {
-if (!wakandaEligible.has(symbol)) return;
-wakandaEligible.delete(symbol); // one-shot eligibility
-
-    // -------------------------
-    // STRUCTURE LETTERS
-    // -------------------------
-    const HIGH_STRUCT = ["E", "J"]; // HH → LH
-    const LOW_STRUCT  = ["Q", "R"]; // LL → HL
-
-    // -------------------------
-    // ANCHORS (direction-neutral)
-    // -------------------------
-    const ANCHORS = ["A","C","W","S","U","B","D","X","T","V"];
-
-    // -------------------------
-    // INIT STATE
-    // -------------------------
-    if (!wakandaState[symbol]) {
-        wakandaState[symbol] = {
-            lastHigh: null,
-            lastLow: null,
-            anchorSeen: false,
-            anchorTime: null,
-            fired: false
-        };
-    }
-
-    const state = wakandaState[symbol];
-
-    // -------------------------
-    // WINDOW EXPIRY
-    // -------------------------
-    if (state.anchorTime && ts - state.anchorTime > WAKANDA_WINDOW_MS) {
-        resetWakanda(symbol);
-        return;
-    }
-
-    // -------------------------
-    // HANDLE ANCHOR
-    // -------------------------
-    if (ANCHORS.includes(group)) {
-        state.anchorSeen = true;
-        state.anchorTime = ts;
-        return;
-    }
-
-    // -------------------------
-    // IGNORE IF NO ANCHOR YET
-    // -------------------------
-    if (!state.anchorSeen) return;
-
-    // -------------------------
-    // HIGH STRUCTURE TRACKING
-    // -------------------------
-    if (HIGH_STRUCT.includes(group)) {
-
-        // HH → LH combo
-        if (state.lastHigh === "E" && group === "J" && !state.fired) {
-            sendToTelegram5(
-                `🧠 WAKANDA STRUCTURE\n` +
-                `Symbol: ${symbol}\n` +
-                `Pattern: HH → LH\n` +
-                `Anchor Seen: YES\n` +
-                `Time: ${new Date(ts).toLocaleString()}`
-            );
-            state.fired = true;
-            return;
-        }
-
-        // Track latest high structure
-        state.lastHigh = group;
-        return;
-    }
-
-    // -------------------------
-    // LOW STRUCTURE TRACKING
-    // -------------------------
-    if (LOW_STRUCT.includes(group)) {
-
-        // LL → HL combo
-        if (state.lastLow === "Q" && group === "R" && !state.fired) {
-            sendToTelegram5(
-                `🧠 WAKANDA STRUCTURE\n` +
-                `Symbol: ${symbol}\n` +
-                `Pattern: LL → HL\n` +
-                `Anchor Seen: YES\n` +
-                `Time: ${new Date(ts).toLocaleString()}`
-            );
-            state.fired = true;
-            return;
-        }
-
-        // Track latest low structure
-        state.lastLow = group;
-        return;
-    }
-}
 
 
 
@@ -2114,26 +1839,6 @@ function processMamba(symbol, group, ts) {
     }
 }
 
-// ==========================================================
-//  GODZILLA STATE (ACW → M, BDX → N)
-// ==========================================================
-
-const godzilllaState = {
-    sell: {}, // symbol → [ { count, times[] }, ... ]
-    buy: {}   // symbol → [ { count, times[] }, ... ]
-};
-
-// ==========================================================
-//  GODZILLA ELIGIBILITY (source + cooldown)
-// ==========================================================
-
-const GODZILLA_SOURCE_TTL_MS = 60 * 60 * 1000; // 1 hour max eligibility
-const GODZILLA_ARM_COOLDOWN_MS = 20 * 60 * 1000; // 20 min per symbol
-
-const godzillaEligible = new Map();
-// symbol → lastEligibleTime
-const godzillaLastUsed = new Map();
-// symbol → last time we ARMED (used) the symbol
 
 // ==========================================================
 //  SALSA (Post-BAZOOKA EJQR sequence tracker)
@@ -2143,12 +1848,7 @@ const godzillaLastUsed = new Map();
 const salsaState = new Map();
 
 
-// ==========================================================
-//  WAKANDA ELIGIBILITY (from BABABIA / MAMAMIA only)
-// ==========================================================
 
-const wakandaEligible = new Map();
-// symbol → lastEligibleTime
 
 // ==========================================================
 //  BOOMERANG (U / Inverted U Return Detector)
@@ -2491,8 +2191,8 @@ app.post("/incoming", (req, res) => {
         processAudit(symbol, group, ts, body);
         processBababia(symbol, group, ts);
 		processMAMAMIA(symbol, group, ts);
-		processGodzilla(symbol, group, ts);
-		processWakanda(symbol, group, ts);
+		
+		
 		processJupiter(symbol, group, ts);
 		processTracking4(symbol, group, ts, body);
 		processTracking5(symbol, group, ts, body);
