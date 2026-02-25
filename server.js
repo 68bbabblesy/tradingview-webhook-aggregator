@@ -332,38 +332,6 @@ function safeGet(symbol, group) {
 }
 
 
-function formatLevel(group, payload) {
-    // No payload or no numericLevels => no level (A–D etc.)
-    if (!payload || !payload.numericLevels || payload.numericLevels.length === 0) {
-        return "";
-    }
-
-    // Prefer the raw level string coming from TradingView – this keeps the sign.
-    let raw = "";
-    if (typeof payload.level === "string" && payload.level.trim() !== "") {
-        raw = payload.level.trim();
-    } else if (typeof payload.fib_level === "string" && payload.fib_level.trim() !== "") {
-        raw = payload.fib_level.trim();
-    } else if (typeof payload.levelStr === "string" && payload.levelStr.trim() !== "") {
-        raw = payload.levelStr.trim();
-    }
-
-    // If for some reason we still don't have anything, fall back to numericLevels[0].
-    if (!raw) {
-        return ` (${payload.numericLevels[0]})`;
-    }
-
-    // Make sure positive numbers have an explicit '+' sign for clarity.
-    const n = Number(raw);
-    if (!Number.isNaN(n)) {
-        if (n > 0 && !raw.startsWith("+")) {
-            raw = `+${raw}`;
-        }
-        // negative values already have '-' from TradingView
-    }
-
-    return ` (${raw})`;
-}
 
 function biasFromGroup(group) {
     if (["A", "C", "W"].includes(group)) return "Support Zone";
@@ -375,10 +343,6 @@ function biasFromGroup(group) {
 // ==========================================================
 //  TRACKING ENGINE
 // ==========================================================
-
-const TRACKING1A_MAX_MS = 30 * 60 * 1000;   // 30 minutes
-const TRACKING1B_MAX_MS = 120 * 60 * 1000;  // 2 hours
-
 
 
 
@@ -1885,7 +1849,7 @@ app.post("/incoming", (req, res) => {
 
         
 
-        
+       
         	
 		        
 		processBazooka(symbol, group, ts, body);
