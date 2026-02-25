@@ -509,13 +509,13 @@ function processBazooka(symbol, group, ts) {
 
                 
 
-                const armedGroup = group;
+                
 
-for (const [sym] of entries) {
+for (const [sym, info] of entries) {
     salsaState.set(sym, {
         count: 0,
         armedAt: ts,
-        armedGroup,
+        armedGroup: info.group,   // ✅ use the symbol's actual group
         firstHit: null
     });
 }
