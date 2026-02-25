@@ -322,9 +322,6 @@ const tangoBuf = {};
 
 
 
-// -----------------------------
-// FIB LEVEL NORMALIZATION
-// -----------------------------
 
 
 // -----------------------------
@@ -1886,9 +1883,7 @@ app.post("/incoming", (req, res) => {
         events[group].push({ time: ts, data: body });
         pruneOld(events[group], maxWindowMs());
 
-        const norm = normalizeFibLevel(group, body);
-        body.levelStr = norm.levelStr;
-        body.numericLevels = norm.numericLevels;
+        
 
         saveAlert(symbol, group, ts, body);
         saveState();
