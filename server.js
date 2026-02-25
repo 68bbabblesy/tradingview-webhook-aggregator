@@ -265,107 +265,8 @@ function mirrorToBot8IfSpecial(symbol, text) {
 }
 
 
-// Stores last absolute H-level per symbol
-const tracking4 = {};
-// tracking4[symbol] = { absLevel, rawLevel, time }
 
-// Format helper for level text
-function formatLevelBot3(level) {
-    const lv = Number(level);
-    if (isNaN(lv)) return "";
-    return lv > 0 ? `+${lv}` : `${lv}`;
-}
 
-// TRACKING 4 ENGINE
-function processTracking4(symbol, group, ts, body) {
-    if (group !== "H") return;
-
-    const raw = parseFloat(body.level);
-    if (isNaN(raw)) return;
-
-    const absLevel = Math.abs(raw);
-
-    // First time: store and exit
-    if (!tracking4[symbol]) {
-        tracking4[symbol] = {
-            absLevel,
-            rawLevel: raw,
-            time: ts
-        };
-        return;
-    }
-
-    const prev = tracking4[symbol];
-
-    // No change in absolute level → ignore
-    if (prev.absLevel === absLevel) return;
-
-    // Compute time gap  
-    const diffMs = ts - prev.time;
-    const diffMin = Math.floor(diffMs / 60000);
-    const diffSec = Math.floor((diffMs % 60000) / 1000);
-
-    const msg =
-        `🔄 TRACKING 4 SWITCH\n` +
-        `Symbol: ${symbol}\n` +
-        `From: H (${formatLevelBot3(prev.rawLevel)})\n` +
-        `To:   H (${formatLevelBot3(raw)})\n` +
-        `Gap: ${diffMin}m ${diffSec}s\n` +
-        `Time: ${new Date(ts).toLocaleString()}`;
-
-    sendToTelegram3(msg);
-
-    // Update stored state
-    tracking4[symbol] = {
-        absLevel,
-        rawLevel: raw,
-        time: ts
-    };
-}
-function processTracking5(symbol, group, ts, body) {
-    const allowed = ["G"];
-    if (!allowed.includes(group)) return;
-
-    const { numericLevels } = normalizeFibLevel(group, body);
-    if (!numericLevels.length) return;
-
-    const currentLevel = numericLevels[0];
-    const prev = lastGPLevel[symbol];
-
-    // First occurrence → start tracking only
-    if (!prev) {
-        lastGPLevel[symbol] = {
-            level: currentLevel,
-            time: ts,
-            group
-        };
-        return;
-    }
-
-    // Same level → ignore
-    if (prev.level === currentLevel) return;
-
-    const gapMs = ts - prev.time;
-    const gapMin = Math.floor(gapMs / 60000);
-    const gapSec = Math.floor((gapMs % 60000) / 1000);
-
-    const msg =
-        `🔄 TRACKING 5 SWITCH\n` +
-        `Symbol: ${symbol}\n` +
-        `From: ${prev.group} (${prev.level})\n` +
-        `To: ${group} (${currentLevel})\n` +
-        `Gap: ${gapMin}m ${gapSec}s\n` +
-        `Time: ${new Date(ts).toLocaleString()}`;
-
-    sendToTelegram3(msg);
-
-    // Update state
-    lastGPLevel[symbol] = {
-        level: currentLevel,
-        time: ts,
-        group
-    };
-}
 
 // -----------------------------
 // STORAGE FOR BOT1 AGGREGATION
@@ -402,11 +303,6 @@ function maxWindowMs() {
 // RESTORED FROM DISK (persistence)
 const lastAlert = persisted.lastAlert || {};
 
-// Tracking 4 (H level switch)
-const lastHLevel = {};
-
-// Tracking 5 (G ↔ P level switch)
-const lastGPLevel = {};
 
 
 
@@ -429,23 +325,7 @@ const tangoBuf = {};
 // -----------------------------
 // FIB LEVEL NORMALIZATION
 // -----------------------------
-function normalizeFibLevel(group, body) {
-    if (group === "F") return { levelStr: "1.30", numericLevels: [1.30, -1.30] };
 
- if ((group === "G" || group === "H") && body.level) {
-    const lv = parseFloat(body.level);
-    if (!isNaN(lv)) {
-        return { levelStr: body.level, numericLevels: [lv, -lv] };
-    }
-}
-
-    return { levelStr: null, numericLevels: [] };
-}
-
-function saveAlert(symbol, group, ts, body) {
-    if (!lastAlert[symbol]) lastAlert[symbol] = {};
-    lastAlert[symbol][group] = { time: ts, payload: body };
-}
 
 // -----------------------------
 // SAFE GET
@@ -2035,8 +1915,6 @@ app.post("/incoming", (req, res) => {
 		processWakanda(symbol, group, ts);
         processGodzilla(symbol, group, ts);		
 		processJupiter(symbol, group, ts);
-		processTracking4(symbol, group, ts, body);
-		processTracking5(symbol, group, ts, body);
 
 
         // Strong signal (unchanged)
