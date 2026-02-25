@@ -408,18 +408,10 @@ const lastHLevel = {};
 // Tracking 5 (G ↔ P level switch)
 const lastGPLevel = {};
 
-// Cross-level switch (H ↔ G ↔ P)
-const lastCrossLevel = {}; // symbol → { group, level, time }
 
 
 
-// G/H memory for Level Correlation
-const recentGH = {};
-// recentGH[symbol] = { group, level, time }
 
-// Divergence Monitor memory (A–D same group within 1h)
-const divergenceMonitor = {};
-// divergenceMonitor[symbol][group] = lastTime
 
 
 
@@ -513,172 +505,11 @@ const TRACKING1B_MAX_MS = 120 * 60 * 1000;  // 2 hours
 
 
 
-function processCrossSwitch1(symbol, group, ts, body) {
-    const allowed = ["H", "G",];
-    if (!allowed.includes(group)) return;
-
-    const { numericLevels } = normalizeFibLevel(group, body);
-    if (!numericLevels.length) return;
-
-    const currentLevel = numericLevels[0];
-    const prev = lastCrossLevel[symbol];
-
-    // First sighting
-    if (!prev) {
-        lastCrossLevel[symbol] = {
-            group,
-            level: currentLevel,
-            time: ts
-        };
-        return;
-    }
-
-    // Same group + same level → ignore
-    if (prev.group === group && prev.level === currentLevel) return;
-
-    const gapMs = ts - prev.time;
-    const gapMin = Math.floor(gapMs / 60000);
-    const gapSec = Math.floor((gapMs % 60000) / 1000);
-
-    const msg =
-        `🔀 CROSS SWITCH 1\n` +
-        `Symbol: ${symbol}\n` +
-        `From: ${prev.group} (${prev.level})\n` +
-        `To: ${group} (${currentLevel})\n` +
-        `Gap: ${gapMin}m ${gapSec}s\n` +
-        `Time: ${new Date(ts).toLocaleString()}`;
-
-    sendToTelegram3(msg);
-
-    lastCrossLevel[symbol] = {
-        group,
-        level: currentLevel,
-        time: ts
-    };
-}
-const DIVERGENCE_SET_WINDOW_MS = 60 * 60 * 1000; // 60 minutes
-
-function adPair(group) {
-    if (group === "A" || group === "C") return "AC";
-    if (group === "B" || group === "D") return "BD";
-    return null;
-}
-
-function processDivergenceMonitor(symbol, group, ts) {
-    const GH = ["G", "H"];
-    const pair = adPair(group);
-
-    if (!divergenceMonitor[symbol]) {
-        divergenceMonitor[symbol] = {};
-    }
-
-    /* -----------------------------
-       STEP 1: A–D starts a SET
-    ----------------------------- */
-    if (pair) {
-        if (!divergenceMonitor[symbol][pair]) {
-            divergenceMonitor[symbol][pair] = {
-                awaitingGH: false,
-                lastSetTime: null
-            };
-        }
-
-        divergenceMonitor[symbol][pair].awaitingGH = true;
-        return;
-    }
-
-    /* -----------------------------
-       STEP 2: G/H completes a SET
-    ----------------------------- */
-    if (!GH.includes(group)) return;
-
-    for (const pairKey of ["AC", "BD"]) {
-        const state = divergenceMonitor[symbol][pairKey];
-        if (!state || !state.awaitingGH) continue;
-
-        state.awaitingGH = false;
-
-        // First SET
-        if (!state.lastSetTime) {
-            state.lastSetTime = ts;
-            return;
-        }
-
-        const diffMs = ts - state.lastSetTime;
-
-        if (diffMs <= DIVERGENCE_SET_WINDOW_MS) {
-            const diffMin = Math.floor(diffMs / 60000);
-
-            sendToTelegram6(
-                `📊 DIVERGENCE MONITOR (PAIR SET)\n` +
-                `Symbol: ${symbol}\n` +
-                `Pair: ${pairKey}\n` +
-                `Second set within ${diffMin} minutes\n` +
-                `Time: ${new Date(ts).toLocaleString()}`
-            );
-        }
-
-        // Reset window starting point
-        state.lastSetTime = ts;
-    }
-}
 
 
 
 
 
-const LEVEL_CORRELATION_WINDOW_MS = 45 * 1000;
-// ==========================================================
-
-
-function processLevelCorrelation(symbol, group, ts, body) {
-    if (!["G", "H"].includes(group)) return;
-
-    const { numericLevels } = normalizeFibLevel(group, body);
-    if (!numericLevels.length) return;
-
-    const level = numericLevels[0];
-    const prev = recentGH[symbol];
-
-    // First sighting → store and wait
-    if (!prev) {
-        recentGH[symbol] = { group, level, time: ts };
-        return;
-    }
-
-    // Must be opposite group (G ↔ H)
-    if (prev.group === group) {
-        recentGH[symbol] = { group, level, time: ts };
-        return;
-    }
-
-    // Must be same level
-    if (prev.level !== level) {
-        recentGH[symbol] = { group, level, time: ts };
-        return;
-    }
-
-    // Must be within window
-    const diffMs = Math.abs(ts - prev.time);
-    if (diffMs > LEVEL_CORRELATION_WINDOW_MS) {
-        recentGH[symbol] = { group, level, time: ts };
-        return;
-    }
-
-    const diffSec = Math.floor(diffMs / 1000);
-
-    sendToTelegram5(
-        `🎯 LEVEL CORRELATION\n` +
-        `Symbol: ${symbol}\n` +
-        `Groups: ${prev.group} ↔ ${group}\n` +
-        `Level: ${level > 0 ? "+" : ""}${level}\n` +
-        `Gap: ${diffSec}s\n` +
-        `Time: ${new Date(ts).toLocaleString()}`
-    );
-
-    // Prevent duplicate fires
-    delete recentGH[symbol];
-}
 
 
 
@@ -2183,9 +2014,7 @@ app.post("/incoming", (req, res) => {
         saveState();
 
         	
-		processLevelCorrelation(symbol, group, ts, body);
-       processDivergenceMonitor(symbol, group, ts);
-        
+		        
 		processBazooka(symbol, group, ts, body);
 		processContrarian(symbol, group, ts);
         processRebel(symbol, group, ts);
