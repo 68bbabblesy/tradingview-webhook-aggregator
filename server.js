@@ -1802,6 +1802,74 @@ registerRebelFromJupiter(symbol, sideName, ts);
     }
 }
 
+// ==========================================================
+//  BUNDLE (ACSWU / BDXTV burst collector)
+//  Window: 2 minutes (delayed delivery)
+//  Min Count: 4
+//  Bot 2
+// ==========================================================
+
+const BUNDLE_WINDOW_MS = 2 * 60 * 1000; // 2 minutes
+const BUNDLE_MIN_COUNT = 4;
+
+const BUNDLE_GROUPS = new Set(["A","C","S","W","U","B","D","X","T","V"]);
+
+const bundleState = {
+    active: false,
+    startTime: null,
+    entries: [],   // [{ symbol, group, time }]
+    timer: null
+};
+
+function processBundle(symbol, group, ts) {
+
+    if (!BUNDLE_GROUPS.has(group)) return;
+
+    // Start window on first hit
+    if (!bundleState.active) {
+
+        bundleState.active = true;
+        bundleState.startTime = ts;
+        bundleState.entries = [];
+
+        bundleState.timer = setTimeout(() => {
+
+            const cutoff = bundleState.startTime + BUNDLE_WINDOW_MS;
+
+            const valid = bundleState.entries
+                .filter(e => e.time <= cutoff);
+
+            if (valid.length >= BUNDLE_MIN_COUNT) {
+
+                const lines = valid
+                    .sort((a, b) => a.time - b.time)
+                    .map(e =>
+                        `• ${e.symbol} (${e.group}) @ ${new Date(e.time).toLocaleTimeString()}`
+                    )
+                    .join("\n");
+
+                sendToTelegram2(
+                    `📦 BUNDLE\n` +
+                    `Total: ${valid.length}\n` +
+                    `Window: 2m\n` +
+                    `Start: ${new Date(bundleState.startTime).toLocaleTimeString()}\n` +
+                    `Entries:\n${lines}`
+                );
+            }
+
+            // Reset state
+            bundleState.active = false;
+            bundleState.startTime = null;
+            bundleState.entries = [];
+            clearTimeout(bundleState.timer);
+            bundleState.timer = null;
+
+        }, BUNDLE_WINDOW_MS);
+    }
+
+    // Always collect during active window
+    bundleState.entries.push({ symbol, group, time: ts });
+}
 
 // ==========================================================
 //  WEBHOOK HANDLER
@@ -1851,7 +1919,7 @@ app.post("/incoming", (req, res) => {
 
        
         	
-		        
+		processBundle(symbol, group, ts);      
 		processBazooka(symbol, group, ts, body);
 		processContrarian(symbol, group, ts);
         processRebel(symbol, group, ts);
