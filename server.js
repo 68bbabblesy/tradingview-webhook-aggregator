@@ -1885,9 +1885,7 @@ app.post("/incoming", (req, res) => {
 
         
 
-        saveAlert(symbol, group, ts, body);
-        saveState();
-
+        
         	
 		        
 		processBazooka(symbol, group, ts, body);
