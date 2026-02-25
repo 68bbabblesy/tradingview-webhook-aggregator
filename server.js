@@ -400,9 +400,7 @@ function maxWindowMs() {
 // ==========================================================
 
 // RESTORED FROM DISK (persistence)
-const lastAlert     = persisted.lastAlert     || {};
-const trackingStart = persisted.trackingStart || {};
-const lastBig       = persisted.lastBig       || {};
+const lastAlert = persisted.lastAlert || {};
 
 // Tracking 4 (H level switch)
 const lastHLevel = {};
@@ -512,103 +510,8 @@ function biasFromGroup(group) {
 const TRACKING1A_MAX_MS = 30 * 60 * 1000;   // 30 minutes
 const TRACKING1B_MAX_MS = 120 * 60 * 1000;  // 2 hours
 
-function processTracking1(symbol, group, ts, body) {
-    const startGroups = ["A", "B", "C", "D"];
-    const endGroups   = ["G", "H"];
-
-    // Start tracking
-    if (startGroups.includes(group)) {
-        trackingStart[symbol] = {
-            startGroup: group,
-            startTime: ts,
-            payload: body
-        };
-        saveState();
-        return;
-    }
-
-    // Complete tracking
-    if (endGroups.includes(group) && trackingStart[symbol]) {
-        const start = trackingStart[symbol];
-        const diffMs = ts - start.startTime;
-
-        // Over 2 hours → silent expiry
-        if (diffMs > TRACKING1B_MAX_MS) {
-            delete trackingStart[symbol];
-            saveState();
-            return;
-        }
-
-        // Signed level helper (unchanged logic)
-        function getSignedLevel(payload) {
-            if (!payload) return "";
-            if (payload.level) return ` (${payload.level})`;
-            if (payload.fib_level) return ` (${payload.fib_level})`;
-            return "";
-        }
-
-        const startLevel = getSignedLevel(start.payload);
-        const endLevel   = getSignedLevel(body);
-
-        // Decide label
-        let label = null;
-        if (diffMs <= TRACKING1A_MAX_MS) {
-            label = "📌📌 TRACKING 1a 📌📌";
-        } else {
-            label = "⏳⏳ TRACKING 1b ⏳⏳";
-        }
-
-        sendToTelegram4(
-            `${label}\n` +
-            `Symbol: ${symbol}\n` +
-            `Start Group: ${start.startGroup}${startLevel}\n` +
-            `Start Time: ${new Date(start.startTime).toLocaleString()}\n` +
-            `End Group: ${group}${endLevel}\n` +
-            `End Time: ${new Date(ts).toLocaleString()}`
-        );
-
-        delete trackingStart[symbol];
-        saveState();
-    }
-}
 
 
-function processTracking2and3(symbol, group, ts, body) {
-    const big = ["F", "G", "H"];
-    if (!big.includes(group)) return;
-
-    const last = lastBig[symbol] || 0;
-    const diff = ts - last;
-
-    if (!last) {
-        lastBig[symbol] = ts;
-        saveState();
-        return;
-    }
-
-    const TWO = 2 * 60 * 60 * 1000;
-    const FIVE = 5 * 60 * 60 * 1000;
-
-    const lvl = formatLevel(group, body);
-
-    if (diff >= FIVE) {
-        sendToTelegram2(
-            `⏱ TRACKING 3\nSymbol: ${symbol}\nGroup: ${group}${lvl}\nFirst F/G/H in over 5 hours\nGap: ${(diff/3600000).toFixed(2)} hours\nTime: ${new Date(ts).toLocaleString()}`
-        );
-        lastBig[symbol] = ts;
-        saveState();
-        return;
-    }
-
-    if (diff >= TWO) {
-        sendToTelegram2(
-            `⏱ TRACKING 2\nSymbol: ${symbol}\nGroup: ${group}${lvl}\nFirst F/G/H in over 2 hours\nGap: ${(diff/3600000).toFixed(2)} hours\nTime: ${new Date(ts).toLocaleString()}`
-        );
-    }
-
-    lastBig[symbol] = ts;
-    saveState();
-}
 
 function processCrossSwitch1(symbol, group, ts, body) {
     const allowed = ["H", "G",];
@@ -778,55 +681,6 @@ function processLevelCorrelation(symbol, group, ts, body) {
 }
 
 
-function processMatching2(symbol, group, ts, body) {
-    const FGH = ["F", "G", "H"];
-    if (!FGH.includes(group)) return;
-
-    const { numericLevels: lvls } = normalizeFibLevel(group, body);
-    if (!lvls.length) return;
-
-    const candidate = FGH
-        .map(g => safeGet(symbol, g))
-        .filter(Boolean)
-        .filter(x => x.payload.group !== group)
-        .filter(x => {
-            const norm = normalizeFibLevel(x.payload.group, x.payload);
-            return norm.numericLevels.some(v => lvls.includes(v));
-        })
-        .filter(x => Math.abs(ts - x.time) <= MATCH_WINDOW_MS)
-        .sort((a,b) => b.time - a.time)[0];
-
-    if (!candidate) return;
-
-    sendToTelegram2(
-        `🔁 MATCHING 2\nSymbol: ${symbol}\nLevels: ±${lvls[0]}\nGroups: ${candidate.payload.group} ↔ ${group}\nTimes:\n - ${candidate.payload.group}: ${new Date(candidate.time).toLocaleString()}\n - ${group}: ${new Date(ts).toLocaleString()}`
-    );
-}
-
-
-function processMatching3(symbol, group, ts, body) {
-    const GH = ["G", "H"];
-    if (!GH.includes(group)) return;
-
-    const { numericLevels: lvls } = normalizeFibLevel(group, body);
-    if (!lvls.length) return;
-
-    const candidate = GH
-        .map(g => safeGet(symbol, g))
-        .filter(Boolean)
-        .filter(x => !(x.payload.group === group && x.time === ts))
-        .filter(x => ts - x.time <= MATCH_WINDOW_MS)
-        .find(x => {
-            const norm = normalizeFibLevel(x.payload.group, x.payload);
-            return norm.numericLevels.some(v => lvls.includes(v));
-        });
-
-    if (!candidate) return;
-
-    sendToTelegram2(
-        `🎯 MATCHING 3 (Same Level)\nSymbol: ${symbol}\nLevels: ±${lvls[0]}\nGroups: ${candidate.payload.group} ↔ ${group}\nTimes:\n - ${candidate.payload.group}: ${new Date(candidate.time).toLocaleString()}\n - ${group}: ${new Date(ts).toLocaleString()}`
-    );
-}
 
 // ==========================================================
 //  GODZILLA — FROZEN SNAPSHOT (Exact BAZOOKA clone)
@@ -2328,12 +2182,10 @@ app.post("/incoming", (req, res) => {
         saveAlert(symbol, group, ts, body);
         saveState();
 
-        processTracking1(symbol, group, ts, body);
-        processTracking2and3(symbol, group, ts, body);		
+        	
 		processLevelCorrelation(symbol, group, ts, body);
        processDivergenceMonitor(symbol, group, ts);
-        processMatching2(symbol, group, ts, body);
-        processMatching3(symbol, group, ts, body);
+        
 		processBazooka(symbol, group, ts, body);
 		processContrarian(symbol, group, ts);
         processRebel(symbol, group, ts);
