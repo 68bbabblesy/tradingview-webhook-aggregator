@@ -1332,6 +1332,64 @@ function processContrarian(symbol, group, ts) {
     }
 }
 
+// ==========================================================
+//  ANY_TWO (Same symbol — any 2 unique groups within 5m)
+//  Groups: A-Z
+//  Sliding window (no artificial reset)
+//  Bot 5
+// ==========================================================
+
+const ANY_TWO_WINDOW_MS = 5 * 60 * 1000; // 5 minutes
+
+const ANY_TWO_GROUPS = new Set(
+    Array.from({ length: 26 }, (_, i) =>
+        String.fromCharCode(65 + i)
+    )
+);
+
+// anyTwoMemory[symbol] = [{ group, time }]
+const anyTwoMemory = {};
+
+function processAnyTwo(symbol, group, ts) {
+
+    if (!ANY_TWO_GROUPS.has(group)) return;
+
+    if (!anyTwoMemory[symbol]) {
+        anyTwoMemory[symbol] = [];
+    }
+
+    const buf = anyTwoMemory[symbol];
+
+    // 1️⃣ Remove expired entries (older than 5 minutes)
+    const cutoff = ts - ANY_TWO_WINDOW_MS;
+    while (buf.length && buf[0].time < cutoff) {
+        buf.shift();
+    }
+
+    // 2️⃣ Check if a DIFFERENT group already exists in window
+    const existing = buf.find(e => e.group !== group);
+
+    if (existing) {
+
+        const diffMs = ts - existing.time;
+        const diffMin = Math.floor(diffMs / 60000);
+        const diffSec = Math.floor((diffMs % 60000) / 1000);
+
+        sendToTelegram5(
+            `🔁 ANY_TWO\n` +
+            `Symbol: ${symbol}\n` +
+            `1) ${existing.group} @ ${new Date(existing.time).toLocaleString()}\n` +
+            `2) ${group} @ ${new Date(ts).toLocaleString()}\n` +
+            `Gap: ${diffMin}m ${diffSec}s`
+        );
+    }
+
+    // 3️⃣ Avoid stacking duplicate same-group entries
+    if (!buf.some(e => e.group === group)) {
+        buf.push({ group, time: ts });
+    }
+}
+
 
 // ==========================================================
 //  REBEL (Triggered ONLY from JUPITER)
@@ -1918,7 +1976,7 @@ app.post("/incoming", (req, res) => {
         
 
        
-        	
+        processAnyTwo(symbol, group, ts);	
 		processBundle(symbol, group, ts);      
 		processBazooka(symbol, group, ts, body);
 		processContrarian(symbol, group, ts);
