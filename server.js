@@ -22,6 +22,7 @@ const app = express();
 app.use(express.json());
 
 // -----------------------------
+// -----------------------------
 // PERSISTENCE (State File)
 // -----------------------------
 const STATE_FILE = "./state.json";
@@ -30,10 +31,16 @@ function loadState() {
     try {
         if (fs.existsSync(STATE_FILE)) {
             const raw = fs.readFileSync(STATE_FILE, "utf8");
-            return JSON.parse(raw);
+            const parsed = JSON.parse(raw);
+
+            return {
+                lastAlert: parsed.lastAlert || {},
+                cooldownUntil: parsed.cooldownUntil || {}
+            };
         }
     } catch {}
-    return { lastAlert: {}, trackingStart: {}, lastBig: {}, cooldownUntil: {} };
+
+    return { lastAlert: {}, cooldownUntil: {} };
 }
 
 function saveState() {
@@ -44,7 +51,10 @@ function saveState() {
         fs.writeFileSync(
             STATE_FILE,
             JSON.stringify(
-                { lastAlert, trackingStart, lastBig, cooldownUntil },
+                {
+                    lastAlert,
+                    cooldownUntil
+                },
                 null,
                 2
             ),
