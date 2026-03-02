@@ -1050,7 +1050,7 @@ function processTango(symbol, group, ts) {
 // ==========================================================
 //  NEPTUNE (Same symbol — ACSW OR BDXT → 2 distinct groups within 50s)
 //  No cross-mixing between sides
-//  Registers MAMBA tracking
+
 //  Bot 4
 // ==========================================================
 
@@ -1110,8 +1110,7 @@ function processNeptune(symbol, group, ts) {
         `Gap: ${diffSec}s`
     );
 
-    // 🔥 Register MAMBA tracking
-    registerMambaFromNeptune(symbol, sideName, ts);
+   
 	
 	// 🔥 Register CONTRARIAN tracking (opposite mapping)
 registerContrarianFromNeptune(symbol, sideName, ts);
@@ -1231,13 +1230,7 @@ function processZulu(symbol, group, ts) {
   }
 }
 
-// ==========================================================
-//  MAMBA (Triggered ONLY from NEPTUNE)
-//  ACSW tracks → P and Q
-//  BDXT tracks → E and O
-//  Each Neptune event tracked independently
-//  Bot 8
-// ==========================================================
+
 
 // ==========================================================
 //  CONTRARIAN (Triggered ONLY from NEPTUNE)
@@ -1505,94 +1498,74 @@ function processRebel(symbol, group, ts) {
 }
 
 // ==========================================================
-//  MAMBA (unchanged)
+//  MAMBA (Y/Z Burst Detector — Global)
+//  Groups: Y or Z
+//  Condition: 2+ UNIQUE symbols within 30s
+//  Batch wait: 20s before sending
+//  Bot 8
 // ==========================================================
 
-// mambaTrackers[symbol] = [
-//   { side: "ACSW" | "BDXT", armedAt, hits: { P:false,Q:false,E:false,O:false } }
-// ]
+const MAMBA_WINDOW_MS = 30 * 1000;
+const MAMBA_BATCH_DELAY_MS = 20 * 1000;
+const MAMBA_MIN_COUNT = 2;
 
-const mambaTrackers = {};
-
-// Called from NEPTUNE
-function registerMambaFromNeptune(symbol, side, ts) {
-
-    if (!mambaTrackers[symbol]) {
-        mambaTrackers[symbol] = [];
-    }
-
-    mambaTrackers[symbol].push({
-        side,
-        armedAt: ts,
-        hits: { P:false, Q:false, E:false, O:false }
-    });
-}
+const mambaState = {
+    active: false,
+    symbols: new Map(),   // symbol → { group, time }
+    startTime: null,
+    timer: null
+};
 
 function processMamba(symbol, group, ts) {
 
-    if (!["P","Q","E","O"].includes(group)) return;
+    if (!["Y", "Z"].includes(group)) return;
 
-    const trackers = mambaTrackers[symbol];
-    if (!trackers || !trackers.length) return;
+    // Start burst on first hit
+    if (!mambaState.active) {
+        mambaState.active = true;
+        mambaState.startTime = ts;
+        mambaState.symbols.clear();
 
-    for (const tracker of trackers) {
+        mambaState.timer = setTimeout(() => {
 
-        // ACSW → P and Q
-        if (tracker.side === "ACSW") {
+            const cutoff = mambaState.startTime + MAMBA_WINDOW_MS;
 
-            if ((group === "P" || group === "Q") && !tracker.hits[group]) {
+            const entries = [...mambaState.symbols.entries()]
+                .filter(([_, info]) => info.time <= cutoff);
 
-                tracker.hits[group] = true;
+            if (entries.length >= MAMBA_MIN_COUNT) {
 
-                sendToTelegram8(
-                    `🐍 MAMBA\n` +
-                    `Symbol: ${symbol}\n` +
-                    `Origin: NEPTUNE (ACSW)\n` +
-                    `Hit: ${group}\n` +
-                    `Neptune Time: ${new Date(tracker.armedAt).toLocaleTimeString()}\n` +
-                    `Hit Time: ${new Date(ts).toLocaleTimeString()}`
-                );
-            }
-        }
-
-        // BDXT → E and O
-        if (tracker.side === "BDXT") {
-
-            if ((group === "E" || group === "O") && !tracker.hits[group]) {
-
-                tracker.hits[group] = true;
+                const lines = entries
+                    .sort((a, b) => a[1].time - b[1].time)
+                    .map(([sym, info]) =>
+                        `• ${sym} (${info.group}) @ ${new Date(info.time).toLocaleTimeString()}`
+                    )
+                    .join("\n");
 
                 sendToTelegram8(
                     `🐍 MAMBA\n` +
-                    `Symbol: ${symbol}\n` +
-                    `Origin: NEPTUNE (BDXT)\n` +
-                    `Hit: ${group}\n` +
-                    `Neptune Time: ${new Date(tracker.armedAt).toLocaleTimeString()}\n` +
-                    `Hit Time: ${new Date(ts).toLocaleTimeString()}`
+                    `Groups: Y/Z\n` +
+                    `Unique Symbols: ${entries.length}\n` +
+                    `Window: 30s\n` +
+                    `Symbols:\n${lines}`
                 );
             }
-        }
+
+            // Reset state
+            mambaState.active = false;
+            mambaState.symbols.clear();
+            mambaState.startTime = null;
+            clearTimeout(mambaState.timer);
+            mambaState.timer = null;
+
+        }, MAMBA_BATCH_DELAY_MS);
     }
 
-    // Clean fully completed trackers
-    mambaTrackers[symbol] = trackers.filter(t => {
-
-        if (t.side === "ACSW") {
-            return !(t.hits.P && t.hits.Q);
-        }
-
-        if (t.side === "BDXT") {
-            return !(t.hits.E && t.hits.O);
-        }
-
-        return true;
-    });
-
-    if (!mambaTrackers[symbol].length) {
-        delete mambaTrackers[symbol];
+    // Collect symbol only once per window
+    if (!mambaState.symbols.has(symbol)) {
+        mambaState.symbols.set(symbol, { group, time: ts });
     }
 }
-
 
 // ==========================================================
 //  SALSA (Post-BAZOOKA EJQR sequence tracker)
