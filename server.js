@@ -1913,6 +1913,58 @@ function processBundle(symbol, group, ts) {
 }
 
 // ==========================================================
+//  COBRA (Same symbol Y/Z repeat within 30 minutes)
+//  Groups: Y or Z
+//  Same symbol
+//  Window: 30 minutes
+//  Bot 8
+// ==========================================================
+
+const COBRA_WINDOW_MS = 30 * 60 * 1000; // 30 minutes
+
+// cobraMemory[symbol] = { group, time }
+const cobraMemory = {};
+
+function processCobra(symbol, group, ts) {
+
+    if (!["Y", "Z"].includes(group)) return;
+
+    const last = cobraMemory[symbol];
+
+    if (last && (ts - last.time <= COBRA_WINDOW_MS)) {
+
+        const diffMs  = ts - last.time;
+        const diffMin = Math.floor(diffMs / 60000);
+        const diffSec = Math.floor((diffMs % 60000) / 1000);
+
+        sendToTelegram8(
+            `🐍 COBRA\n` +
+            `Symbol: ${symbol}\n` +
+            `1) ${last.group} @ ${new Date(last.time).toLocaleString()}\n` +
+            `2) ${group} @ ${new Date(ts).toLocaleString()}\n` +
+            `Gap: ${diffMin}m ${diffSec}s`
+        );
+
+        // Reset for this symbol after firing
+        delete cobraMemory[symbol];
+        return;
+    }
+
+    // Always update latest hit
+    cobraMemory[symbol] = { group, time: ts };
+
+    // Optional pruning safety (memory guard)
+    if (Object.keys(cobraMemory).length > 5000) {
+        const cutoff = ts - (60 * 60 * 1000); // keep only last 1h
+        for (const sym of Object.keys(cobraMemory)) {
+            if (cobraMemory[sym].time < cutoff) {
+                delete cobraMemory[sym];
+            }
+        }
+    }
+}
+
+// ==========================================================
 //  WEBHOOK HANDLER
 // ==========================================================
 
@@ -1969,6 +2021,7 @@ app.post("/incoming", (req, res) => {
         processBoomerang(symbol, group, ts, body);
         processSalsa(symbol, group, ts);
         processTango(symbol, group, ts);
+		processCobra(symbol, group, ts);
 		processNeptune(symbol, group, ts);
         processZulu(symbol, group, ts);
         processMamba(symbol, group, ts);
