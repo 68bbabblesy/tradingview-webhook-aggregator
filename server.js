@@ -1905,7 +1905,7 @@ function processTesting(symbol, group, ts) {
 //  Bot 7
 // ==========================================================
 
-const JUPITER_WINDOW_MS = 60 * 60 * 1000; // 1 hour
+const JUPITER_WINDOW_MS = 12 * 60 * 1000; // 1 hour
 
 const JUPITER_GROUPS = new Set(["A","C","S","W","B","D","X","T"]);
 
