@@ -1697,6 +1697,78 @@ function processCabal(symbol, group, ts) {
     cabalLast[symbol][group] = ts;
 }
 
+// ==========================================================
+//  BOOM (BTCUSDT / TOTAL same symbol — AAA→ZZZ groups)
+//  Any 2 distinct groups within 5.5 minutes
+//  Bot 7
+// ==========================================================
+
+const BOOM_WINDOW_MS = 5.5 * 60 * 1000;
+
+const BOOM_SYMBOLS = new Set(["BTCUSDT", "TOTAL"]);
+
+// AAA → ZZZ checker
+function isTripleLetter(group) {
+    return /^[A-Z]{3}$/.test(group) &&
+           group[0] === group[1] &&
+           group[1] === group[2];
+}
+
+// boomMemory[symbol] = [{ group, time }]
+const boomMemory = {};
+
+function processBoom(symbol, group, ts) {
+
+    if (!BOOM_SYMBOLS.has(symbol)) return;
+    if (!isTripleLetter(group)) return;
+
+    if (!boomMemory[symbol]) {
+        boomMemory[symbol] = [];
+    }
+
+    const buf = boomMemory[symbol];
+
+    // remove expired entries
+    const cutoff = ts - BOOM_WINDOW_MS;
+    while (buf.length && buf[0].time < cutoff) {
+        buf.shift();
+    }
+
+    // look for different group
+    const existing = buf.find(e => e.group !== group);
+
+    if (existing) {
+
+        const diffMs = ts - existing.time;
+        const diffMin = Math.floor(diffMs / 60000);
+        const diffSec = Math.floor((diffMs % 60000) / 1000);
+
+        sendToTelegram7(
+            `💥 BOOM\n` +
+            `Symbol: ${symbol}\n` +
+            `1) ${existing.group} @ ${new Date(existing.time).toLocaleTimeString()}\n` +
+            `2) ${group} @ ${new Date(ts).toLocaleTimeString()}\n` +
+            `Gap: ${diffMin}m ${diffSec}s`
+        );
+    }
+
+    // avoid duplicate same-group stacking
+    if (!buf.some(e => e.group === group)) {
+        buf.push({ group, time: ts });
+    }
+
+    // safety prune
+    if (Object.keys(boomMemory).length > 5000) {
+        const pruneCutoff = ts - (60 * 60 * 1000);
+        for (const sym of Object.keys(boomMemory)) {
+            const arr = boomMemory[sym];
+            if (!arr.length || arr[arr.length - 1].time < pruneCutoff) {
+                delete boomMemory[sym];
+            }
+        }
+    }
+}
+
 
 // ==========================================================
 //  KOOKY (BTCUSDT ↔ TOTAL same-group within 45s)
@@ -2071,6 +2143,7 @@ app.post("/incoming", (req, res) => {
         processMamba(symbol, group, ts);
         processSpesh(symbol, group, ts);
 		processCabal(symbol, group, ts);
+		processBoom(symbol, group, ts);
 		processKooky(symbol, group, ts);        
 		processTesting(symbol, group, ts);
         processAudit(symbol, group, ts, body);
