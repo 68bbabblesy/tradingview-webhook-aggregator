@@ -1652,6 +1652,50 @@ function processSpesh(symbol, group, ts) {
     speshLast[symbol][group] = ts;
 }
 
+// ==========================================================
+//  CABAL (BTCUSDT ↔ TOTAL same-group within 5 minutes)
+//  Any group allowed
+//  Bot 7
+// ==========================================================
+
+const CABAL_WINDOW_MS = 5 * 60 * 1000;
+
+const CABAL_SYMBOLS = new Set(["BTCUSDT", "TOTAL"]);
+
+const cabalLast = {
+    BTCUSDT: {},
+    TOTAL: {}
+};
+
+function processCabal(symbol, group, ts) {
+
+    if (!CABAL_SYMBOLS.has(symbol)) return;
+    if (!group) return;
+
+    const otherSymbol = symbol === "BTCUSDT" ? "TOTAL" : "BTCUSDT";
+    const otherTs = cabalLast[otherSymbol][group];
+
+    if (otherTs && Math.abs(ts - otherTs) <= CABAL_WINDOW_MS) {
+
+        const diffMs = Math.abs(ts - otherTs);
+        const diffMin = Math.floor(diffMs / 60000);
+        const diffSec = Math.floor((diffMs % 60000) / 1000);
+
+        sendToTelegram7(
+            `🔵 CABAL\n` +
+            `Group: ${group}\n` +
+            `BTCUSDT: ${new Date(
+                symbol === "BTCUSDT" ? ts : otherTs
+            ).toLocaleTimeString()}\n` +
+            `TOTAL: ${new Date(
+                symbol === "TOTAL" ? ts : otherTs
+            ).toLocaleTimeString()}\n` +
+            `Gap: ${diffMin}m ${diffSec}s`
+        );
+    }
+
+    cabalLast[symbol][group] = ts;
+}
 
 
 // ==========================================================
@@ -2026,6 +2070,7 @@ app.post("/incoming", (req, res) => {
         processZulu(symbol, group, ts);
         processMamba(symbol, group, ts);
         processSpesh(symbol, group, ts);
+		processCabal(symbol, group, ts);
 		processKooky(symbol, group, ts);        
 		processTesting(symbol, group, ts);
         processAudit(symbol, group, ts, body);
