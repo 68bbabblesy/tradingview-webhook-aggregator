@@ -1336,26 +1336,20 @@ function processContrarian(symbol, group, ts) {
 }
 
 // ==========================================================
-//  ANY_TWO (Same symbol — any 2 unique groups within 5m)
-//  Groups: A-Z
-//  Sliding window (no artificial reset)
+//  ANY_TWO (Same symbol — must involve A or B)
+//  Window: 5 minutes
+//  Special case allowed: A→A and B→B
 //  Bot 5
 // ==========================================================
 
-const ANY_TWO_WINDOW_MS = 5 * 60 * 1000; // 5 minutes
-
-const ANY_TWO_GROUPS = new Set(
-    Array.from({ length: 26 }, (_, i) =>
-        String.fromCharCode(65 + i)
-    )
-);
+const ANY_TWO_WINDOW_MS = 5 * 60 * 1000;
 
 // anyTwoMemory[symbol] = [{ group, time }]
 const anyTwoMemory = {};
 
 function processAnyTwo(symbol, group, ts) {
 
-    if (!ANY_TWO_GROUPS.has(group)) return;
+    if (!symbol || !group) return;
 
     if (!anyTwoMemory[symbol]) {
         anyTwoMemory[symbol] = [];
@@ -1363,36 +1357,58 @@ function processAnyTwo(symbol, group, ts) {
 
     const buf = anyTwoMemory[symbol];
 
-    // 1️⃣ Remove expired entries (older than 5 minutes)
+    // Remove expired entries
     const cutoff = ts - ANY_TWO_WINDOW_MS;
     while (buf.length && buf[0].time < cutoff) {
         buf.shift();
     }
 
-    // 2️⃣ Check if a DIFFERENT group already exists in window
-    const existing = buf.find(e => e.group !== group);
+    const isAB = group === "A" || group === "B";
 
-    if (existing) {
+    for (const e of buf) {
 
-        const diffMs = ts - existing.time;
+        const prevIsAB = e.group === "A" || e.group === "B";
+
+        // Valid combinations:
+        // A/B paired with anything
+        // OR A→A / B→B
+
+        const valid =
+            (isAB && e.group !== group) ||      // A/B with other group
+            (prevIsAB && group !== e.group) ||  // other group with A/B
+            (group === e.group && isAB);        // A→A or B→B
+
+        if (!valid) continue;
+
+        const diffMs = ts - e.time;
         const diffMin = Math.floor(diffMs / 60000);
         const diffSec = Math.floor((diffMs % 60000) / 1000);
 
         sendToTelegram5(
             `🔁 ANY_TWO\n` +
             `Symbol: ${symbol}\n` +
-            `1) ${existing.group} @ ${new Date(existing.time).toLocaleString()}\n` +
+            `1) ${e.group} @ ${new Date(e.time).toLocaleString()}\n` +
             `2) ${group} @ ${new Date(ts).toLocaleString()}\n` +
             `Gap: ${diffMin}m ${diffSec}s`
         );
+
+        break;
     }
 
-    // 3️⃣ Avoid stacking duplicate same-group entries
-    if (!buf.some(e => e.group === group)) {
-        buf.push({ group, time: ts });
+    // Store event
+    buf.push({ group, time: ts });
+
+    // Safety prune
+    if (Object.keys(anyTwoMemory).length > 5000) {
+        const pruneCutoff = ts - (60 * 60 * 1000);
+        for (const sym of Object.keys(anyTwoMemory)) {
+            const arr = anyTwoMemory[sym];
+            if (!arr.length || arr[arr.length - 1].time < pruneCutoff) {
+                delete anyTwoMemory[sym];
+            }
+        }
     }
 }
-
 
 // ==========================================================
 //  REBEL (Triggered ONLY from JUPITER)
