@@ -607,7 +607,7 @@ function processWakanda(symbol, group, ts) {
                     )
                     .join("\n");
 
-                sendToTelegram6(
+                sendToTelegram9(
                     `🎉 WAKANDA\n` +
                     `Group: ${group}\n` +
                     `Unique Symbols: ${entries.length}\n` +
@@ -1041,7 +1041,7 @@ function processTango(symbol, group, ts) {
         `Gap: ${diffMin}m ${diffSec}s\n` +
         `Bias: ${biasFromGroup(group)}`;
 
-    sendToTelegram3(msg);
+    sendToTelegram4(msg);
 
     // Slide window (allow overlapping sequences)
     buf.shift();
