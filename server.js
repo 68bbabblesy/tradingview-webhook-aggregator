@@ -1411,6 +1411,71 @@ function processAnyTwo(symbol, group, ts) {
 }
 
 // ==========================================================
+//  SIDE_FLIP (Structural side oscillation detector)
+//  Support side: A C W S U Y
+//  Resistance side: B D X T V Z
+//  Pattern: S → R → S  OR  R → S → R
+//  Window: 4 minutes
+//  Bot 6
+// ==========================================================
+
+const SIDE_FLIP_WINDOW_MS = 4 * 60 * 1000;
+
+const SUPPORT_SIDE = new Set(["A","C","W","S","U","Y"]);
+const RESIST_SIDE  = new Set(["B","D","X","T","V","Z"]);
+
+// sideFlipMemory[symbol] = [{ side, group, time }]
+const sideFlipMemory = {};
+
+function processSideFlip(symbol, group, ts) {
+
+    let side = null;
+
+    if (SUPPORT_SIDE.has(group)) side = "S";
+    else if (RESIST_SIDE.has(group)) side = "R";
+    else return;
+
+    if (!sideFlipMemory[symbol]) {
+        sideFlipMemory[symbol] = [];
+    }
+
+    const buf = sideFlipMemory[symbol];
+
+    // remove old events
+    const cutoff = ts - SIDE_FLIP_WINDOW_MS;
+    while (buf.length && buf[0].time < cutoff) {
+        buf.shift();
+    }
+
+    buf.push({ side, group, time: ts });
+
+    if (buf.length < 3) return;
+
+    const a = buf[buf.length - 3];
+    const b = buf[buf.length - 2];
+    const c = buf[buf.length - 1];
+
+    const pattern1 = a.side === "S" && b.side === "R" && c.side === "S";
+    const pattern2 = a.side === "R" && b.side === "S" && c.side === "R";
+
+    if (!pattern1 && !pattern2) return;
+
+    const diffMs = c.time - a.time;
+    const diffMin = Math.floor(diffMs / 60000);
+    const diffSec = Math.floor((diffMs % 60000) / 1000);
+
+    sendToTelegram6(
+        `🔁 SIDE_FLIP\n` +
+        `Symbol: ${symbol}\n` +
+        `Pattern: ${a.side} → ${b.side} → ${c.side}\n` +
+        `1) ${a.group} @ ${new Date(a.time).toLocaleTimeString()}\n` +
+        `2) ${b.group} @ ${new Date(b.time).toLocaleTimeString()}\n` +
+        `3) ${c.group} @ ${new Date(c.time).toLocaleTimeString()}\n` +
+        `Window: ${diffMin}m ${diffSec}s`
+    );
+}
+
+// ==========================================================
 //  REBEL (Triggered ONLY from JUPITER)
 //  Opposite mapping:
 //    ACSW → waits for E and O (separate fires)
@@ -2149,6 +2214,7 @@ app.post("/incoming", (req, res) => {
 		processContrarian(symbol, group, ts);
         processRebel(symbol, group, ts);
 		processBlackPanther(symbol, group, ts);
+		processSideFlip(symbol, group, ts);
         processGamma(symbol, group, ts);
         processBoomerang(symbol, group, ts, body);
         processSalsa(symbol, group, ts);
