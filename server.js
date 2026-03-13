@@ -1579,72 +1579,73 @@ function processRebel(symbol, group, ts) {
 }
 
 // ==========================================================
-//  MAMBA (Y/Z Burst Detector — Global)
-//  Groups: Y or Z
-//  Condition: 2+ UNIQUE symbols within 30s
-//  Batch wait: 20s before sending
+//  MAMBA (Same symbol — must involve Y or Z)
+//  Window: 5 minutes
+//  Special case allowed: Y→Y and Z→Z
 //  Bot 8
 // ==========================================================
 
-const MAMBA_WINDOW_MS = 30 * 1000;
-const MAMBA_BATCH_DELAY_MS = 20 * 1000;
-const MAMBA_MIN_COUNT = 2;
+const MAMBA_WINDOW_MS = 5 * 60 * 1000;
 
-const mambaState = {
-    active: false,
-    symbols: new Map(),   // symbol → { group, time }
-    startTime: null,
-    timer: null
-};
+// mambaMemory[symbol] = [{ group, time }]
+const mambaMemory = {};
 
 function processMamba(symbol, group, ts) {
 
-    if (!["Y", "Z"].includes(group)) return;
+    if (!symbol || !group) return;
 
-    // Start burst on first hit
-    if (!mambaState.active) {
-        mambaState.active = true;
-        mambaState.startTime = ts;
-        mambaState.symbols.clear();
-
-        mambaState.timer = setTimeout(() => {
-
-            const cutoff = mambaState.startTime + MAMBA_WINDOW_MS;
-
-            const entries = [...mambaState.symbols.entries()]
-                .filter(([_, info]) => info.time <= cutoff);
-
-            if (entries.length >= MAMBA_MIN_COUNT) {
-
-                const lines = entries
-                    .sort((a, b) => a[1].time - b[1].time)
-                    .map(([sym, info]) =>
-                        `• ${sym} (${info.group}) @ ${new Date(info.time).toLocaleTimeString()}`
-                    )
-                    .join("\n");
-
-                sendToTelegram8(
-                    `🐍 MAMBA\n` +
-                    `Groups: Y/Z\n` +
-                    `Unique Symbols: ${entries.length}\n` +
-                    `Window: 30s\n` +
-                    `Symbols:\n${lines}`
-                );
-            }
-
-            // Reset state
-            mambaState.active = false;
-            mambaState.symbols.clear();
-            mambaState.startTime = null;
-            clearTimeout(mambaState.timer);
-            mambaState.timer = null;
-
-        }, MAMBA_BATCH_DELAY_MS);
+    if (!mambaMemory[symbol]) {
+        mambaMemory[symbol] = [];
     }
 
-    // Collect symbol only once per window
-    if (!mambaState.symbols.has(symbol)) {
-        mambaState.symbols.set(symbol, { group, time: ts });
+    const buf = mambaMemory[symbol];
+
+    // Remove expired entries
+    const cutoff = ts - MAMBA_WINDOW_MS;
+    while (buf.length && buf[0].time < cutoff) {
+        buf.shift();
+    }
+
+    const isYZ = group === "Y" || group === "Z";
+
+    for (const e of buf) {
+
+        const prevIsYZ = e.group === "Y" || e.group === "Z";
+
+        const valid =
+            (isYZ && e.group !== group) ||      // Y/Z with other group
+            (prevIsYZ && group !== e.group) ||  // other group with Y/Z
+            (group === e.group && isYZ);        // Y→Y or Z→Z
+
+        if (!valid) continue;
+
+        const diffMs = ts - e.time;
+        const diffMin = Math.floor(diffMs / 60000);
+        const diffSec = Math.floor((diffMs % 60000) / 1000);
+
+        sendToTelegram8(
+            `🐍 MAMBA\n` +
+            `Symbol: ${symbol}\n` +
+            `1) ${e.group} @ ${new Date(e.time).toLocaleString()}\n` +
+            `2) ${group} @ ${new Date(ts).toLocaleString()}\n` +
+            `Gap: ${diffMin}m ${diffSec}s`
+        );
+
+        break;
+    }
+
+    // Store event
+    buf.push({ group, time: ts });
+
+    // Safety prune
+    if (Object.keys(mambaMemory).length > 5000) {
+        const pruneCutoff = ts - (60 * 60 * 1000);
+        for (const sym of Object.keys(mambaMemory)) {
+            const arr = mambaMemory[sym];
+            if (!arr.length || arr[arr.length - 1].time < pruneCutoff) {
+                delete mambaMemory[sym];
+            }
+        }
     }
 }
 
