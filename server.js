@@ -1336,78 +1336,89 @@ function processContrarian(symbol, group, ts) {
 }
 
 // ==========================================================
-//  ANY_TWO (Same symbol — must involve A or B)
-//  Window: 5 minutes
+//  ANY_TWO (Batch version — same structure as MINTA)
+//  Condition: Same symbol, must involve A or B
 //  Special case allowed: A→A and B→B
+//  Window: 5 minutes
+//  Batch delay: 5 minutes
 //  Bot 5
 // ==========================================================
 
 const ANY_TWO_WINDOW_MS = 5 * 60 * 1000;
 
-// anyTwoMemory[symbol] = [{ group, time }]
-const anyTwoMemory = {};
+const anyTwoState = {};
+
+// anyTwoState[symbol] = { events: [], timer }
 
 function processAnyTwo(symbol, group, ts) {
 
     if (!symbol || !group) return;
 
-    if (!anyTwoMemory[symbol]) {
-        anyTwoMemory[symbol] = [];
-    }
+    if (!anyTwoState[symbol]) {
 
-    const buf = anyTwoMemory[symbol];
+        anyTwoState[symbol] = {
+            events: [],
+            timer: null
+        };
 
-    // Remove expired entries
-    const cutoff = ts - ANY_TWO_WINDOW_MS;
-    while (buf.length && buf[0].time < cutoff) {
-        buf.shift();
-    }
+        anyTwoState[symbol].timer = setTimeout(() => {
 
-    const isAB = group === "A" || group === "B";
+            const state = anyTwoState[symbol];
+            const events = state.events;
 
-    for (const e of buf) {
+            let valid = false;
 
-        const prevIsAB = e.group === "A" || e.group === "B";
+            for (let i = 0; i < events.length; i++) {
 
-        // Valid combinations:
-        // A/B paired with anything
-        // OR A→A / B→B
+                for (let j = i + 1; j < events.length; j++) {
 
-        const valid =
-            (isAB && e.group !== group) ||      // A/B with other group
-            (prevIsAB && group !== e.group) ||  // other group with A/B
-            (group === e.group && isAB);        // A→A or B→B
+                    const g1 = events[i].group;
+                    const g2 = events[j].group;
 
-        if (!valid) continue;
+                    const isAB1 = g1 === "A" || g1 === "B";
+                    const isAB2 = g2 === "A" || g2 === "B";
 
-        const diffMs = ts - e.time;
-        const diffMin = Math.floor(diffMs / 60000);
-        const diffSec = Math.floor((diffMs % 60000) / 1000);
+                    const pairValid =
+                        (isAB1 && g1 !== g2) ||      // A/B with other group
+                        (isAB2 && g1 !== g2) ||      // other group with A/B
+                        (g1 === g2 && isAB1);        // A→A or B→B
 
-        sendToTelegram5(
-            `🔁 ANY_TWO\n` +
-            `Symbol: ${symbol}\n` +
-            `1) ${e.group} @ ${new Date(e.time).toLocaleString()}\n` +
-            `2) ${group} @ ${new Date(ts).toLocaleString()}\n` +
-            `Gap: ${diffMin}m ${diffSec}s`
-        );
+                    if (pairValid) {
+                        valid = true;
+                        break;
+                    }
+                }
 
-        break;
-    }
-
-    // Store event
-    buf.push({ group, time: ts });
-
-    // Safety prune
-    if (Object.keys(anyTwoMemory).length > 5000) {
-        const pruneCutoff = ts - (60 * 60 * 1000);
-        for (const sym of Object.keys(anyTwoMemory)) {
-            const arr = anyTwoMemory[sym];
-            if (!arr.length || arr[arr.length - 1].time < pruneCutoff) {
-                delete anyTwoMemory[sym];
+                if (valid) break;
             }
-        }
+
+            if (valid) {
+
+                const lines = events
+                    .sort((a,b)=>a.time-b.time)
+                    .map(e =>
+                        `• ${e.group} @ ${new Date(e.time).toLocaleTimeString()}`
+                    )
+                    .join("\n");
+
+                sendToTelegram5(
+                    `🔁 ANY_TWO\n` +
+                    `Symbol: ${symbol}\n` +
+                    `Count: ${events.length}\n` +
+                    `Window: 5m\n` +
+                    `Alerts:\n${lines}`
+                );
+            }
+
+            delete anyTwoState[symbol];
+
+        }, ANY_TWO_WINDOW_MS);
     }
+
+    anyTwoState[symbol].events.push({
+        group,
+        time: ts
+    });
 }
 
 // ==========================================================
@@ -1579,74 +1590,66 @@ function processRebel(symbol, group, ts) {
 }
 
 // ==========================================================
-//  MAMBA (Same symbol — must involve Y or Z)
+//  MAMBA (Batch version — same structure as MINTA)
+//  Condition: Same symbol, must include Y or Z
+//  Minimum alerts: 2
 //  Window: 5 minutes
-//  Special case allowed: Y→Y and Z→Z
+//  Batch delay: 5 minutes
 //  Bot 8
 // ==========================================================
 
 const MAMBA_WINDOW_MS = 5 * 60 * 1000;
+const MAMBA_MIN_COUNT = 2;
 
-// mambaMemory[symbol] = [{ group, time }]
-const mambaMemory = {};
+const mambaState = {};
+
+// mambaState[symbol] = { events: [], timer }
 
 function processMamba(symbol, group, ts) {
 
     if (!symbol || !group) return;
 
-    if (!mambaMemory[symbol]) {
-        mambaMemory[symbol] = [];
-    }
+    if (!mambaState[symbol]) {
 
-    const buf = mambaMemory[symbol];
+        mambaState[symbol] = {
+            events: [],
+            timer: null
+        };
 
-    // Remove expired entries
-    const cutoff = ts - MAMBA_WINDOW_MS;
-    while (buf.length && buf[0].time < cutoff) {
-        buf.shift();
-    }
+        mambaState[symbol].timer = setTimeout(() => {
 
-    const isYZ = group === "Y" || group === "Z";
+            const state = mambaState[symbol];
+            const events = state.events;
 
-    for (const e of buf) {
+            const hasYZ = events.some(e => e.group === "Y" || e.group === "Z");
 
-        const prevIsYZ = e.group === "Y" || e.group === "Z";
+            if (events.length >= MAMBA_MIN_COUNT && hasYZ) {
 
-        const valid =
-            (isYZ && e.group !== group) ||      // Y/Z with other group
-            (prevIsYZ && group !== e.group) ||  // other group with Y/Z
-            (group === e.group && isYZ);        // Y→Y or Z→Z
+                const lines = events
+                    .sort((a,b)=>a.time-b.time)
+                    .map(e =>
+                        `• ${e.group} @ ${new Date(e.time).toLocaleTimeString()}`
+                    )
+                    .join("\n");
 
-        if (!valid) continue;
-
-        const diffMs = ts - e.time;
-        const diffMin = Math.floor(diffMs / 60000);
-        const diffSec = Math.floor((diffMs % 60000) / 1000);
-
-        sendToTelegram8(
-            `🐍 MAMBA\n` +
-            `Symbol: ${symbol}\n` +
-            `1) ${e.group} @ ${new Date(e.time).toLocaleString()}\n` +
-            `2) ${group} @ ${new Date(ts).toLocaleString()}\n` +
-            `Gap: ${diffMin}m ${diffSec}s`
-        );
-
-        break;
-    }
-
-    // Store event
-    buf.push({ group, time: ts });
-
-    // Safety prune
-    if (Object.keys(mambaMemory).length > 5000) {
-        const pruneCutoff = ts - (60 * 60 * 1000);
-        for (const sym of Object.keys(mambaMemory)) {
-            const arr = mambaMemory[sym];
-            if (!arr.length || arr[arr.length - 1].time < pruneCutoff) {
-                delete mambaMemory[sym];
+                sendToTelegram8(
+                    `🐍 MAMBA\n` +
+                    `Symbol: ${symbol}\n` +
+                    `Count: ${events.length}\n` +
+                    `Window: 5m\n` +
+                    `Alerts:\n${lines}`
+                );
             }
-        }
+
+            delete mambaState[symbol];
+
+        }, MAMBA_WINDOW_MS);
     }
+
+    mambaState[symbol].events.push({
+        group,
+        time: ts
+    });
 }
 
 // ==========================================================
@@ -2111,6 +2114,64 @@ function processBundle(symbol, group, ts) {
 }
 
 // ==========================================================
+//  MINTA (Same symbol multi-group batch detector)
+//  Condition: 6+ alerts of ANY group
+//  Window: 5 minutes
+//  Batch delay: 5 minutes
+//  Bot 9
+// ==========================================================
+
+const MINTA_WINDOW_MS = 5 * 60 * 1000;
+const MINTA_MIN_COUNT = 6;
+
+const mintaState = {};
+
+// mintaState[symbol] = { events: [], timer }
+
+function processMinta(symbol, group, ts) {
+
+    if (!mintaState[symbol]) {
+
+        mintaState[symbol] = {
+            events: [],
+            timer: null
+        };
+
+        mintaState[symbol].timer = setTimeout(() => {
+
+            const state = mintaState[symbol];
+            const events = state.events;
+
+            if (events.length >= MINTA_MIN_COUNT) {
+
+                const lines = events
+                    .sort((a,b)=>a.time-b.time)
+                    .map(e =>
+                        `• ${e.group} @ ${new Date(e.time).toLocaleTimeString()}`
+                    )
+                    .join("\n");
+
+                sendToTelegram9(
+                    `🍃 MINTA\n` +
+                    `Symbol: ${symbol}\n` +
+                    `Count: ${events.length}\n` +
+                    `Window: 5m\n` +
+                    `Alerts:\n${lines}`
+                );
+            }
+
+            delete mintaState[symbol];
+
+        }, MINTA_WINDOW_MS);
+    }
+
+    mintaState[symbol].events.push({
+        group,
+        time: ts
+    });
+}
+
+// ==========================================================
 //  COBRA (Same symbol Y/Z repeat within 30 minutes)
 //  Groups: Y or Z
 //  Same symbol
@@ -2223,6 +2284,7 @@ app.post("/incoming", (req, res) => {
 		processCobra(symbol, group, ts);
 		processNeptune(symbol, group, ts);
         processZulu(symbol, group, ts);
+		processMinta(symbol, group, ts);
         processMamba(symbol, group, ts);
         processSpesh(symbol, group, ts);
 		processCabal(symbol, group, ts);
