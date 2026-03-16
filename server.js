@@ -1408,6 +1408,7 @@ function processAnyTwo(symbol, group, ts) {
                     `Window: 5m\n` +
                     `Alerts:\n${lines}`
                 );
+				registerTrinity(symbol, "ANY_TWO");
             }
 
             delete anyTwoState[symbol];
@@ -1639,6 +1640,7 @@ function processMamba(symbol, group, ts) {
                     `Window: 5m\n` +
                     `Alerts:\n${lines}`
                 );
+				registerTrinity(symbol, "MAMBA");
             }
 
             delete mambaState[symbol];
@@ -2045,6 +2047,71 @@ registerRebelFromJupiter(symbol, sideName, ts);
 }
 
 // ==========================================================
+//  TRINITY / TRINITY_FLIP Fusion Detector
+//  Combines signals from ANY_TWO, MAMBA, MINTA, SIDE_FLIP
+//  Window: 5 minutes
+//  Bot 6
+// ==========================================================
+
+const TRINITY_WINDOW_MS = 5 * 60 * 1000;
+
+const trinityState = {};
+
+// trinityState[symbol] = { anyTwo, mamba, minta, sideFlip, timer }
+
+function registerTrinity(symbol, type) {
+
+    if (!symbol) return;
+
+    if (!trinityState[symbol]) {
+
+        trinityState[symbol] = {
+            anyTwo: false,
+            mamba: false,
+            minta: false,
+            sideFlip: false,
+            timer: null
+        };
+
+        trinityState[symbol].timer = setTimeout(() => {
+
+            const s = trinityState[symbol];
+
+            if (s.anyTwo && s.mamba && s.minta) {
+
+                if (s.sideFlip) {
+
+                    sendToTelegram6(
+                        `⚡ TRINITY_FLIP+\n` +
+                        `Symbol: ${symbol}\n` +
+                        `Signals: ANY_TWO + MAMBA + MINTA + SIDE_FLIP\n` +
+                        `Window: 5m`
+                    );
+
+                } else {
+
+                    sendToTelegram6(
+                        `⚡ TRINITY\n` +
+                        `Symbol: ${symbol}\n` +
+                        `Signals: ANY_TWO + MAMBA + MINTA\n` +
+                        `Window: 5m`
+                    );
+
+                }
+            }
+
+            delete trinityState[symbol];
+
+        }, TRINITY_WINDOW_MS);
+    }
+
+    if (type === "ANY_TWO") trinityState[symbol].anyTwo = true;
+    if (type === "MAMBA") trinityState[symbol].mamba = true;
+    if (type === "MINTA") trinityState[symbol].minta = true;
+    if (type === "SIDE_FLIP") trinityState[symbol].sideFlip = true;
+}
+
+// ==========================================================
 //  BUNDLE (ACSWU / BDXTV burst collector)
 //  Window: 2 minutes (delayed delivery)
 //  Min Count: 4
@@ -2158,6 +2225,7 @@ function processMinta(symbol, group, ts) {
                     `Window: 5m\n` +
                     `Alerts:\n${lines}`
                 );
+				registerTrinity(symbol, "MINTA");
             }
 
             delete mintaState[symbol];
