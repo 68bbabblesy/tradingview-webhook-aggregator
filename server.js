@@ -521,17 +521,6 @@ function processBazooka(symbol, group, ts) {
 
                 
 
-for (const [sym, info] of entries) {
-    salsaState.set(sym, {
-        count: 0,
-        armedAt: ts,
-        armedGroup: info.group,   // ✅ use the symbol's actual group
-        firstHit: null
-    });
-}
-
-
-                
             }
 
             // Reset snapshot (prevents late symbols)
@@ -939,46 +928,65 @@ function processMAMAMIA(symbol, group, ts) {
 
 
 // ==========================================================
-//  SALSA (Post-BAZOOKA EJQR sequence tracker)
+//  SALSA (Batch detector — mandatory "19" group)
+//  Condition: Same symbol must include at least one group starting with "19"
+//  Window: 5 minutes
+//  Batch delay: 5 minutes
+//  Bot 6
 // ==========================================================
 
+const SALSA_WINDOW_MS = 5 * 60 * 1000;
+
+const salsaState = {};
+
+// salsaState[symbol] = { events: [], timer }
+
 function processSalsa(symbol, group, ts) {
-    if (!["E", "J", "Q", "R"].includes(group)) return;
 
-    const state = salsaState.get(symbol);
-    if (!state) return;
+    if (!symbol || !group) return;
 
-    // First hit
-    if (state.count === 0) {
-        state.count = 1;
-        state.firstHit = { group, time: ts };
-        return;
+    if (!salsaState[symbol]) {
+
+        salsaState[symbol] = {
+            events: [],
+            timer: null
+        };
+
+        salsaState[symbol].timer = setTimeout(() => {
+
+            const state = salsaState[symbol];
+            const events = state.events;
+
+            const hasMandatory19 = events.some(e => e.group.startsWith("19"));
+
+            if (events.length >= 2 && hasMandatory19) {
+
+                const lines = events
+                    .sort((a,b)=>a.time-b.time)
+                    .map(e =>
+                        `• ${e.group} @ ${new Date(e.time).toLocaleTimeString()}`
+                    )
+                    .join("\n");
+
+                sendToTelegram6(
+                    `💃 SALSA\n` +
+                    `Symbol: ${symbol}\n` +
+                    `Count: ${events.length}\n` +
+                    `Window: 5m\n` +
+                    `Alerts:\n${lines}`
+                );
+            }
+
+            delete salsaState[symbol];
+
+        }, SALSA_WINDOW_MS);
     }
 
-    // Second hit
-    if (state.count === 1) {
-        state.count = 2;
-
-        const first = state.firstHit;
-        const diffMs = ts - first.time;
-        const diffMin = Math.floor(diffMs / 60000);
-        const diffSec = Math.floor((diffMs % 60000) / 1000);
-
-        sendToTelegram3(
-            `💃 SALSA 2\n` +
-            `Symbol: ${symbol}\n` +
-            `Group: ${state.armedGroup}\n` +
-            `Armed: ${new Date(state.armedAt).toLocaleTimeString()}\n` +
-            `1) ${first.group} @ ${new Date(first.time).toLocaleTimeString()}\n` +
-            `2) ${group} @ ${new Date(ts).toLocaleTimeString()}\n` +
-            `Gap: ${diffMin}m ${diffSec}s`
-        );
-
-        salsaState.delete(symbol);
-    }
+    salsaState[symbol].events.push({
+        group,
+        time: ts
+    });
 }
-
-
 
 // ==========================================================
 //  TANGO (Buffered repeat detector with per-group windows)
@@ -1607,12 +1615,7 @@ function processMamba(symbol, group, ts) {
     });
 }
 
-// ==========================================================
-//  SALSA (Post-BAZOOKA EJQR sequence tracker)
-// ==========================================================
 
-// symbol → { count, armedAt }
-const salsaState = new Map();
 
 
 
