@@ -1125,112 +1125,65 @@ registerContrarianFromNeptune(symbol, sideName, ts);
 
 
 // ==========================================================
-//  ZULU (Same symbol match: PQ OR EO within 20 minutes)
-//  Either order allowed
-//  Bot 7
+//  ZULU (Batch detector — mandatory "9" group)
+//  Condition: Same symbol must include at least one group starting with "9"
+//  Window: 5 minutes
+//  Batch delay: 5 minutes
+//  Bot 6
 // ==========================================================
 
-const ZULU_WINDOW_MS = 20 * 60 * 1000; // 20 minutes
+const ZULU_WINDOW_MS = 5 * 60 * 1000;
 
-// zuluMemory[symbol] = {
-//   P: timestamp,
-//   Q: timestamp,
-//   E: timestamp,
-//   O: timestamp
-// }
+const zuluState = {};
 
-const zuluMemory = {};
+// zuluState[symbol] = { events: [], timer }
 
 function processZulu(symbol, group, ts) {
 
-  // Only care about P, Q, E, O
-  if (!["P", "Q", "E", "O"].includes(group)) return;
+    if (!symbol || !group) return;
 
-  if (!zuluMemory[symbol]) {
-    zuluMemory[symbol] = {};
-  }
+    if (!zuluState[symbol]) {
 
-  const mem = zuluMemory[symbol];
+        zuluState[symbol] = {
+            events: [],
+            timer: null
+        };
 
-  // Store latest occurrence
-  mem[group] = ts;
+        zuluState[symbol].timer = setTimeout(() => {
 
-  // ========================
-  // CHECK PQ
-  // ========================
-  if (mem.P && mem.Q) {
+            const state = zuluState[symbol];
+            const events = state.events;
 
-    const diffMs = Math.abs(mem.P - mem.Q);
+            const hasMandatory9 = events.some(e => e.group.startsWith("9"));
 
-    if (diffMs <= ZULU_WINDOW_MS) {
+            if (events.length >= 2 && hasMandatory9) {
 
-      const firstGroup  = mem.P <= mem.Q ? "P" : "Q";
-      const secondGroup = mem.P <= mem.Q ? "Q" : "P";
+                const lines = events
+                    .sort((a,b)=>a.time-b.time)
+                    .map(e =>
+                        `• ${e.group} @ ${new Date(e.time).toLocaleTimeString()}`
+                    )
+                    .join("\n");
 
-      const firstTime  = mem.P <= mem.Q ? mem.P : mem.Q;
-      const secondTime = mem.P <= mem.Q ? mem.Q : mem.P;
+                sendToTelegram6(
+                    `🟡 ZULU\n` +
+                    `Symbol: ${symbol}\n` +
+                    `Count: ${events.length}\n` +
+                    `Window: 5m\n` +
+                    `Alerts:\n${lines}`
+                );
+            }
 
-      const diffMin = Math.floor(diffMs / 60000);
-      const diffSec = Math.floor((diffMs % 60000) / 1000);
+            delete zuluState[symbol];
 
-      sendToTelegram7(
-        `🟡 ZULU (PQ)\n` +
-        `Symbol: ${symbol}\n` +
-        `1) ${firstGroup} @ ${new Date(firstTime).toLocaleString()}\n` +
-        `2) ${secondGroup} @ ${new Date(secondTime).toLocaleString()}\n` +
-        `Gap: ${diffMin}m ${diffSec}s`
-      );
-
-      // Reset pair after firing
-      delete mem.P;
-      delete mem.Q;
+        }, ZULU_WINDOW_MS);
     }
-  }
 
-  // ========================
-  // CHECK EO
-  // ========================
-  if (mem.E && mem.O) {
-
-    const diffMs = Math.abs(mem.E - mem.O);
-
-    if (diffMs <= ZULU_WINDOW_MS) {
-
-      const firstGroup  = mem.E <= mem.O ? "E" : "O";
-      const secondGroup = mem.E <= mem.O ? "O" : "E";
-
-      const firstTime  = mem.E <= mem.O ? mem.E : mem.O;
-      const secondTime = mem.E <= mem.O ? mem.O : mem.E;
-
-      const diffMin = Math.floor(diffMs / 60000);
-      const diffSec = Math.floor((diffMs % 60000) / 1000);
-
-      sendToTelegram7(
-        `🟡 ZULU (EO)\n` +
-        `Symbol: ${symbol}\n` +
-        `1) ${firstGroup} @ ${new Date(firstTime).toLocaleString()}\n` +
-        `2) ${secondGroup} @ ${new Date(secondTime).toLocaleString()}\n` +
-        `Gap: ${diffMin}m ${diffSec}s`
-      );
-
-      // Reset pair after firing
-      delete mem.E;
-      delete mem.O;
-    }
-  }
-
-  // Optional memory pruning (safety guard)
-  if (Object.keys(zuluMemory).length > 5000) {
-    const cutoff = ts - (60 * 60 * 1000);
-    for (const sym of Object.keys(zuluMemory)) {
-      const s = zuluMemory[sym];
-      const latest = Math.max(s.P || 0, s.Q || 0, s.E || 0, s.O || 0);
-      if (latest < cutoff) delete zuluMemory[sym];
-    }
-  }
+    zuluState[symbol].events.push({
+        group,
+        time: ts
+    });
 }
-
-
 
 // ==========================================================
 //  CONTRARIAN (Triggered ONLY from NEPTUNE)
