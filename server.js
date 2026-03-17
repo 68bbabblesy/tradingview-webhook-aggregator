@@ -2087,7 +2087,7 @@ app.post("/incoming", (req, res) => {
 		processBundle(symbol, group, ts);      
 		processBazooka(symbol, group, ts, body);
 		
-        processRebel(symbol, group, ts);
+        
 		processBlackPanther(symbol, group, ts);
 		processSideFlip(symbol, group, ts);
         processGamma(symbol, group, ts);
