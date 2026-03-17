@@ -1120,8 +1120,6 @@ function processNeptune(symbol, group, ts) {
 
    
 	
-	// 🔥 Register CONTRARIAN tracking (opposite mapping)
-registerContrarianFromNeptune(symbol, sideName, ts);
 
     // Reset this side only (burst behavior)
     if (isSide1) {
@@ -1193,108 +1191,6 @@ function processZulu(symbol, group, ts) {
     });
 }
 
-// ==========================================================
-//  CONTRARIAN (Triggered ONLY from NEPTUNE)
-//  Opposite mapping:
-//    ACSW → waits for E and O (separate fires)
-//    BDXT → waits for P and Q (separate fires)
-//  Bot 2
-// ==========================================================
-
-const CONTRARIAN_EXPIRY_MS = 3 * 60 * 60 * 1000; // 3 hours
-
-// contrarianTrackers[symbol] = [
-//   { side: "ACSW" | "BDXT", armedAt, hits: { P:false,Q:false,E:false,O:false } }
-// ]
-const contrarianTrackers = {};
-
-// Called from NEPTUNE
-function registerContrarianFromNeptune(symbol, side, ts) {
-    if (side !== "ACSW" && side !== "BDXT") return;
-
-    if (!contrarianTrackers[symbol]) {
-        contrarianTrackers[symbol] = [];
-    }
-
-    contrarianTrackers[symbol].push({
-        side,
-        armedAt: ts,
-        hits: { P:false, Q:false, E:false, O:false }
-    });
-}
-
-function processContrarian(symbol, group, ts) {
-
-    if (!["P","Q","E","O"].includes(group)) return;
-
-    const trackers = contrarianTrackers[symbol];
-    if (!trackers || !trackers.length) return;
-
-    // Remove expired trackers first
-    const fresh = trackers.filter(t => (ts - t.armedAt) <= CONTRARIAN_EXPIRY_MS);
-
-    if (!fresh.length) {
-        delete contrarianTrackers[symbol];
-        return;
-    }
-
-    for (const t of fresh) {
-
-        // ACSW → E and O
-        if (t.side === "ACSW") {
-
-            if ((group === "E" || group === "O") && !t.hits[group]) {
-
-                t.hits[group] = true;
-
-                sendToTelegram2(
-                    `⚖️ CONTRARIAN\n` +
-                    `Symbol: ${symbol}\n` +
-                    `Origin: NEPTUNE (ACSW)\n` +
-                    `Opposite Hit: ${group}\n` +
-                    `Neptune Time: ${new Date(t.armedAt).toLocaleTimeString()}\n` +
-                    `Hit Time: ${new Date(ts).toLocaleTimeString()}`
-                );
-            }
-        }
-
-        // BDXT → P and Q
-        if (t.side === "BDXT") {
-
-            if ((group === "P" || group === "Q") && !t.hits[group]) {
-
-                t.hits[group] = true;
-
-                sendToTelegram2(
-                    `⚖️ CONTRARIAN\n` +
-                    `Symbol: ${symbol}\n` +
-                    `Origin: NEPTUNE (BDXT)\n` +
-                    `Opposite Hit: ${group}\n` +
-                    `Neptune Time: ${new Date(t.armedAt).toLocaleTimeString()}\n` +
-                    `Hit Time: ${new Date(ts).toLocaleTimeString()}`
-                );
-            }
-        }
-    }
-
-    // Remove trackers that have fired both valid opposite hits
-    contrarianTrackers[symbol] = fresh.filter(t => {
-
-        if (t.side === "ACSW") {
-            return !(t.hits.E && t.hits.O);
-        }
-
-        if (t.side === "BDXT") {
-            return !(t.hits.P && t.hits.Q);
-        }
-
-        return true;
-    });
-
-    if (!contrarianTrackers[symbol].length) {
-        delete contrarianTrackers[symbol];
-    }
-}
 
 // ==========================================================
 //  ANY_TWO (Batch version — same structure as MINTA)
@@ -1448,108 +1344,6 @@ function processSideFlip(symbol, group, ts) {
     );
 }
 
-// ==========================================================
-//  REBEL (Triggered ONLY from JUPITER)
-//  Opposite mapping:
-//    ACSW → waits for E and O (separate fires)
-//    BDXT → waits for P and Q (separate fires)
-//  Bot 5
-// ==========================================================
-
-const REBEL_EXPIRY_MS = 3 * 60 * 60 * 1000; // 3 hours
-
-// rebelTrackers[symbol] = [
-//   { side: "ACSW" | "BDXT", armedAt, hits: { P:false,Q:false,E:false,O:false } }
-// ]
-const rebelTrackers = {};
-
-// Called from JUPITER
-function registerRebelFromJupiter(symbol, side, ts) {
-    if (side !== "ACSW" && side !== "BDXT") return;
-
-    if (!rebelTrackers[symbol]) {
-        rebelTrackers[symbol] = [];
-    }
-
-    rebelTrackers[symbol].push({
-        side,
-        armedAt: ts,
-        hits: { P:false, Q:false, E:false, O:false }
-    });
-}
-
-function processRebel(symbol, group, ts) {
-
-    if (!["P","Q","E","O"].includes(group)) return;
-
-    const trackers = rebelTrackers[symbol];
-    if (!trackers || !trackers.length) return;
-
-    // Remove expired trackers first
-    const fresh = trackers.filter(t => (ts - t.armedAt) <= REBEL_EXPIRY_MS);
-
-    if (!fresh.length) {
-        delete rebelTrackers[symbol];
-        return;
-    }
-
-    for (const t of fresh) {
-
-        // ACSW → E and O
-        if (t.side === "ACSW") {
-
-            if ((group === "E" || group === "O") && !t.hits[group]) {
-
-                t.hits[group] = true;
-
-                sendToTelegram5(
-                    `🟥 REBEL\n` +
-                    `Symbol: ${symbol}\n` +
-                    `Origin: JUPITER (ACSW)\n` +
-                    `Hit: ${group}\n` +
-                    `Jupiter Time: ${new Date(t.armedAt).toLocaleTimeString()}\n` +
-                    `Hit Time: ${new Date(ts).toLocaleTimeString()}`
-                );
-            }
-        }
-
-        // BDXT → P and Q
-        if (t.side === "BDXT") {
-
-            if ((group === "P" || group === "Q") && !t.hits[group]) {
-
-                t.hits[group] = true;
-
-                sendToTelegram5(
-                    `🟥 REBEL\n` +
-                    `Symbol: ${symbol}\n` +
-                    `Origin: JUPITER (BDXT)\n` +
-                    `Hit: ${group}\n` +
-                    `Jupiter Time: ${new Date(t.armedAt).toLocaleTimeString()}\n` +
-                    `Hit Time: ${new Date(ts).toLocaleTimeString()}`
-                );
-            }
-        }
-    }
-
-    // Remove trackers that have fired both valid hits
-    rebelTrackers[symbol] = fresh.filter(t => {
-
-        if (t.side === "ACSW") {
-            return !(t.hits.E && t.hits.O);
-        }
-
-        if (t.side === "BDXT") {
-            return !(t.hits.P && t.hits.Q);
-        }
-
-        return true;
-    });
-
-    if (!rebelTrackers[symbol].length) {
-        delete rebelTrackers[symbol];
-    }
-}
 
 // ==========================================================
 //  MAMBA (Batch version — same structure as MINTA)
@@ -1980,12 +1774,7 @@ function processJupiter(symbol, group, ts) {
     `Gap: ${diffMin}m ${diffSec}s`
 );
 
-// 🔥 ARM REBEL HERE
-const sideName = ["A","C","S","W"].includes(group)
-    ? "ACSW"
-    : "BDXT";
 
-registerRebelFromJupiter(symbol, sideName, ts);
     }
 
     // Always update
@@ -2297,7 +2086,7 @@ app.post("/incoming", (req, res) => {
         processAnyTwo(symbol, group, ts);	
 		processBundle(symbol, group, ts);      
 		processBazooka(symbol, group, ts, body);
-		processContrarian(symbol, group, ts);
+		
         processRebel(symbol, group, ts);
 		processBlackPanther(symbol, group, ts);
 		processSideFlip(symbol, group, ts);
