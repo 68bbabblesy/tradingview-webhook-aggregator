@@ -1269,16 +1269,15 @@ function processSideFlip(symbol, group, ts) {
 
 
 // ==========================================================
-//  MAMBA (Batch version — same structure as MINTA)
-//  Condition: Same symbol, must include Y or Z
-//  Minimum alerts: 2
+//  MAMBA (Batch detector — requires Y or Z)
+//  Condition: Same symbol must include at least one "Y" or "Z"
+//  Minimum alerts: 2 (Y+Y, Z+Z, Y+Z all allowed)
 //  Window: 5 minutes
 //  Batch delay: 5 minutes
 //  Bot 8
 // ==========================================================
 
 const MAMBA_WINDOW_MS = 5 * 60 * 1000;
-const MAMBA_MIN_COUNT = 2;
 
 const mambaState = {};
 
@@ -1288,8 +1287,6 @@ function processMamba(symbol, group, ts) {
 
     if (!symbol || !group) return;
 
-    console.log("MAMBA ADD:", symbol, group, new Date(ts).toLocaleString());
-
     if (!mambaState[symbol]) {
 
         mambaState[symbol] = {
@@ -1297,29 +1294,16 @@ function processMamba(symbol, group, ts) {
             timer: null
         };
 
-        console.log("MAMBA TIMER START:", symbol, new Date(ts).toLocaleString());
-
         mambaState[symbol].timer = setTimeout(() => {
 
             const state = mambaState[symbol];
-
-            if (!state) {
-                console.log("MAMBA LOST STATE:", symbol);
-                return;
-            }
-
             const events = state.events;
-            const hasYZ = events.some(e => e.group === "Y" || e.group === "Z");
 
-            console.log(
-                "MAMBA FIRE CHECK:",
-                symbol,
-                events.map(e => e.group),
-                "count=", events.length,
-                "hasYZ=", hasYZ
+            const hasYZ = events.some(e =>
+                e.group === "Y" || e.group === "Z"
             );
 
-            if (events.length >= MAMBA_MIN_COUNT && hasYZ) {
+            if (events.length >= 2 && hasYZ) {
 
                 const lines = events
                     .sort((a,b)=>a.time-b.time)
@@ -1349,9 +1333,6 @@ function processMamba(symbol, group, ts) {
         time: ts
     });
 }
-
-
-
 
 // ==========================================================
 //  SPESH (BTCUSDT ↔ TOTAL same-group within 45s)
