@@ -972,79 +972,86 @@ function processTango(symbol, group, ts) {
 }
 
 // ==========================================================
-//  NEPTUNE (Same symbol — ACSW OR BDXT → 2 distinct groups within 50s)
-//  No cross-mixing between sides
-
-//  Bot 4
+//  NEPTUNE (A/B repeat detector)
+//  Condition: Same symbol, group A or B, 3+ hits within 1 hour
+//  Bot 9
 // ==========================================================
 
-const NEPTUNE_WINDOW_MS = 50 * 1000;
+const NEPTUNE_WINDOW_MS = 60 * 60 * 1000; // 1 hour
 
-const NEPTUNE_SIDE1 = new Set(["A","C","S","W"]); // ACSW
-const NEPTUNE_SIDE2 = new Set(["B","D","X","T"]); // BDXT
-
-// neptuneState[symbol] = {
-//    side1: { group: time },
-//    side2: { group: time }
-// }
-
-const neptuneState = {};
+// neptuneMemory[symbol][group] = [timestamps]
+const neptuneMemory = {};
 
 function processNeptune(symbol, group, ts) {
 
-    const isSide1 = NEPTUNE_SIDE1.has(group);
-    const isSide2 = NEPTUNE_SIDE2.has(group);
+    if (!["A", "B"].includes(group)) return;
 
-    if (!isSide1 && !isSide2) return;
-
-    if (!neptuneState[symbol]) {
-        neptuneState[symbol] = {
-            side1: {},
-            side2: {}
-        };
+    if (!neptuneMemory[symbol]) {
+        neptuneMemory[symbol] = {};
     }
 
-    const state = neptuneState[symbol];
-    const bucket = isSide1 ? state.side1 : state.side2;
+    if (!neptuneMemory[symbol][group]) {
+        neptuneMemory[symbol][group] = [];
+    }
 
-    bucket[group] = ts;
+    const buf = neptuneMemory[symbol][group];
 
-    // collect recent distinct groups
-    const recent = Object.entries(bucket)
-        .filter(([g, time]) => ts - time <= NEPTUNE_WINDOW_MS);
+    // Add current hit
+    buf.push(ts);
 
-    if (recent.length < 2) return;
+    // Prune old hits
+    const cutoff = ts - NEPTUNE_WINDOW_MS;
+    while (buf.length && buf[0] < cutoff) {
+        buf.shift();
+    }
 
-    const picked = recent
-        .sort((a, b) => a[1] - b[1])
-        .slice(-2);
+    // Trigger on 3rd hit
+    if (buf.length >= 3) {
 
-    const firstTime  = picked[0][1];
-    const secondTime = picked[1][1];
-    const diffSec = Math.floor((secondTime - firstTime) / 1000);
+        const first = buf[0];
+        const last  = buf[buf.length - 1];
 
-    const sideName = isSide1 ? "ACSW" : "BDXT";
+        const diffMs = last - first;
+        const diffMin = Math.floor(diffMs / 60000);
+        const diffSec = Math.floor((diffMs % 60000) / 1000);
 
-    sendToTelegram4(
-        `🌊 NEPTUNE\n` +
-        `Symbol: ${symbol}\n` +
-        `Side: ${sideName}\n` +
-        `1) ${picked[0][0]} @ ${new Date(firstTime).toLocaleTimeString()}\n` +
-        `2) ${picked[1][0]} @ ${new Date(secondTime).toLocaleTimeString()}\n` +
-        `Gap: ${diffSec}s`
-    );
+        const lines = buf
+            .map((t, i) =>
+                `${i + 1}) ${new Date(t).toLocaleString()}`
+            )
+            .join("\n");
 
-   
-	
+        sendToTelegram9(
+            `🌊 NEPTUNE\n` +
+            `Symbol: ${symbol}\n` +
+            `Group: ${group}\n` +
+            `Hits: ${buf.length}\n` +
+            `Window: 1h\n` +
+            `Span: ${diffMin}m ${diffSec}s\n` +
+            `Times:\n${lines}`
+        );
 
-    // Reset this side only (burst behavior)
-    if (isSide1) {
-        state.side1 = {};
-    } else {
-        state.side2 = {};
+        // Reset after firing
+        delete neptuneMemory[symbol][group];
+    }
+
+    // Optional memory cleanup
+    if (Object.keys(neptuneMemory).length > 5000) {
+        const pruneCutoff = ts - (2 * 60 * 60 * 1000);
+        for (const sym of Object.keys(neptuneMemory)) {
+            const groups = neptuneMemory[sym];
+            for (const g of Object.keys(groups)) {
+                const arr = groups[g];
+                if (!arr.length || arr[arr.length - 1] < pruneCutoff) {
+                    delete groups[g];
+                }
+            }
+            if (!Object.keys(groups).length) {
+                delete neptuneMemory[sym];
+            }
+        }
     }
 }
-
 
 // ==========================================================
 //  ZULU (Batch detector — mandatory "9" group)
