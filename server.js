@@ -1288,6 +1288,8 @@ function processMamba(symbol, group, ts) {
 
     if (!symbol || !group) return;
 
+    console.log("MAMBA ADD:", symbol, group, new Date(ts).toLocaleString());
+
     if (!mambaState[symbol]) {
 
         mambaState[symbol] = {
@@ -1295,12 +1297,27 @@ function processMamba(symbol, group, ts) {
             timer: null
         };
 
+        console.log("MAMBA TIMER START:", symbol, new Date(ts).toLocaleString());
+
         mambaState[symbol].timer = setTimeout(() => {
 
             const state = mambaState[symbol];
-            const events = state.events;
 
+            if (!state) {
+                console.log("MAMBA LOST STATE:", symbol);
+                return;
+            }
+
+            const events = state.events;
             const hasYZ = events.some(e => e.group === "Y" || e.group === "Z");
+
+            console.log(
+                "MAMBA FIRE CHECK:",
+                symbol,
+                events.map(e => e.group),
+                "count=", events.length,
+                "hasYZ=", hasYZ
+            );
 
             if (events.length >= MAMBA_MIN_COUNT && hasYZ) {
 
@@ -1318,7 +1335,8 @@ function processMamba(symbol, group, ts) {
                     `Window: 5m\n` +
                     `Alerts:\n${lines}`
                 );
-				registerTrinity(symbol, "MAMBA");
+
+                registerTrinity(symbol, "MAMBA");
             }
 
             delete mambaState[symbol];
@@ -1331,10 +1349,6 @@ function processMamba(symbol, group, ts) {
         time: ts
     });
 }
-
-
-
-
 
 
 
