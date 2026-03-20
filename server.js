@@ -1021,7 +1021,7 @@ function processNeptune(symbol, group, ts) {
             )
             .join("\n");
 
-        sendToTelegram9(
+        sendToTelegram3(
             `🌊 NEPTUNE\n` +
             `Symbol: ${symbol}\n` +
             `Group: ${group}\n` +
@@ -1565,7 +1565,7 @@ function processAudit(symbol, group, ts, body) {
 
     const price = body.price || "n/a";
 
-    sendToTelegram3(
+    sendToTelegram7(
         `📋 AUDIT\n` +
         `Symbol: ${symbol}\n` +
         `Group: ${group}\n` +
