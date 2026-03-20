@@ -972,8 +972,8 @@ function processTango(symbol, group, ts) {
 }
 
 // ==========================================================
-//  NEPTUNE (A/B repeat detector)
-//  Condition: Same symbol, group A or B, 3+ hits within 1 hour
+//  NEPTUNE (Same-group repeat detector — ANY group)
+//  Condition: Same symbol + SAME group, 3+ hits within 1 hour
 //  Bot 9
 // ==========================================================
 
@@ -984,7 +984,7 @@ const neptuneMemory = {};
 
 function processNeptune(symbol, group, ts) {
 
-    if (!["A", "B"].includes(group)) return;
+    if (!symbol || !group) return;
 
     if (!neptuneMemory[symbol]) {
         neptuneMemory[symbol] = {};
@@ -1031,7 +1031,7 @@ function processNeptune(symbol, group, ts) {
             `Times:\n${lines}`
         );
 
-        // Reset after firing
+        // Reset after firing (per group only)
         delete neptuneMemory[symbol][group];
     }
 
