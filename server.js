@@ -1269,9 +1269,8 @@ function processSideFlip(symbol, group, ts) {
 
 
 // ==========================================================
-//  MAMBA (Batch detector — requires Y or Z)
+//  MAMBA (Batch detector — mandatory Y or Z)
 //  Condition: Same symbol must include at least one "Y" or "Z"
-//  Minimum alerts: 2 (Y+Y, Z+Z, Y+Z all allowed)
 //  Window: 5 minutes
 //  Batch delay: 5 minutes
 //  Bot 8
@@ -1319,8 +1318,6 @@ function processMamba(symbol, group, ts) {
                     `Window: 5m\n` +
                     `Alerts:\n${lines}`
                 );
-
-                registerTrinity(symbol, "MAMBA");
             }
 
             delete mambaState[symbol];
@@ -1333,7 +1330,6 @@ function processMamba(symbol, group, ts) {
         time: ts
     });
 }
-
 // ==========================================================
 //  SPESH (BTCUSDT ↔ TOTAL same-group within 45s)
 //  Groups: AA → ZZ
