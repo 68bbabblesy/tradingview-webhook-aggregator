@@ -884,7 +884,7 @@ function processSalsa(symbol, group, ts) {
                     )
                     .join("\n");
 
-                sendToTelegram8(
+                sendToTelegram6(
                     `💃 SALSA\n` +
                     `Symbol: ${symbol}\n` +
                     `Count: ${events.length}\n` +
