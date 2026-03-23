@@ -1750,6 +1750,91 @@ function registerTrinity(symbol, type) {
 }
 
 // ==========================================================
+//  YABA (19-group repeat detector)
+//  Condition: Same symbol + SAME "19.." group, 2+ hits within 1 hour
+//  Bot 8
+// ==========================================================
+
+const YABA_WINDOW_MS = 60 * 60 * 1000; // 1 hour
+
+// yabaMemory[symbol][group] = [timestamps]
+const yabaMemory = {};
+
+function processYaba(symbol, group, ts) {
+
+    if (!symbol || !group) return;
+
+    // Only groups starting with "19"
+    if (!group.startsWith("19")) return;
+
+    if (!yabaMemory[symbol]) {
+        yabaMemory[symbol] = {};
+    }
+
+    if (!yabaMemory[symbol][group]) {
+        yabaMemory[symbol][group] = [];
+    }
+
+    const buf = yabaMemory[symbol][group];
+
+    // Add current hit
+    buf.push(ts);
+
+    // Prune old hits
+    const cutoff = ts - YABA_WINDOW_MS;
+    while (buf.length && buf[0] < cutoff) {
+        buf.shift();
+    }
+
+    // Trigger on 2nd hit
+    if (buf.length >= 2) {
+
+        const first = buf[0];
+        const last  = buf[buf.length - 1];
+
+        const diffMs = last - first;
+        const diffMin = Math.floor(diffMs / 60000);
+        const diffSec = Math.floor((diffMs % 60000) / 1000);
+
+        const lines = buf
+            .map((t, i) =>
+                `${i + 1}) ${new Date(t).toLocaleString()}`
+            )
+            .join("\n");
+
+        sendToTelegram8(
+            `🟢 YABA\n` +
+            `Symbol: ${symbol}\n` +
+            `Group: ${group}\n` +
+            `Hits: ${buf.length}\n` +
+            `Window: 1h\n` +
+            `Span: ${diffMin}m ${diffSec}s\n` +
+            `Times:\n${lines}`
+        );
+
+        // Reset after firing (per group only)
+        delete yabaMemory[symbol][group];
+    }
+
+    // Optional memory cleanup
+    if (Object.keys(yabaMemory).length > 5000) {
+        const pruneCutoff = ts - (2 * 60 * 60 * 1000);
+        for (const sym of Object.keys(yabaMemory)) {
+            const groups = yabaMemory[sym];
+            for (const g of Object.keys(groups)) {
+                const arr = groups[g];
+                if (!arr.length || arr[arr.length - 1] < pruneCutoff) {
+                    delete groups[g];
+                }
+            }
+            if (!Object.keys(groups).length) {
+                delete yabaMemory[sym];
+            }
+        }
+    }
+}
+
+// ==========================================================
 //  BUNDLE (ACSWU / BDXTV burst collector)
 //  Window: 2 minutes (delayed delivery)
 //  Min Count: 4
@@ -1984,7 +2069,7 @@ app.post("/incoming", (req, res) => {
 		processBlackPanther(symbol, group, ts);
 		processSideFlip(symbol, group, ts);
         processGamma(symbol, group, ts);
-        
+        processYaba(symbol, group, ts);
         processSalsa(symbol, group, ts);
         processTango(symbol, group, ts);
 		processCobra(symbol, group, ts);
