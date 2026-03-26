@@ -363,92 +363,92 @@ function biasFromGroup(group) {
 
 
 
-
 // ==========================================================
-//  GODZILLA — FROZEN SNAPSHOT (Exact BAZOOKA clone)
-//  Groups: A-Z
-//  Window: 50 seconds
-//  Min Count: 20
-//  Bot 9
+//  GODZILLA (Buffered #E / #J merge detector)
+//  Condition:
+//    - Track ALL groups per symbol
+//    - Wait for BOTH #E and #J
+//    - Delay output to batch events
+//  Bot 3
 // ==========================================================
 
-const GODZILLA_WINDOW_MS = 50 * 1000;
-const GODZILLA_MIN_COUNT = 20;
-const GODZILLA_CHUNK_SIZE = 12; // presentation only (unchanged)
+const GODZILLA_DELAY_MS = 60 * 1000; // 🔧 change to 120000 if you want 2 mins
 
-const GODZILLA_GROUPS = new Set(
-    Array.from({ length: 26 }, (_, i) =>
-        String.fromCharCode(65 + i)
-    )
-);
+const godzillaState = {};
 
-const godzillaState = {
-    active: false,
-    symbols: new Map(),
-    timer: null
-};
+// godzillaState[symbol] = {
+//   events: [{ group, time }],
+//   hasE: false,
+//   hasJ: false,
+//   triggered: false,
+//   timer: null
+// }
 
 function processGodzilla(symbol, group, ts) {
 
-    if (!GODZILLA_GROUPS.has(group)) return;
+    if (!symbol || !group) return;
 
-    // Start frozen snapshot on FIRST hit
-    if (!godzillaState.active) {
-        godzillaState.active = true;
-        godzillaState.symbols.clear();
-
-        godzillaState.timer = setTimeout(() => {
-
-            const entries = [...godzillaState.symbols.entries()];
-            const total = entries.length;
-
-            // EXACT same threshold logic as Bazooka
-            if (total >= GODZILLA_MIN_COUNT) {
-
-                const chunks = [];
-                for (let i = 0; i < entries.length; i += GODZILLA_CHUNK_SIZE) {
-                    chunks.push(entries.slice(i, i + GODZILLA_CHUNK_SIZE));
-                }
-
-                chunks.forEach((chunk, idx) => {
-
-                    const lines = chunk
-                        .sort((a, b) => a[1].time - b[1].time)
-                        .map(([sym, info]) =>
-                            `• ${sym} (${info.group}) @ ${new Date(info.time).toLocaleTimeString()}`
-                        )
-                        .join("\n");
-
-                    const suffix =
-                        chunks.length > 1
-                            ? ` (Part ${idx + 1}/${chunks.length})`
-                            : "";
-
-                    sendToTelegram6(
-                        `💥 GODZILLA${suffix}\n` +
-                        `Total Symbols: ${total}\n` +
-                        `Window: 50s\n` +
-                        `Symbols:\n${lines}`
-                    );
-                });
-
-            }
-
-            // Reset snapshot (identical to Bazooka)
-            godzillaState.active = false;
-            godzillaState.symbols.clear();
-            clearTimeout(godzillaState.timer);
-            godzillaState.timer = null;
-
-        }, GODZILLA_WINDOW_MS);
+    if (!godzillaState[symbol]) {
+        godzillaState[symbol] = {
+            events: [],
+            hasE: false,
+            hasJ: false,
+            triggered: false,
+            timer: null
+        };
     }
 
-    // Collect symbol ONCE during window (no overwrite)
-    if (!godzillaState.symbols.has(symbol)) {
-        godzillaState.symbols.set(symbol, { time: ts, group });
+    const state = godzillaState[symbol];
+
+    // Always collect everything
+    state.events.push({
+        group,
+        time: ts
+    });
+
+    if (group === "#E") state.hasE = true;
+    if (group === "#J") state.hasJ = true;
+
+    // Trigger condition met
+    if (state.hasE && state.hasJ && !state.triggered) {
+
+        state.triggered = true;
+
+        // 🔥 Start delay timer (batching phase)
+        state.timer = setTimeout(() => {
+
+            const lines = state.events
+                .sort((a,b)=>a.time-b.time)
+                .map(e =>
+                    `• ${e.group} @ ${new Date(e.time).toLocaleTimeString()}`
+                )
+                .join("\n");
+
+            sendToTelegram3(
+                `🦖 GODZILLA\n` +
+                `Symbol: ${symbol}\n` +
+                `Trigger: #E + #J\n` +
+                `Count: ${state.events.length}\n` +
+                `Events:\n${lines}`
+            );
+
+            // Reset AFTER sending
+            delete godzillaState[symbol];
+
+        }, GODZILLA_DELAY_MS);
+    }
+
+    // Optional cleanup
+    if (Object.keys(godzillaState).length > 5000) {
+        const cutoff = ts - (2 * 60 * 60 * 1000);
+        for (const sym of Object.keys(godzillaState)) {
+            const s = godzillaState[sym];
+            if (!s.events.length || s.events[s.events.length - 1].time < cutoff) {
+                delete godzillaState[sym];
+            }
+        }
     }
 }
-
 
 // ==========================================================
 //  BAZOOKA (GLOBAL ABCDWX burst detector — standalone)
@@ -1021,7 +1021,7 @@ function processNeptune(symbol, group, ts) {
             )
             .join("\n");
 
-        sendToTelegram3(
+        sendToTelegram5(
             `🌊 NEPTUNE\n` +
             `Symbol: ${symbol}\n` +
             `Group: ${group}\n` +
