@@ -132,6 +132,21 @@ RULES = RULES.map((r, idx) => ({
 const nowMs  = () => Date.now();
 const nowSec = () => Math.floor(Date.now() / 1000);
 
+// ==========================================================
+//  TIME FORMATTER (UK timezone)
+// ==========================================================
+function formatTime(ts) {
+    return new Date(ts).toLocaleTimeString("en-GB", {
+        timeZone: "Europe/London"
+    });
+}
+
+function formatDateTime(ts) {
+    return new Date(ts).toLocaleString("en-GB", {
+        timeZone: "Europe/London"
+    });
+}
+
 // -----------------------------
 // SYMBOL NORMALIZATION
 // Removes exchange + .P suffix
@@ -420,7 +435,7 @@ function processGodzilla(symbol, group, ts) {
             const lines = state.events
                 .sort((a,b)=>a.time-b.time)
                 .map(e =>
-                    `• ${e.group} @ ${new Date(e.time).toLocaleTimeString()}`
+                    `• ${e.group} @ ${formatTime(e.time)}`
                 )
                 .join("\n");
 
@@ -500,7 +515,7 @@ function processBazooka(symbol, group, ts) {
                     const lines = chunk
                         .sort((a, b) => a[1].time - b[1].time)
                         .map(([sym, info]) =>
-                            `• ${sym} (${info.group}) @ ${new Date(info.time).toLocaleTimeString()}`
+                            `• ${sym} (${info.group}) @ ${formatTime(info.time)}`
                         )
                         .join("\n");
 
@@ -880,7 +895,7 @@ function processSalsa(symbol, group, ts) {
                 const lines = events
                     .sort((a,b)=>a.time-b.time)
                     .map(e =>
-                        `• ${e.group} @ ${new Date(e.time).toLocaleTimeString()}`
+                        `• ${e.group} @ ${formatTime(e.time)}`
                     )
                     .join("\n");
 
@@ -960,8 +975,8 @@ function processTango(symbol, group, ts) {
         `🟠 TANGO\n` +
         `Symbol: ${symbol}\n` +
         `Group: ${group}\n` +
-        `First hit: ${new Date(first).toLocaleString()}\n` +
-        `Second hit: ${new Date(second).toLocaleString()}\n` +
+        `First hit: ${formatDateTime(first)}\n` +
+        `Second hit: ${formatDateTime(second)}\n` +
         `Gap: ${diffMin}m ${diffSec}s\n` +
         `Bias: ${biasFromGroup(group)}`;
 
@@ -1017,7 +1032,7 @@ function processNeptune(symbol, group, ts) {
 
         const lines = buf
             .map((t, i) =>
-                `${i + 1}) ${new Date(t).toLocaleString()}`
+                `${i + 1}) ${formatDateTime(t)}`
             )
             .join("\n");
 
@@ -1090,7 +1105,7 @@ function processZulu(symbol, group, ts) {
                 const lines = events
                     .sort((a,b)=>a.time-b.time)
                     .map(e =>
-                        `• ${e.group} @ ${new Date(e.time).toLocaleTimeString()}`
+                        `• ${e.group} @ ${formatTime(e.time)}`
                     )
                     .join("\n");
 
@@ -1177,7 +1192,7 @@ function processAnyTwo(symbol, group, ts) {
                 const lines = events
                     .sort((a,b)=>a.time-b.time)
                     .map(e =>
-                        `• ${e.group} @ ${new Date(e.time).toLocaleTimeString()}`
+                        `• ${e.group} @ ${formatTime(e.time)}`
                     )
                     .join("\n");
 
@@ -1307,7 +1322,7 @@ function processMamba(symbol, group, ts) {
                 const lines = events
                     .sort((a,b)=>a.time-b.time)
                     .map(e =>
-                        `• ${e.group} @ ${new Date(e.time).toLocaleTimeString()}`
+                        `• ${e.group} @ ${formatTime(e.time)}`
                     )
                     .join("\n");
 
@@ -1477,7 +1492,7 @@ function processBoom(symbol, group, ts) {
             `💥 BOOM\n` +
             `Symbol: ${symbol}\n` +
             `1) ${existing.group} @ ${new Date(existing.time).toLocaleTimeString()}\n` +
-            `2) ${group} @ ${new Date(ts).toLocaleTimeString()}\n` +
+            `2) ${group} @ ${formatTime(ts)}\n` +
             `Gap: ${diffMin}m ${diffSec}s`
         );
     }
@@ -1570,7 +1585,7 @@ function processAudit(symbol, group, ts, body) {
         `Symbol: ${symbol}\n` +
         `Group: ${group}\n` +
         `Price: ${price}\n` +
-        `Time: ${new Date(ts).toLocaleString()}`
+        `Time: ${formatDateTime(ts)}`
     );
 }
 
@@ -1663,7 +1678,7 @@ function processJupiter(symbol, group, ts) {
     `Symbol: ${symbol}\n` +
     `Group: ${group}\n` +
     `First Hit: ${new Date(last).toLocaleString()}\n` +
-    `Second Hit: ${new Date(ts).toLocaleString()}\n` +
+    `Second Hit: ${formatDateTime(ts)}\n` +
     `Gap: ${diffMin}m ${diffSec}s`
 );
 
@@ -1798,7 +1813,7 @@ function processYaba(symbol, group, ts) {
 
         const lines = buf
             .map((t, i) =>
-                `${i + 1}) ${new Date(t).toLocaleString()}`
+                `${i + 1}) ${formatDateTime(t)}`
             )
             .join("\n");
 
@@ -1876,7 +1891,7 @@ function processBundle(symbol, group, ts) {
                 const lines = valid
                     .sort((a, b) => a.time - b.time)
                     .map(e =>
-                        `• ${e.symbol} (${e.group}) @ ${new Date(e.time).toLocaleTimeString()}`
+                        `• ${e.symbol} (${e.group}) @ ${formatTime(e.time)}`
                     )
                     .join("\n");
 
@@ -1937,7 +1952,7 @@ function processMinta(symbol, group, ts) {
                 const lines = events
                     .sort((a,b)=>a.time-b.time)
                     .map(e =>
-                        `• ${e.group} @ ${new Date(e.time).toLocaleTimeString()}`
+                        `• ${e.group} @ ${formatTime(e.time)}`
                     )
                     .join("\n");
 
@@ -1991,7 +2006,7 @@ function processCobra(symbol, group, ts) {
             `🐍 COBRA\n` +
             `Symbol: ${symbol}\n` +
             `1) ${last.group} @ ${new Date(last.time).toLocaleString()}\n` +
-            `2) ${group} @ ${new Date(ts).toLocaleString()}\n` +
+            `2) ${group} @ ${formatDateTime(ts)}\n` +
             `Gap: ${diffMin}m ${diffSec}s`
         );
 
