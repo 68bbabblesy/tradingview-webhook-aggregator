@@ -1489,12 +1489,12 @@ function processBoom(symbol, group, ts) {
         const diffSec = Math.floor((diffMs % 60000) / 1000);
 
         sendToTelegram7(
-            `💥 BOOM\n` +
-            `Symbol: ${symbol}\n` +
-            `1) ${existing.group} @ ${new Date(existing.time).toLocaleTimeString()}\n` +
-            `2) ${group} @ ${formatTime(ts)}\n` +
-            `Gap: ${diffMin}m ${diffSec}s`
-        );
+    `💥 BOOM\n` +
+    `Symbol: ${symbol}\n` +
+    `1) ${existing.group} @ ${formatTime(existing.time)}\n` +
+    `2) ${group} @ ${formatTime(ts)}\n` +
+    `Gap: ${diffMin}m ${diffSec}s`
+     );
     }
 
     // avoid duplicate same-group stacking
@@ -1552,16 +1552,16 @@ function processKooky(symbol, group, ts) {
         const diffSec = Math.floor(diffMs / 1000);
 
         sendToTelegram7(
-            `🟣 KOOKY\n` +
-            `Group: ${group}\n` +
-            `BTCUSDT: ${new Date(
-                symbol === "BTCUSDT" ? ts : otherTs
-            ).toLocaleTimeString()}\n` +
-            `TOTAL: ${new Date(
-                symbol === "TOTAL" ? ts : otherTs
-            ).toLocaleTimeString()}\n` +
-            `Gap: ${diffSec}s`
-        );
+    `🟣 KOOKY\n` +
+    `Group: ${group}\n` +
+    `BTCUSDT: ${formatTime(
+        symbol === "BTCUSDT" ? ts : otherTs
+    )}\n` +
+    `TOTAL: ${formatTime(
+        symbol === "TOTAL" ? ts : otherTs
+    )}\n` +
+    `Gap: ${diffSec}s`
+    );
     }
 
     kookyLast[symbol][group] = ts;
