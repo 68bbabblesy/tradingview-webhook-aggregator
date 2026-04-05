@@ -857,6 +857,23 @@ function processMAMAMIA(symbol, group, ts) {
     state.symbols.set(symbol, ts);
 }
 
+// ==========================================================
+//  CHECK (RAW ALL ALERTS — DEBUG)
+//  Sends EVERYTHING to Bot 1
+// ==========================================================
+
+function processCheck(symbol, group, ts, body) {
+
+    const msg =
+        `🧪 CHECK\n` +
+        `Symbol: ${symbol}\n` +
+        `Group: ${group}\n` +
+        `Price: ${body.price || "n/a"}\n` +
+        `Time: ${formatDateTime(ts)}\n` +
+        `Raw:\n${JSON.stringify(body)}`;
+
+    sendToTelegram1(msg);
+}
 
 // ==========================================================
 //  SALSA (Batch detector — mandatory "19" group)
@@ -2061,6 +2078,7 @@ app.post("/incoming", (req, res) => {
         const symbol = normalizeSymbol(body.symbol);
 
         const ts = nowMs();
+		
 
         const hash = alertHash(symbol, group, ts);
         if (recentHashes.has(hash)) return res.sendStatus(200);
@@ -2075,7 +2093,7 @@ app.post("/incoming", (req, res) => {
 
         
 
-       
+        processCheck(symbol, group, ts, body);
         processAnyTwo(symbol, group, ts);	
 		processBundle(symbol, group, ts);      
 		processBazooka(symbol, group, ts, body);
