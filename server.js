@@ -25,7 +25,7 @@ app.use(express.json());
 // -----------------------------
 // PERSISTENCE (State File)
 // -----------------------------
-const STATE_FILE = "./state.json";
+const STATE_FILE = "/data/state.json";
 
 function loadState() {
     try {
@@ -44,9 +44,6 @@ function loadState() {
 }
 
 function saveState() {
-    // 🔒 STAGING MUST NEVER PERSIST STATE
-    if (!IS_MAIN) return;
-
     try {
         fs.writeFileSync(
             STATE_FILE,
