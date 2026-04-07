@@ -34,9 +34,10 @@ function loadState() {
             const parsed = JSON.parse(raw);
 
             return {
-                lastAlert: parsed.lastAlert || {},
-                cooldownUntil: parsed.cooldownUntil || {}
-            };
+    lastAlert: parsed.lastAlert || {},
+    cooldownUntil: parsed.cooldownUntil || {},
+    firstState: parsed.firstState || {}
+};
         }
     } catch {}
 
@@ -50,7 +51,8 @@ function saveState() {
             JSON.stringify(
                 {
                     lastAlert,
-                    cooldownUntil
+                    cooldownUntil,
+					firstState
                 },
                 null,
                 2
@@ -321,6 +323,13 @@ function maxWindowMs() {
 // ==========================================================
 //  BOT2 ENGINE STORAGE (tracking + matching)
 // ==========================================================
+
+// ==========================================================
+// FIRST ENGINE (PER SYMBOL 4H COOLDOWN)
+// ==========================================================
+
+let firstState = persisted.firstState || {};
+// firstState[symbol] = lastTriggerTimestamp
 
 // RESTORED FROM DISK (persistence)
 const lastAlert = persisted.lastAlert || {};
@@ -2044,6 +2053,52 @@ function processCobra(symbol, group, ts) {
 }
 
 // ==========================================================
+// FIRST (PER SYMBOL — 4H COOLDOWN)
+// Bot 2
+// ==========================================================
+
+const FIRST_WINDOW_MS = 4 * 60 * 60 * 1000;
+
+function processFirst(symbol, ts) {
+
+    if (!symbol) return;
+
+    const last = firstState[symbol];
+
+    // 1️⃣ First ever → trigger
+    if (!last) {
+
+        sendToTelegram2(
+            `🥇 FIRST\n` +
+            `Symbol: ${symbol}\n` +
+            `Time: ${formatDateTime(ts)}`
+        );
+
+        firstState[symbol] = ts;
+        saveState();
+        return;
+    }
+
+    const elapsed = ts - last;
+
+    // 2️⃣ After 4h → trigger again
+    if (elapsed >= FIRST_WINDOW_MS) {
+
+        sendToTelegram2(
+            `🥇 FIRST\n` +
+            `Symbol: ${symbol}\n` +
+            `Last: ${formatDateTime(last)}\n` +
+            `Now: ${formatDateTime(ts)}`
+        );
+
+        firstState[symbol] = ts;
+        saveState();
+    }
+
+    // else → ignore
+}
+
+// ==========================================================
 //  WEBHOOK HANDLER
 // ==========================================================
 
@@ -2091,6 +2146,7 @@ app.post("/incoming", (req, res) => {
         
 
         processCheck(symbol, group, ts, body);
+		processFirst(symbol, ts);
         processAnyTwo(symbol, group, ts);	
 		processBundle(symbol, group, ts);      
 		processBazooka(symbol, group, ts, body);
