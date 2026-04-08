@@ -2059,7 +2059,7 @@ function processCobra(symbol, group, ts) {
 
 const FIRST_WINDOW_MS = 4 * 60 * 60 * 1000;
 
-function processFirst(symbol, ts) {
+function processFirst(symbol, group, ts) {
 
     if (!symbol) return;
 
@@ -2071,6 +2071,7 @@ function processFirst(symbol, ts) {
         sendToTelegram2(
             `🥇 FIRST\n` +
             `Symbol: ${symbol}\n` +
+            `Group: ${group}\n` +
             `Time: ${formatDateTime(ts)}`
         );
 
@@ -2087,6 +2088,7 @@ function processFirst(symbol, ts) {
         sendToTelegram2(
             `🥇 FIRST\n` +
             `Symbol: ${symbol}\n` +
+            `Group: ${group}\n` +
             `Last: ${formatDateTime(last)}\n` +
             `Now: ${formatDateTime(ts)}`
         );
@@ -2146,7 +2148,7 @@ app.post("/incoming", (req, res) => {
         
 
         processCheck(symbol, group, ts, body);
-		processFirst(symbol, ts);
+		processFirst(symbol, group, ts);
         processAnyTwo(symbol, group, ts);	
 		processBundle(symbol, group, ts);      
 		processBazooka(symbol, group, ts, body);
