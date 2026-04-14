@@ -882,14 +882,14 @@ function processCheck(symbol, group, ts, body) {
 }
 
 // ==========================================================
-//  SALSA (Batch detector — mandatory "19" group)
-//  Condition: Same symbol must include at least one group starting with "19"
-//  Window: 5 minutes
-//  Batch delay: 5 minutes
+//  SALSA (Batch detector — mandatory "19" or "29" group)
+//  Condition: Same symbol must include at least one group starting with "19" OR "29"
+//  Window: 10 minutes
+//  Batch delay: 10 minutes
 //  Bot 6
 // ==========================================================
 
-const SALSA_WINDOW_MS = 5 * 60 * 1000;
+const SALSA_WINDOW_MS = 10 * 60 * 1000;
 
 const salsaState = {};
 
@@ -911,9 +911,11 @@ function processSalsa(symbol, group, ts) {
             const state = salsaState[symbol];
             const events = state.events;
 
-            const hasMandatory19 = events.some(e => e.group.startsWith("19"));
+            const hasMandatory = events.some(e =>
+                e.group.startsWith("19") || e.group.startsWith("29")
+            );
 
-            if (events.length >= 2 && hasMandatory19) {
+            if (events.length >= 2 && hasMandatory) {
 
                 const lines = events
                     .sort((a,b)=>a.time-b.time)
@@ -926,7 +928,7 @@ function processSalsa(symbol, group, ts) {
                     `💃 SALSA\n` +
                     `Symbol: ${symbol}\n` +
                     `Count: ${events.length}\n` +
-                    `Window: 5m\n` +
+                    `Window: 10m\n` +
                     `Alerts:\n${lines}`
                 );
             }
@@ -941,6 +943,7 @@ function processSalsa(symbol, group, ts) {
         time: ts
     });
 }
+
 
 // ==========================================================
 //  TANGO (Buffered repeat detector with per-group windows)
