@@ -33,11 +33,11 @@ function loadState() {
             const raw = fs.readFileSync(STATE_FILE, "utf8");
             const parsed = JSON.parse(raw);
 
-            return {
+           return {
     lastAlert: parsed.lastAlert || {},
     cooldownUntil: parsed.cooldownUntil || {},
-    firstState: parsed.firstState || {}
-	tangoState: parsed.tangoState || {}
+    firstState: parsed.firstState || {},
+    tangoState: parsed.tangoState || {}
 };
         }
     } catch {}
