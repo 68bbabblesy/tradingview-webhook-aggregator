@@ -37,6 +37,7 @@ function loadState() {
     lastAlert: parsed.lastAlert || {},
     cooldownUntil: parsed.cooldownUntil || {},
     firstState: parsed.firstState || {}
+	tangoState: parsed.tangoState || {}
 };
         }
     } catch {}
@@ -52,7 +53,8 @@ function saveState() {
                 {
                     lastAlert,
                     cooldownUntil,
-					firstState
+					firstState,
+					tangoState
                 },
                 null,
                 2
@@ -333,24 +335,6 @@ let firstState = persisted.firstState || {};
 
 // RESTORED FROM DISK (persistence)
 const lastAlert = persisted.lastAlert || {};
-
-
-
-
-
-
-
-
-
-
-
-// TANGO memory (A/B buffered within 8 minutes)
-const tangoBuf = {};
-// tangoBuf[symbol][group] = [ts1, ts2, ...]
-
-
-
-
 
 
 
@@ -944,72 +928,81 @@ function processSalsa(symbol, group, ts) {
     });
 }
 
-
 // ==========================================================
-//  TANGO (Buffered repeat detector with per-group windows)
-//  ACWSU + BDXTV
-//  All groups → 3.5 minutes
+//  TANGO (PERSISTENT — 4H reset + 2-hit confirmation within 15m)
 // ==========================================================
 
-const TANGO_WINDOWS_MS = {
-    A: 3.5 * 60 * 1000,
-    C: 3.5 * 60 * 1000,
-    W: 3.5 * 60 * 1000,
-    S: 3.5 * 60 * 1000,
-    U: 3.5 * 60 * 1000,
-    B: 3.5 * 60 * 1000,
-    D: 3.5 * 60 * 1000,
-    X: 3.5 * 60 * 1000,
-    T: 3.5 * 60 * 1000,
-    V: 3.5 * 60 * 1000
-};
+const TANGO_COOLDOWN_MS = 4 * 60 * 60 * 1000;
+const TANGO_WINDOW_MS   = 15 * 60 * 1000;
+
+// PERSISTED STATE
+let tangoState = persisted.tangoState || {};
+
+// tangoState[symbol] = {
+//   lastTrigger: ts,
+//   firstHit: ts
+// }
 
 function processTango(symbol, group, ts) {
-    if (!TANGO_WINDOWS_MS[group]) return;
 
-    if (!tangoBuf[symbol]) {
-        tangoBuf[symbol] = {};
-    }
-    if (!tangoBuf[symbol][group]) {
-        tangoBuf[symbol][group] = [];
-    }
+    if (!symbol) return;
 
-    const buf = tangoBuf[symbol][group];
-
-    // Ignore exact duplicates / out-of-order
-    if (buf.length && ts <= buf[buf.length - 1]) return;
-
-    // Add hit
-    buf.push(ts);
-
-    // Prune old hits based on uniform window
-    const cutoff = ts - TANGO_WINDOWS_MS[group];
-    while (buf.length && buf[0] < cutoff) {
-        buf.shift();
+    if (!tangoState[symbol]) {
+        tangoState[symbol] = {
+            lastTrigger: 0,
+            firstHit: null
+        };
     }
 
-    // Need at least 2 hits to fire
-    if (buf.length < 2) return;
+    const state = tangoState[symbol];
 
-    const first = buf[0];
-    const second = buf[1];
-    const diffMs = second - first;
-    const diffMin = Math.floor(diffMs / 60000);
-    const diffSec = Math.floor((diffMs % 60000) / 1000);
+    // ------------------------------------------------------
+    // 1️⃣ Check 4H cooldown
+    // ------------------------------------------------------
+    if (state.lastTrigger && (ts - state.lastTrigger < TANGO_COOLDOWN_MS)) {
+        return;
+    }
 
-    const msg =
-        `🟠 TANGO\n` +
-        `Symbol: ${symbol}\n` +
-        `Group: ${group}\n` +
-        `First hit: ${formatDateTime(first)}\n` +
-        `Second hit: ${formatDateTime(second)}\n` +
-        `Gap: ${diffMin}m ${diffSec}s\n` +
-        `Bias: ${biasFromGroup(group)}`;
+    // ------------------------------------------------------
+    // 2️⃣ First hit (start tracking)
+    // ------------------------------------------------------
+    if (!state.firstHit) {
+        state.firstHit = ts;
+        saveState();
+        return;
+    }
 
-    sendToTelegram4(msg);
+    // ------------------------------------------------------
+    // 3️⃣ Second hit within 15m → TRIGGER
+    // ------------------------------------------------------
+    if (ts - state.firstHit <= TANGO_WINDOW_MS) {
 
-    // Slide window (allow overlapping sequences)
-    buf.shift();
+        const diffMs = ts - state.firstHit;
+        const diffMin = Math.floor(diffMs / 60000);
+        const diffSec = Math.floor((diffMs % 60000) / 1000);
+
+        sendToTelegram4(
+            `🟠 TANGO\n` +
+            `Symbol: ${symbol}\n` +
+            `Group: ${group}\n` +
+            `First hit: ${formatDateTime(state.firstHit)}\n` +
+            `Second hit: ${formatDateTime(ts)}\n` +
+            `Gap: ${diffMin}m ${diffSec}s`
+        );
+
+        // Reset + apply cooldown
+        state.lastTrigger = ts;
+        state.firstHit = null;
+
+        saveState();
+        return;
+    }
+
+    // ------------------------------------------------------
+    // 4️⃣ Second hit too late → reset cycle
+    // ------------------------------------------------------
+    state.firstHit = ts;
+    saveState();
 }
 
 // ==========================================================
