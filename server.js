@@ -929,13 +929,12 @@ function processSalsa(symbol, group, ts) {
 }
 
 // ==========================================================
-//  TANGO (CORRECT LOGIC — 4H gap + 2-hit confirmation)
+//  TANGO (SIMPLE — FIRST + 2nd hit confirmation)
 // ==========================================================
 
 const TANGO_GAP_MS    = 4 * 60 * 60 * 1000;
 const TANGO_WINDOW_MS = 15 * 60 * 1000;
 
-// PERSISTED STATE
 let tangoState = persisted.tangoState || {};
 
 // tangoState[symbol] = {
@@ -959,13 +958,12 @@ function processTango(symbol, group, ts) {
     const state = tangoState[symbol];
 
     // ------------------------------------------------------
-    // 1️⃣ PRIORITY: check for confirmation first
+    // 1️⃣ If we have a FIRST → check for confirmation
     // ------------------------------------------------------
     if (state.firstHit) {
 
         const diff = ts - state.firstHit;
 
-        // ✅ within 15m → CONFIRM
         if (diff <= TANGO_WINDOW_MS) {
 
             const diffMin = Math.floor(diff / 60000);
@@ -986,7 +984,7 @@ function processTango(symbol, group, ts) {
                 `Gap: ${diffMin}m ${diffSec}s`
             );
 
-            // Reset after success
+            // reset
             state.firstHit = null;
             state.firstGroup = null;
             state.lastSeen = ts;
@@ -995,7 +993,7 @@ function processTango(symbol, group, ts) {
             return;
         }
 
-        // ❌ too late → reset firstHit (new cycle may start below)
+        // too late → reset
         if (diff > TANGO_WINDOW_MS) {
             state.firstHit = null;
             state.firstGroup = null;
@@ -1003,16 +1001,12 @@ function processTango(symbol, group, ts) {
     }
 
     // ------------------------------------------------------
-    // 2️⃣ START NEW CYCLE if 4H gap
+    // 2️⃣ Detect FIRST (same as your FIRST logic)
     // ------------------------------------------------------
-    if (!state.firstHit && state.lastSeen && (ts - state.lastSeen >= TANGO_GAP_MS)) {
+    if (!state.lastSeen || (ts - state.lastSeen >= TANGO_GAP_MS)) {
 
         state.firstHit = ts;
         state.firstGroup = group;
-        state.lastSeen = ts;
-
-        saveState();
-        return;
     }
 
     // ------------------------------------------------------
@@ -1021,7 +1015,6 @@ function processTango(symbol, group, ts) {
     state.lastSeen = ts;
     saveState();
 }
-
 
 // ==========================================================
 //  NEPTUNE (Same-group repeat detector — ANY group)
