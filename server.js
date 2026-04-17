@@ -929,18 +929,19 @@ function processSalsa(symbol, group, ts) {
 }
 
 // ==========================================================
-//  TANGO (PERSISTENT — 4H reset + 2-hit confirmation within 15m)
+//  TANGO (CORRECT LOGIC — 4H gap + 2-hit confirmation)
 // ==========================================================
 
-const TANGO_COOLDOWN_MS = 4 * 60 * 60 * 1000;
-const TANGO_WINDOW_MS   = 15 * 60 * 1000;
+const TANGO_GAP_MS    = 4 * 60 * 60 * 1000;
+const TANGO_WINDOW_MS = 15 * 60 * 1000;
 
 // PERSISTED STATE
 let tangoState = persisted.tangoState || {};
 
 // tangoState[symbol] = {
-//   lastTrigger: ts,
-//   firstHit: ts
+//   lastSeen: ts,
+//   firstHit: ts,
+//   firstGroup: string
 // }
 
 function processTango(symbol, group, ts) {
@@ -949,61 +950,78 @@ function processTango(symbol, group, ts) {
 
     if (!tangoState[symbol]) {
         tangoState[symbol] = {
-            lastTrigger: 0,
-            firstHit: null
+            lastSeen: 0,
+            firstHit: null,
+            firstGroup: null
         };
     }
 
     const state = tangoState[symbol];
 
     // ------------------------------------------------------
-    // 1️⃣ Check 4H cooldown
+    // 1️⃣ PRIORITY: check for confirmation first
     // ------------------------------------------------------
-    if (state.lastTrigger && (ts - state.lastTrigger < TANGO_COOLDOWN_MS)) {
-        return;
+    if (state.firstHit) {
+
+        const diff = ts - state.firstHit;
+
+        // ✅ within 15m → CONFIRM
+        if (diff <= TANGO_WINDOW_MS) {
+
+            const diffMin = Math.floor(diff / 60000);
+            const diffSec = Math.floor((diff % 60000) / 1000);
+
+            sendToTelegram4(
+                `🟠 TANGO\n` +
+                `Symbol: ${symbol}\n\n` +
+
+                `First Alert:\n` +
+                `Group: ${state.firstGroup}\n` +
+                `Time: ${formatDateTime(state.firstHit)}\n\n` +
+
+                `Second Alert:\n` +
+                `Group: ${group}\n` +
+                `Time: ${formatDateTime(ts)}\n\n` +
+
+                `Gap: ${diffMin}m ${diffSec}s`
+            );
+
+            // Reset after success
+            state.firstHit = null;
+            state.firstGroup = null;
+            state.lastSeen = ts;
+
+            saveState();
+            return;
+        }
+
+        // ❌ too late → reset firstHit (new cycle may start below)
+        if (diff > TANGO_WINDOW_MS) {
+            state.firstHit = null;
+            state.firstGroup = null;
+        }
     }
 
     // ------------------------------------------------------
-    // 2️⃣ First hit (start tracking)
+    // 2️⃣ START NEW CYCLE if 4H gap
     // ------------------------------------------------------
-    if (!state.firstHit) {
+    if (!state.firstHit && state.lastSeen && (ts - state.lastSeen >= TANGO_GAP_MS)) {
+
         state.firstHit = ts;
-        saveState();
-        return;
-    }
-
-    // ------------------------------------------------------
-    // 3️⃣ Second hit within 15m → TRIGGER
-    // ------------------------------------------------------
-    if (ts - state.firstHit <= TANGO_WINDOW_MS) {
-
-        const diffMs = ts - state.firstHit;
-        const diffMin = Math.floor(diffMs / 60000);
-        const diffSec = Math.floor((diffMs % 60000) / 1000);
-
-        sendToTelegram4(
-            `🟠 TANGO\n` +
-            `Symbol: ${symbol}\n` +
-            `Group: ${group}\n` +
-            `First hit: ${formatDateTime(state.firstHit)}\n` +
-            `Second hit: ${formatDateTime(ts)}\n` +
-            `Gap: ${diffMin}m ${diffSec}s`
-        );
-
-        // Reset + apply cooldown
-        state.lastTrigger = ts;
-        state.firstHit = null;
+        state.firstGroup = group;
+        state.lastSeen = ts;
 
         saveState();
         return;
     }
 
     // ------------------------------------------------------
-    // 4️⃣ Second hit too late → reset cycle
+    // 3️⃣ Always update lastSeen
     // ------------------------------------------------------
-    state.firstHit = ts;
+    state.lastSeen = ts;
     saveState();
 }
+
 
 // ==========================================================
 //  NEPTUNE (Same-group repeat detector — ANY group)
