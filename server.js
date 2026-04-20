@@ -929,92 +929,63 @@ function processSalsa(symbol, group, ts) {
 }
 
 // ==========================================================
-//  TANGO (SIMPLE — FIRST + 2nd hit confirmation)
+//  TANGO (FIRST per SYMBOL + GROUP FAMILY)
+//  Family = prefix (26A → 26, 43X → 43, C → C)
+//  Window: 4 hours
+//  Bot 4
 // ==========================================================
 
-const TANGO_GAP_MS    = 4 * 60 * 60 * 1000;
-const TANGO_WINDOW_MS = 15 * 60 * 1000;
+const TANGO_WINDOW_MS = 4 * 60 * 60 * 1000;
 
+// PERSISTED STATE
 let tangoState = persisted.tangoState || {};
 
-// tangoState[symbol] = {
-//   lastSeen: ts,
-//   firstHit: ts,
-//   firstGroup: string
-// }
+// tangoState[symbol][family] = lastTimestamp
+
+function getFamily(group) {
+    if (!group) return "";
+
+    // Extract numeric prefix (26A → 26)
+    const match = group.match(/^(\d+)/);
+    if (match) return match[1];
+
+    // Single letter groups
+    return group;
+}
 
 function processTango(symbol, group, ts) {
 
-    if (!symbol) return;
+    if (!symbol || !group) return;
+
+    const family = getFamily(group);
 
     if (!tangoState[symbol]) {
-        tangoState[symbol] = {
-            lastSeen: 0,
-            firstHit: null,
-            firstGroup: null
-        };
+        tangoState[symbol] = {};
     }
 
-    const state = tangoState[symbol];
+    const last = tangoState[symbol][family];
 
     // ------------------------------------------------------
-    // 1️⃣ If we have a FIRST → check for confirmation
+    // 1️⃣ FIRST after 4h → FIRE
     // ------------------------------------------------------
-    if (state.firstHit) {
+    if (!last || (ts - last >= TANGO_WINDOW_MS)) {
 
-        const diff = ts - state.firstHit;
+        sendToTelegram4(
+            `🟠 TANGO\n` +
+            `Symbol: ${symbol}\n` +
+            `Group: ${group}\n` +
+            `Family: ${family}\n` +
+            `Time: ${formatDateTime(ts)}`
+        );
 
-        if (diff <= TANGO_WINDOW_MS) {
-
-            const diffMin = Math.floor(diff / 60000);
-            const diffSec = Math.floor((diff % 60000) / 1000);
-
-            sendToTelegram4(
-                `🟠 TANGO\n` +
-                `Symbol: ${symbol}\n\n` +
-
-                `First Alert:\n` +
-                `Group: ${state.firstGroup}\n` +
-                `Time: ${formatDateTime(state.firstHit)}\n\n` +
-
-                `Second Alert:\n` +
-                `Group: ${group}\n` +
-                `Time: ${formatDateTime(ts)}\n\n` +
-
-                `Gap: ${diffMin}m ${diffSec}s`
-            );
-
-            // reset
-            state.firstHit = null;
-            state.firstGroup = null;
-            state.lastSeen = ts;
-
-            saveState();
-            return;
-        }
-
-        // too late → reset
-        if (diff > TANGO_WINDOW_MS) {
-            state.firstHit = null;
-            state.firstGroup = null;
-        }
+        tangoState[symbol][family] = ts;
+        saveState();
+        return;
     }
 
-    // ------------------------------------------------------
-    // 2️⃣ Detect FIRST (same as your FIRST logic)
-    // ------------------------------------------------------
-    if (!state.lastSeen || (ts - state.lastSeen >= TANGO_GAP_MS)) {
-
-        state.firstHit = ts;
-        state.firstGroup = group;
-    }
-
-    // ------------------------------------------------------
-    // 3️⃣ Always update lastSeen
-    // ------------------------------------------------------
-    state.lastSeen = ts;
-    saveState();
+    // else → ignore
 }
+
 
 // ==========================================================
 //  NEPTUNE (Same-group repeat detector — ANY group)
