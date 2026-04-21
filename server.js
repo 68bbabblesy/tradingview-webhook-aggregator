@@ -163,19 +163,13 @@ function normalizeSymbol(raw) {
     return s.trim().toUpperCase();
 }
 
-// 👇 NOW OUTSIDE (VERY IMPORTANT)
+// 👇 PARSER HELPER (NEW — KEEP THIS)
 
 function parseNumbers(group) {
     const match = group.match(/(\d+)[^\d]+(\d+)/);
     if (!match) return [];
     return [parseInt(match[1]), parseInt(match[2])];
 }
-
-function getFamily(group) {
-    const match = group.match(/^(\d+)/);
-    return match ? match[1] : group;
-}
-
 
 // -----------------------------
 // TELEGRAM SENDERS
