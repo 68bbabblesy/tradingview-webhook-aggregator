@@ -671,51 +671,72 @@ function processBlackPanther(symbol, group, ts) {
 }
 
 // ==========================================================
-//  GAMMA (ACWSU / BDXTV → 4+ distinct groups within 8 minutes)
+//  GAMMA (EXACT GROUP REPEAT — ANY GROUP)
+//  Condition: Same symbol + SAME group repeats within 10 minutes
+//  Bot 4
 // ==========================================================
 
-const GAMMA_WINDOW_MS = 8 * 60 * 1000; // 8 minutes
+const GAMMA_WINDOW_MS = 10 * 60 * 1000;
+
+// gammaMemory[symbol][group] = lastTimestamp
+const gammaMemory = {};
 
 function processGamma(symbol, group, ts) {
-    const GAMMA_GROUPS = ["A","C","W","S","U","B","D","X","T","V"];
 
-    if (!GAMMA_GROUPS.includes(group)) return;
+    if (!symbol || !group) return;
 
-    // Collect recent distinct groups within window
-    const recent = GAMMA_GROUPS
-        .map(g => safeGet(symbol, g))
-        .filter(Boolean)
-        .filter(x => Math.abs(ts - x.time) <= GAMMA_WINDOW_MS);
-
-    // Build distinct groups
-    const distinct = {};
-    for (const x of recent) {
-        distinct[x.payload.group] = x;
+    if (!gammaMemory[symbol]) {
+        gammaMemory[symbol] = {};
     }
 
-    const groups = Object.keys(distinct);
+    const last = gammaMemory[symbol][group];
 
-    // Need at least 4 distinct groups
-    if (groups.length < 4) return;
+    // ------------------------------------------------------
+    // 1️⃣ If repeat within 10 minutes → FIRE
+    // ------------------------------------------------------
+    if (last && (ts - last <= GAMMA_WINDOW_MS)) {
 
-    // Pick latest 4 (or more) by time
-    const picked = Object.values(distinct)
-        .sort((a, b) => a.time - b.time)
-        .slice(-groups.length);
+        const diffMs = ts - last;
+        const diffMin = Math.floor(diffMs / 60000);
+        const diffSec = Math.floor((diffMs % 60000) / 1000);
 
-    const times = picked.map(p => new Date(p.time).toLocaleString());
+        sendToTelegram4(
+            `🟣 GAMMA\n` +
+            `Symbol: ${symbol}\n` +
+            `Group: ${group}\n\n` +
 
-    const msg =
-        `🟣 GAMMA\n` +
-        `Symbol: ${symbol}\n` +
-        `Groups: ${picked.map(p => p.payload.group).join(" → ")}\n` +
-        `Count: ${groups.length}\n` +
-        `Window: 8m\n` +
-        `Times:\n` +
-        times.map((t, i) => `${i + 1}) ${t}`).join("\n");
+            `First hit: ${formatDateTime(last)}\n` +
+            `Second hit: ${formatDateTime(ts)}\n` +
+            `Gap: ${diffMin}m ${diffSec}s`
+        );
+    }
 
-    sendToTelegram4(msg);
+    // ------------------------------------------------------
+    // 2️⃣ Always update latest hit
+    // ------------------------------------------------------
+    gammaMemory[symbol][group] = ts;
+
+    // Optional memory cleanup (safe guard)
+    if (Object.keys(gammaMemory).length > 5000) {
+        const cutoff = ts - (2 * 60 * 60 * 1000);
+
+        for (const sym of Object.keys(gammaMemory)) {
+            const groups = gammaMemory[sym];
+
+            for (const g of Object.keys(groups)) {
+                if (groups[g] < cutoff) {
+                    delete groups[g];
+                }
+            }
+
+            if (!Object.keys(groups).length) {
+                delete gammaMemory[sym];
+            }
+        }
+    }
 }
+
+
 // ==========================================================
 //  BABABIA (Buffered Burst Engine)
 //  Logical Window: 50 seconds
