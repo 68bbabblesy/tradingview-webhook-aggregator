@@ -33,11 +33,12 @@ function loadState() {
             const raw = fs.readFileSync(STATE_FILE, "utf8");
             const parsed = JSON.parse(raw);
 
-           return {
+          return {
     lastAlert: parsed.lastAlert || {},
     cooldownUntil: parsed.cooldownUntil || {},
     firstState: parsed.firstState || {},
-    tangoState: parsed.tangoState || {}
+    tangoState: parsed.tangoState || {},
+    scoreState: parsed.scoreState || {}
 };
         }
     } catch {}
@@ -51,11 +52,12 @@ function saveState() {
             STATE_FILE,
             JSON.stringify(
                 {
-                    lastAlert,
-                    cooldownUntil,
-					firstState,
-					tangoState
-                },
+    lastAlert,
+    cooldownUntil,
+    firstState,
+    tangoState,
+    scoreState
+    },
                 null,
                 2
             ),
@@ -68,6 +70,7 @@ function saveState() {
 
 // Load previous state
 const persisted = loadState();
+let scoreState = persisted.scoreState || {};
 
 // -----------------------------
 // ENVIRONMENT VARIABLES
@@ -150,18 +153,27 @@ function formatDateTime(ts) {
 
 // -----------------------------
 // SYMBOL NORMALIZATION
-// Removes exchange + .P suffix
 // -----------------------------
 function normalizeSymbol(raw) {
     if (!raw) return "";
 
-    // Remove exchange prefix if present
     let s = raw.includes(":") ? raw.split(":")[1] : raw;
-
-    // Remove .P suffix if present
     s = s.replace(".P", "");
 
     return s.trim().toUpperCase();
+}
+
+// 👇 NOW OUTSIDE (VERY IMPORTANT)
+
+function parseNumbers(group) {
+    const match = group.match(/(\d+)[^\d]+(\d+)/);
+    if (!match) return [];
+    return [parseInt(match[1]), parseInt(match[2])];
+}
+
+function getFamily(group) {
+    const match = group.match(/^(\d+)/);
+    return match ? match[1] : group;
 }
 
 
@@ -544,83 +556,104 @@ function processBazooka(symbol, group, ts) {
 }
 
 // ==========================================================
-//  WAKANDA (Buffered Burst Engine)
-//  Logical Window: 50 seconds
-//  Delivery Buffer: 60 seconds
-//  Groups: A-Z
-//  Min Count: 20
+//  WAKANDA (SCORE ENGINE — REFACTORED)
 //  Bot 9
 // ==========================================================
 
-const WAKANDA_WINDOW_MS = 50 * 1000;
-const WAKANDA_BUFFER_MS = 60 * 1000;
-const WAKANDA_MIN_COUNT = 20;
-
-const WAKANDA_GROUPS = new Set(
-    Array.from({ length: 26 }, (_, i) =>
-        String.fromCharCode(65 + i)
-    )
-);
-
-const wakandaState = {};
-
 function processWakanda(symbol, group, ts) {
 
-    if (!WAKANDA_GROUPS.has(group)) return;
+    if (!symbol || !group) return;
 
-    if (!wakandaState[group]) {
-        wakandaState[group] = {
-            active: false,
-            symbols: new Map(),
-            startTime: null,
-            timer: null
+    if (!scoreState[symbol]) {
+        scoreState[symbol] = {
+            lastTime: 0,
+            lastNums: [],
+            lastFamily: null,
+            gaps: []
         };
     }
 
-    const state = wakandaState[group];
+    const state = scoreState[symbol];
 
-    // Start burst on first hit
-    if (!state.active) {
-        state.active = true;
-        state.startTime = ts;
-        state.symbols.clear();
+    const nums = parseNumbers(group);
+    const family = getFamily(group);
 
-        state.timer = setTimeout(() => {
+    let score = 0;
+    let reasons = [];
 
-            const cutoff = state.startTime + WAKANDA_WINDOW_MS;
+    const gap = state.lastTime ? ts - state.lastTime : 0;
 
-            const entries = [...state.symbols.entries()]
-                .filter(([_, time]) => time <= cutoff);
-
-            if (entries.length >= WAKANDA_MIN_COUNT) {
-
-                const lines = entries
-                    .sort((a, b) => a[1] - b[1])
-                    .map(([sym, time]) =>
-                        `• ${sym} @ ${new Date(time).toLocaleTimeString()}`
-                    )
-                    .join("\n");
-
-                sendToTelegram9(
-                    `🎉 WAKANDA\n` +
-                    `Group: ${group}\n` +
-                    `Unique Symbols: ${entries.length}\n` +
-                    `Window: 50s\n` +
-                    `Symbols:\n${lines}`
-                );
-            }
-
-            state.active = false;
-            state.symbols.clear();
-            state.startTime = null;
-            clearTimeout(state.timer);
-            state.timer = null;
-
-        }, WAKANDA_WINDOW_MS + WAKANDA_BUFFER_MS);
+    // 🔥 1. FIRST AFTER LONG GAP
+    if (gap > 4 * 60 * 60 * 1000) {
+        score += 25;
+        reasons.push("First after long silence");
     }
 
-    state.symbols.set(symbol, ts);
+    // 🔥 2. HINGE (shared number)
+    const shared = nums.find(n => state.lastNums.includes(n));
+    if (shared) {
+        score += 30;
+        reasons.push(`Hinge (${shared})`);
+    }
+
+    // 🔥 3. SAME FAMILY
+    if (family === state.lastFamily) {
+        score += 10;
+        reasons.push(`Family ${family} repeating`);
+    }
+
+    // 🔥 4. COMPRESSION
+    if (state.gaps.length >= 3) {
+        const avg = state.gaps.reduce((a,b)=>a+b,0) / state.gaps.length;
+        if (gap > 0 && gap < avg * 0.75) {
+            score += 15;
+            reasons.push("Compression");
+        }
+    }
+
+    // 🔥 5. STRONG NUMBERS
+    const strong = [66, 59, 33, 57, 58];
+    const strongHit = nums.find(n => strong.includes(n));
+    if (strongHit) {
+        score += 10;
+        reasons.push(`Strong (${strongHit})`);
+    }
+
+    // -------------------------
+    // UPDATE STATE
+    // -------------------------
+    if (gap > 0) {
+        state.gaps.push(gap);
+        if (state.gaps.length > 5) state.gaps.shift();
+    }
+
+    state.lastTime = ts;
+    state.lastNums = nums;
+    state.lastFamily = family;
+
+    // -------------------------
+    // OUTPUT (Bot 9 ONLY)
+    // -------------------------
+    if (score >= 70) {
+
+        let level = "HIGH";
+        if (score >= 85) level = "EXTREME";
+
+        const msg =
+            `🚨 ${level} SCORE\n` +
+            `Symbol: ${symbol}\n` +
+            `Group: ${group}\n` +
+            `Score: ${score}\n\n` +
+            `Reasons:\n• ${reasons.join("\n• ")}\n\n` +
+            `${score >= 85 ? "🔥 Rare structure — act fast" : "⚠️ Structure forming"}`;
+
+        sendToTelegram9(msg);
+    }
+
+    saveState();
 }
+
+
 // ==========================================================
 //  BLACK_PANTHER (10 groups → 3 distinct groups, ≤ 300s)
 // ==========================================================
