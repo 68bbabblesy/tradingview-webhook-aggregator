@@ -1694,59 +1694,114 @@ function processTesting(symbol, group, ts) {
 }
 
 // ==========================================================
-//  JUPITER (Same symbol + same group repeat within 1 hour)
-//  Groups: A C S W B D X T
-//  Bot 7
+//  JUPITER (STRICT FIRST-OF-4H + PAIR WITHIN 20M)
+//  Bucket 1: C/D
+//  Bucket 2: M/N
+//  Condition:
+//    - First C or D in 4 hours
+//    - First M or N in 4 hours
+//    - Must occur within 20 minutes of each other
+//  One cycle per symbol → resets after fire
+//  Bot 4
 // ==========================================================
 
-const JUPITER_WINDOW_MS = 12 * 60 * 1000; // 1 hour
+const JUPITER_FIRST_WINDOW_MS = 4 * 60 * 60 * 1000;  // 4 hours
+const JUPITER_PAIR_WINDOW_MS  = 20 * 60 * 1000;      // 20 minutes
 
-const JUPITER_GROUPS = new Set(["A","C","S","W","B","D","X","T"]);
+const JUPITER_CD = new Set(["C", "D"]);
+const JUPITER_MN = new Set(["M", "N"]);
 
-// jupiterMemory[symbol][group] = lastTimestamp
-const jupiterMemory = {};
+// jupiterState[symbol] = {
+//   cdTime: timestamp,
+//   mnTime: timestamp
+// }
+
+const jupiterState = {};
 
 function processJupiter(symbol, group, ts) {
 
-    if (!JUPITER_GROUPS.has(group)) return;
+    const isCD = JUPITER_CD.has(group);
+    const isMN = JUPITER_MN.has(group);
 
-    if (!jupiterMemory[symbol]) {
-        jupiterMemory[symbol] = {};
+    if (!isCD && !isMN) return;
+
+    if (!jupiterState[symbol]) {
+        jupiterState[symbol] = {
+            cdTime: null,
+            mnTime: null
+        };
     }
 
-    const last = jupiterMemory[symbol][group];
+    const state = jupiterState[symbol];
 
-    if (last && (ts - last <= JUPITER_WINDOW_MS)) {
+    // ========================
+    // HANDLE CD SIDE
+    // ========================
+    if (isCD) {
 
-        const diffMs = ts - last;
-        const diffMin = Math.floor(diffMs / 60000);
-        const diffSec = Math.floor((diffMs % 60000) / 1000);
-
-       sendToTelegram4(
-    `🟠 JUPITER\n` +
-    `Symbol: ${symbol}\n` +
-    `Group: ${group}\n` +
-    `First Hit: ${new Date(last).toLocaleString()}\n` +
-    `Second Hit: ${formatDateTime(ts)}\n` +
-    `Gap: ${diffMin}m ${diffSec}s`
-);
-
-
+        // Only accept if FIRST in 4h
+        if (!state.cdTime || (ts - state.cdTime > JUPITER_FIRST_WINDOW_MS)) {
+            state.cdTime = ts;
+        } else {
+            return; // ignore non-first
+        }
     }
 
-    // Always update
-    jupiterMemory[symbol][group] = ts;
+    // ========================
+    // HANDLE MN SIDE
+    // ========================
+    if (isMN) {
 
-    // Safety prune (optional but safe)
-    if (Object.keys(jupiterMemory).length > 5000) {
-        const cutoff = ts - (2 * 60 * 60 * 1000);
-        for (const sym of Object.keys(jupiterMemory)) {
-            const groups = jupiterMemory[sym];
-            const latest = Math.max(...Object.values(groups));
-            if (latest < cutoff) delete jupiterMemory[sym];
+        // Only accept if FIRST in 4h
+        if (!state.mnTime || (ts - state.mnTime > JUPITER_FIRST_WINDOW_MS)) {
+            state.mnTime = ts;
+        } else {
+            return; // ignore non-first
+        }
+    }
+
+    // ========================
+    // CHECK PAIR
+    // ========================
+    if (state.cdTime && state.mnTime) {
+
+        const diffMs = Math.abs(state.cdTime - state.mnTime);
+
+        if (diffMs <= JUPITER_PAIR_WINDOW_MS) {
+
+            const firstTime  = Math.min(state.cdTime, state.mnTime);
+            const secondTime = Math.max(state.cdTime, state.mnTime);
+
+            const diffMin = Math.floor(diffMs / 60000);
+            const diffSec = Math.floor((diffMs % 60000) / 1000);
+
+            sendToTelegram4(
+                `🟠 JUPITER\n` +
+                `Symbol: ${symbol}\n` +
+                `C/D Time: ${formatDateTime(state.cdTime)}\n` +
+                `M/N Time: ${formatDateTime(state.mnTime)}\n` +
+                `Gap: ${diffMin}m ${diffSec}s\n` +
+                `Condition: First-in-4h + Pair ≤20m`
+            );
+
+            // 🔥 RESET after firing (one clean cycle)
+            delete jupiterState[symbol];
+        }
+    }
+
+    // ========================
+    // SAFETY CLEANUP
+    // ========================
+    if (Object.keys(jupiterState).length > 5000) {
+        const cutoff = ts - (6 * 60 * 60 * 1000);
+        for (const sym of Object.keys(jupiterState)) {
+            const s = jupiterState[sym];
+            const latest = Math.max(s.cdTime || 0, s.mnTime || 0);
+            if (latest < cutoff) delete jupiterState[sym];
         }
     }
 }
+
 
 // ==========================================================
 //  TRINITY / TRINITY_FLIP Fusion Detector
