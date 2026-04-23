@@ -171,25 +171,38 @@ function parseNumbers(group) {
     return [parseInt(match[1]), parseInt(match[2])];
 }
 
+
 // -----------------------------
 // TELEGRAM SENDERS
 // -----------------------------
 async function sendToTelegram1(text) {
     if (!TELEGRAM_BOT_TOKEN_1 || !TELEGRAM_CHAT_ID_1) return;
-    await fetch(`https://api.telegram.org/bot${TELEGRAM_BOT_TOKEN_1}/sendMessage`, {
-        method: "POST",
-        headers: { "Content-Type": "application/json" },
-        body: JSON.stringify({ chat_id: TELEGRAM_CHAT_ID_1, text })
-    });
+
+    try {
+        await fetch(`https://api.telegram.org/bot${TELEGRAM_BOT_TOKEN_1}/sendMessage`, {
+            method: "POST",
+            headers: { "Content-Type": "application/json" },
+            body: JSON.stringify({ chat_id: TELEGRAM_CHAT_ID_1, text }),
+            timeout: 10000
+        });
+    } catch (err) {
+        console.error("⚠️ Bot1 send failed:", err.message);
+    }
 }
 
 async function sendToTelegram2(text) {
     if (!TELEGRAM_BOT_TOKEN_2 || !TELEGRAM_CHAT_ID_2) return;
-    await fetch(`https://api.telegram.org/bot${TELEGRAM_BOT_TOKEN_2}/sendMessage`, {
-        method: "POST",
-        headers: { "Content-Type": "application/json" },
-        body: JSON.stringify({ chat_id: TELEGRAM_CHAT_ID_2, text })
-    });
+
+    try {
+        await fetch(`https://api.telegram.org/bot${TELEGRAM_BOT_TOKEN_2}/sendMessage`, {
+            method: "POST",
+            headers: { "Content-Type": "application/json" },
+            body: JSON.stringify({ chat_id: TELEGRAM_CHAT_ID_2, text }),
+            timeout: 10000
+        });
+    } catch (err) {
+        console.error("⚠️ Bot2 send failed:", err.message);
+    }
 }
 
 // ==========================================================
@@ -202,12 +215,18 @@ async function sendToTelegram3(text) {
     const chat  = (process.env.TELEGRAM_CHAT_ID_3 || "").trim();
     if (!token || !chat) return;
 
-    await fetch(`https://api.telegram.org/bot${token}/sendMessage`, {
-        method: "POST",
-        headers: { "Content-Type": "application/json" },
-        body: JSON.stringify({ chat_id: chat, text })
-    });
+    try {
+        await fetch(`https://api.telegram.org/bot${token}/sendMessage`, {
+            method: "POST",
+            headers: { "Content-Type": "application/json" },
+            body: JSON.stringify({ chat_id: chat, text }),
+            timeout: 10000
+        });
+    } catch (err) {
+        console.error("⚠️ Bot3 send failed:", err.message);
+    }
 }
+
 
 // Telegram sender for Bot 4
 async function sendToTelegram4(text) {
