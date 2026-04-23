@@ -699,11 +699,15 @@ function processBlackPanther(symbol, group, ts) {
 
 // ==========================================================
 //  GAMMA (EXACT GROUP REPEAT — ANY GROUP)
-//  Condition: Same symbol + SAME group repeats within 10 minutes
+//  Condition:
+//    - Same symbol + SAME group repeats
+//    - ≤10 min → REAL ALERT
+//    - 10–15 min → NEAR MISS
 //  Bot 4
 // ==========================================================
 
-const GAMMA_WINDOW_MS = 10 * 60 * 1000;
+const GAMMA_WINDOW_MS = 10 * 60 * 1000;        // 10 minutes
+const GAMMA_NEAR_BUFFER_MS = 5 * 60 * 1000;   // extra 5 minutes (10–15 range)
 
 // gammaMemory[symbol][group] = lastTimestamp
 const gammaMemory = {};
@@ -718,32 +722,53 @@ function processGamma(symbol, group, ts) {
 
     const last = gammaMemory[symbol][group];
 
-    // ------------------------------------------------------
-    // 1️⃣ If repeat within 10 minutes → FIRE
-    // ------------------------------------------------------
-    if (last && (ts - last <= GAMMA_WINDOW_MS)) {
+    if (last) {
 
         const diffMs = ts - last;
         const diffMin = Math.floor(diffMs / 60000);
         const diffSec = Math.floor((diffMs % 60000) / 1000);
 
-        sendToTelegram4(
-            `🟣 GAMMA\n` +
-            `Symbol: ${symbol}\n` +
-            `Group: ${group}\n\n` +
+        // ======================================================
+        // 🟣 REAL ALERT (≤10 min)
+        // ======================================================
+        if (diffMs <= GAMMA_WINDOW_MS) {
 
-            `First hit: ${formatDateTime(last)}\n` +
-            `Second hit: ${formatDateTime(ts)}\n` +
-            `Gap: ${diffMin}m ${diffSec}s`
-        );
+            sendToTelegram4(
+                `🟣 GAMMA\n` +
+                `Symbol: ${symbol}\n` +
+                `Group: ${group}\n\n` +
+                `First hit: ${formatDateTime(last)}\n` +
+                `Second hit: ${formatDateTime(ts)}\n` +
+                `Gap: ${diffMin}m ${diffSec}s`
+            );
+        }
+
+        // ======================================================
+        // 🟡 NEAR MISS (10–15 min)
+        // ======================================================
+        else if (diffMs <= GAMMA_WINDOW_MS + GAMMA_NEAR_BUFFER_MS) {
+
+            sendToTelegram4(
+                `🟡 GAMMA NEAR MISS\n` +
+                `Symbol: ${symbol}\n` +
+                `Group: ${group}\n\n` +
+                `First hit: ${formatDateTime(last)}\n` +
+                `Second hit: ${formatDateTime(ts)}\n` +
+                `Gap: ${diffMin}m ${diffSec}s\n\n` +
+                `Threshold: 10m\n` +
+                `Range: 10–15m`
+            );
+        }
     }
 
-    // ------------------------------------------------------
-    // 2️⃣ Always update latest hit
-    // ------------------------------------------------------
+    // ======================================================
+    // Always update latest hit
+    // ======================================================
     gammaMemory[symbol][group] = ts;
 
-    // Optional memory cleanup (safe guard)
+    // ======================================================
+    // Safety cleanup
+    // ======================================================
     if (Object.keys(gammaMemory).length > 5000) {
         const cutoff = ts - (2 * 60 * 60 * 1000);
 
@@ -762,7 +787,6 @@ function processGamma(symbol, group, ts) {
         }
     }
 }
-
 
 // ==========================================================
 //  BABABIA (Buffered Burst Engine)
