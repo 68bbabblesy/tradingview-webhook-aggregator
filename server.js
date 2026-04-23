@@ -227,18 +227,22 @@ async function sendToTelegram3(text) {
     }
 }
 
-
 // Telegram sender for Bot 4
 async function sendToTelegram4(text) {
     const token = (process.env.TELEGRAM_BOT_TOKEN_4 || "").trim();
     const chat  = (process.env.TELEGRAM_CHAT_ID_4 || "").trim();
     if (!token || !chat) return;
 
-    await fetch(`https://api.telegram.org/bot${token}/sendMessage`, {
-        method: "POST",
-        headers: { "Content-Type": "application/json" },
-        body: JSON.stringify({ chat_id: chat, text })
-    });
+    try {
+        await fetch(`https://api.telegram.org/bot${token}/sendMessage`, {
+            method: "POST",
+            headers: { "Content-Type": "application/json" },
+            body: JSON.stringify({ chat_id: chat, text }),
+            timeout: 10000
+        });
+    } catch (err) {
+        console.error("⚠️ Bot4 send failed:", err.message);
+    }
 }
 
 // Telegram sender for Bot 5
@@ -247,11 +251,16 @@ async function sendToTelegram5(text) {
     const chat  = (process.env.TELEGRAM_CHAT_ID_5 || "").trim();
     if (!token || !chat) return;
 
-    await fetch(`https://api.telegram.org/bot${token}/sendMessage`, {
-        method: "POST",
-        headers: { "Content-Type": "application/json" },
-        body: JSON.stringify({ chat_id: chat, text })
-    });
+    try {
+        await fetch(`https://api.telegram.org/bot${token}/sendMessage`, {
+            method: "POST",
+            headers: { "Content-Type": "application/json" },
+            body: JSON.stringify({ chat_id: chat, text }),
+            timeout: 10000
+        });
+    } catch (err) {
+        console.error("⚠️ Bot5 send failed:", err.message);
+    }
 }
 
 // Telegram sender for Bot 6
@@ -260,36 +269,52 @@ async function sendToTelegram6(text) {
     const chat  = (process.env.TELEGRAM_CHAT_ID_6 || "").trim();
     if (!token || !chat) return;
 
-    await fetch(`https://api.telegram.org/bot${token}/sendMessage`, {
-        method: "POST",
-        headers: { "Content-Type": "application/json" },
-        body: JSON.stringify({ chat_id: chat, text })
-    });
+    try {
+        await fetch(`https://api.telegram.org/bot${token}/sendMessage`, {
+            method: "POST",
+            headers: { "Content-Type": "application/json" },
+            body: JSON.stringify({ chat_id: chat, text }),
+            timeout: 10000
+        });
+    } catch (err) {
+        console.error("⚠️ Bot6 send failed:", err.message);
+    }
 }
-// Telegram sender for Bot 7 
+
+// Telegram sender for Bot 7
 async function sendToTelegram7(text) {
     const token = (process.env.TELEGRAM_BOT_TOKEN_7 || "").trim();
     const chat  = (process.env.TELEGRAM_CHAT_ID_7 || "").trim();
     if (!token || !chat) return;
 
-    await fetch(`https://api.telegram.org/bot${token}/sendMessage`, {
-        method: "POST",
-        headers: { "Content-Type": "application/json" },
-        body: JSON.stringify({ chat_id: chat, text })
-    });
+    try {
+        await fetch(`https://api.telegram.org/bot${token}/sendMessage`, {
+            method: "POST",
+            headers: { "Content-Type": "application/json" },
+            body: JSON.stringify({ chat_id: chat, text }),
+            timeout: 10000
+        });
+    } catch (err) {
+        console.error("⚠️ Bot7 send failed:", err.message);
+    }
 }
 
-// Telegram sender for Bot 8 
+// Telegram sender for Bot 8
 async function sendToTelegram8(text) {
     const token = (process.env.TELEGRAM_BOT_TOKEN_8 || "").trim();
     const chat  = (process.env.TELEGRAM_CHAT_ID_8 || "").trim();
     if (!token || !chat) return;
 
-    await fetch(`https://api.telegram.org/bot${token}/sendMessage`, {
-        method: "POST",
-        headers: { "Content-Type": "application/json" },
-        body: JSON.stringify({ chat_id: chat, text })
-    });
+    try {
+        await fetch(`https://api.telegram.org/bot${token}/sendMessage`, {
+            method: "POST",
+            headers: { "Content-Type": "application/json" },
+            body: JSON.stringify({ chat_id: chat, text }),
+            timeout: 10000
+        });
+    } catch (err) {
+        console.error("⚠️ Bot8 send failed:", err.message);
+    }
 }
 
 // Telegram sender for Bot 9
@@ -298,11 +323,16 @@ async function sendToTelegram9(text) {
     const chat  = (process.env.TELEGRAM_CHAT_ID_9 || "").trim();
     if (!token || !chat) return;
 
-    await fetch(`https://api.telegram.org/bot${token}/sendMessage`, {
-        method: "POST",
-        headers: { "Content-Type": "application/json" },
-        body: JSON.stringify({ chat_id: chat, text })
-    });
+    try {
+        await fetch(`https://api.telegram.org/bot${token}/sendMessage`, {
+            method: "POST",
+            headers: { "Content-Type": "application/json" },
+            body: JSON.stringify({ chat_id: chat, text }),
+            timeout: 10000
+        });
+    } catch (err) {
+        console.error("⚠️ Bot9 send failed:", err.message);
+    }
 }
 
 
