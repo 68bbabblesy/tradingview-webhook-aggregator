@@ -1118,64 +1118,104 @@ function processNeptune(symbol, group, ts) {
 }
 
 // ==========================================================
-//  ZULU (Batch detector — mandatory "9" group)
-//  Condition: Same symbol must include at least one group starting with "9"
-//  Window: 5 minutes
-//  Batch delay: 5 minutes
+//  ZULU (Subgroup Pair Detector — SAME FAMILY)
+//  Condition:
+//    - Groups like 26A, 26B, 19X, etc.
+//    - Same family (e.g. 26)
+//    - Two DIFFERENT subgroups
+//    - First occurrence in 4 hours (per family)
+//    - Pair must occur within 10 minutes
+//  One cycle per symbol+family → resets after fire
 //  Bot 6
 // ==========================================================
 
-const ZULU_WINDOW_MS = 5 * 60 * 1000;
+const ZULU_FIRST_WINDOW_MS = 4 * 60 * 60 * 1000;  // 4 hours
+const ZULU_PAIR_WINDOW_MS  = 10 * 60 * 1000;      // 10 minutes
+
+// zuluState[symbol][family] = {
+//   first: { group, time }
+// }
 
 const zuluState = {};
 
-// zuluState[symbol] = { events: [], timer }
+function getFamily(group) {
+    const match = group.match(/^(\d+)/);
+    return match ? match[1] : null;
+}
 
 function processZulu(symbol, group, ts) {
 
     if (!symbol || !group) return;
 
+    const family = getFamily(group);
+    if (!family) return; // ❌ ignore non-subgroups (C, D, etc.)
+
     if (!zuluState[symbol]) {
-
-        zuluState[symbol] = {
-            events: [],
-            timer: null
-        };
-
-        zuluState[symbol].timer = setTimeout(() => {
-
-            const state = zuluState[symbol];
-            const events = state.events;
-
-            const hasMandatory9 = events.some(e => e.group.startsWith("9"));
-
-            if (events.length >= 2 && hasMandatory9) {
-
-                const lines = events
-                    .sort((a,b)=>a.time-b.time)
-                    .map(e =>
-                        `• ${e.group} @ ${formatTime(e.time)}`
-                    )
-                    .join("\n");
-
-                sendToTelegram6(
-                    `🟡 ZULU\n` +
-                    `Symbol: ${symbol}\n` +
-                    `Count: ${events.length}\n` +
-                    `Window: 5m\n` +
-                    `Alerts:\n${lines}`
-                );
-            }
-
-            delete zuluState[symbol];
-
-        }, ZULU_WINDOW_MS);
+        zuluState[symbol] = {};
     }
 
-    zuluState[symbol].events.push({
-        group,
-        time: ts
-    });
+    if (!zuluState[symbol][family]) {
+        zuluState[symbol][family] = {
+            first: null
+        };
+    }
+
+    const state = zuluState[symbol][family];
+
+    // ========================
+    // FIRST HIT (per 4h window)
+    // ========================
+    if (!state.first || (ts - state.first.time > ZULU_FIRST_WINDOW_MS)) {
+        state.first = { group, time: ts };
+        return;
+    }
+
+    // ========================
+    // SECOND HIT
+    // ========================
+    const first = state.first;
+
+    // Must be DIFFERENT subgroup
+    if (first.group === group) return;
+
+    const diffMs = ts - first.time;
+
+    if (diffMs <= ZULU_PAIR_WINDOW_MS) {
+
+        const diffMin = Math.floor(diffMs / 60000);
+        const diffSec = Math.floor((diffMs % 60000) / 1000);
+
+        sendToTelegram6(
+            `🟡 ZULU\n` +
+            `Symbol: ${symbol}\n` +
+            `Family: ${family}\n` +
+            `1) ${first.group} @ ${formatDateTime(first.time)}\n` +
+            `2) ${group} @ ${formatDateTime(ts)}\n` +
+            `Gap: ${diffMin}m ${diffSec}s\n` +
+            `Condition: First-in-4h + Pair ≤10m`
+        );
+
+        // 🔥 RESET after fire
+        delete zuluState[symbol][family];
+    }
+
+    // ========================
+    // SAFETY CLEANUP
+    // ========================
+    if (Object.keys(zuluState).length > 5000) {
+        const cutoff = ts - (6 * 60 * 60 * 1000);
+        for (const sym of Object.keys(zuluState)) {
+            for (const fam of Object.keys(zuluState[sym])) {
+                const s = zuluState[sym][fam];
+                if (!s.first || s.first.time < cutoff) {
+                    delete zuluState[sym][fam];
+                }
+            }
+            if (!Object.keys(zuluState[sym]).length) {
+                delete zuluState[sym];
+            }
+        }
+    }
 }
 
 
