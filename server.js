@@ -2318,6 +2318,7 @@ app.post("/incoming", (req, res) => {
 
         const group  = (body.group || "").trim();
         const symbol = normalizeSymbol(body.symbol);
+		const isHash = group.startsWith("#");
 
         const ts = nowMs();
 		
@@ -2336,34 +2337,47 @@ app.post("/incoming", (req, res) => {
         
 
         processCheck(symbol, group, ts, body);
-		processFirst(symbol, group, ts);
-        processAnyTwo(symbol, group, ts);	
-		processBundle(symbol, group, ts);      
-		processBazooka(symbol, group, ts, body);
-		
-        
-		processBlackPanther(symbol, group, ts);
-		processSideFlip(symbol, group, ts);
-        processGamma(symbol, group, ts);
-        processYaba(symbol, group, ts);
-        processSalsa(symbol, group, ts);
-        processTango(symbol, group, ts);
-		processCobra(symbol, group, ts);
-		processNeptune(symbol, group, ts);
-        processZulu(symbol, group, ts);
-		processMinta(symbol, group, ts);
-        processMamba(symbol, group, ts);
-        processSpesh(symbol, group, ts);
-		processCabal(symbol, group, ts);
-		processBoom(symbol, group, ts);
-		processKooky(symbol, group, ts);        
-		processTesting(symbol, group, ts);
-        processAudit(symbol, group, ts, body);
-        processBababia(symbol, group, ts);
-		processMAMAMIA(symbol, group, ts);
-		processWakanda(symbol, group, ts);
-        processGodzilla(symbol, group, ts);		
-		processJupiter(symbol, group, ts);
+
+// ==========================================
+// 🧠 SPLIT PIPELINE
+// ==========================================
+
+if (!isHash) {
+    // 🔵 NORMAL ECOSYSTEM
+
+    processAnyTwo(symbol, group, ts);	
+    processBundle(symbol, group, ts);      
+    processBazooka(symbol, group, ts, body);
+
+    processBlackPanther(symbol, group, ts);
+    processSideFlip(symbol, group, ts);
+    processGamma(symbol, group, ts);
+    processYaba(symbol, group, ts);
+    processSalsa(symbol, group, ts);
+    processTango(symbol, group, ts);
+    processCobra(symbol, group, ts);
+    processNeptune(symbol, group, ts);
+    processZulu(symbol, group, ts);
+    processMinta(symbol, group, ts);
+    processMamba(symbol, group, ts);
+    processSpesh(symbol, group, ts);
+    processCabal(symbol, group, ts);
+    processBoom(symbol, group, ts);
+    processKooky(symbol, group, ts);        
+    processTesting(symbol, group, ts);
+    processAudit(symbol, group, ts, body);
+    processBababia(symbol, group, ts);
+    processMAMAMIA(symbol, group, ts);
+    processWakanda(symbol, group, ts);
+    processJupiter(symbol, group, ts);
+
+} else {
+    // 🔴 HASH ECOSYSTEM (isolated)
+
+    processGodzilla(symbol, group, ts);
+
+    // 👉 future hash bots go here
+}
 
 
         // Strong signal (unchanged)
