@@ -1138,17 +1138,12 @@ const ZULU_PAIR_WINDOW_MS  = 10 * 60 * 1000;      // 10 minutes
 
 const zuluState = {};
 
-function getFamily(group) {
-    const match = group.match(/^(\d+)/);
-    return match ? match[1] : null;
-}
-
 function processZulu(symbol, group, ts) {
 
     if (!symbol || !group) return;
 
     const family = getFamily(group);
-    if (!family) return; // ❌ ignore non-subgroups (C, D, etc.)
+    if (!family) return; // ignore non-subgroups
 
     if (!zuluState[symbol]) {
         zuluState[symbol] = {};
@@ -1195,7 +1190,7 @@ function processZulu(symbol, group, ts) {
             `Condition: First-in-4h + Pair ≤10m`
         );
 
-        // 🔥 RESET after fire
+        // RESET after fire
         delete zuluState[symbol][family];
     }
 
@@ -1217,7 +1212,6 @@ function processZulu(symbol, group, ts) {
         }
     }
 }
-
 
 // ==========================================================
 //  ANY_TWO (Batch version — same structure as MINTA)
