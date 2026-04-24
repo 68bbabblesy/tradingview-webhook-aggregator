@@ -33,17 +33,25 @@ function loadState() {
             const raw = fs.readFileSync(STATE_FILE, "utf8");
             const parsed = JSON.parse(raw);
 
-          return {
-    lastAlert: parsed.lastAlert || {},
-    cooldownUntil: parsed.cooldownUntil || {},
-    firstState: parsed.firstState || {},
-    tangoState: parsed.tangoState || {},
-    scoreState: parsed.scoreState || {}
-};
+            return {
+                lastAlert: parsed.lastAlert || {},
+                cooldownUntil: parsed.cooldownUntil || {},
+                firstState: parsed.firstState || {},
+                tangoState: parsed.tangoState || {},
+                scoreState: parsed.scoreState || {},
+                lastSeenState: parsed.lastSeenState || {} // ✅ NEW
+            };
         }
     } catch {}
 
-    return { lastAlert: {}, cooldownUntil: {} };
+    return {
+        lastAlert: {},
+        cooldownUntil: {},
+        firstState: {},
+        tangoState: {},
+        scoreState: {},
+        lastSeenState: {} // ✅ NEW
+    };
 }
 
 function saveState() {
@@ -52,12 +60,13 @@ function saveState() {
             STATE_FILE,
             JSON.stringify(
                 {
-    lastAlert,
-    cooldownUntil,
-    firstState,
-    tangoState,
-    scoreState
-    },
+                    lastAlert,
+                    cooldownUntil,
+                    firstState,
+                    tangoState,
+                    scoreState,
+                    lastSeenState // ✅ NEW
+                },
                 null,
                 2
             ),
@@ -70,7 +79,26 @@ function saveState() {
 
 // Load previous state
 const persisted = loadState();
+
 let scoreState = persisted.scoreState || {};
+let lastSeenState = persisted.lastSeenState || {}; // ✅ NEW
+
+// ==========================================================
+// 🔒 GLOBAL LAST-SEEN ENGINE (PERSISTENT)
+// ==========================================================
+
+function getLastSeen(symbol, key) {
+    return lastSeenState[symbol]?.[key] || null;
+}
+
+function setLastSeen(symbol, key, ts) {
+    if (!lastSeenState[symbol]) {
+        lastSeenState[symbol] = {};
+    }
+    lastSeenState[symbol][key] = ts;
+    saveState();
+}
+
 
 // -----------------------------
 // ENVIRONMENT VARIABLES
