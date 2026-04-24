@@ -2241,43 +2241,28 @@ function processCobra(symbol, group, ts) {
 }
 
 // ==========================================================
-// FIRST (PER SYMBOL — 4H COOLDOWN)
+// FIRST (PER SYMBOL — 4H COOLDOWN + STALE STATE PROTECTION)
 // Bot 2
 // ==========================================================
 
 const FIRST_WINDOW_MS = 4 * 60 * 60 * 1000;
+const HARD_RESET_MS   = 12 * 60 * 60 * 1000; // safety against bad persisted state
 
 function processFirst(symbol, group, ts) {
 
     if (!symbol) return;
 
     const last = firstState[symbol];
+    const elapsed = last ? (ts - last) : null;
 
-    // 1️⃣ First ever → trigger
-    if (!last) {
-
-        sendToTelegram2(
-            `🥇 FIRST\n` +
-            `Symbol: ${symbol}\n` +
-            `Group: ${group}\n` +
-            `Time: ${formatDateTime(ts)}`
-        );
-
-        firstState[symbol] = ts;
-        saveState();
-        return;
-    }
-
-    const elapsed = ts - last;
-
-    // 2️⃣ After 4h → trigger again
-    if (elapsed >= FIRST_WINDOW_MS) {
+    // 🔥 SINGLE CLEAN CONDITION (handles everything)
+    if (!last || elapsed >= FIRST_WINDOW_MS || elapsed >= HARD_RESET_MS) {
 
         sendToTelegram2(
             `🥇 FIRST\n` +
             `Symbol: ${symbol}\n` +
             `Group: ${group}\n` +
-            `Last: ${formatDateTime(last)}\n` +
+            `Last: ${last ? formatDateTime(last) : "none"}\n` +
             `Now: ${formatDateTime(ts)}`
         );
 
