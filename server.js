@@ -404,7 +404,6 @@ function maxWindowMs() {
 
 
 
-
 // ==========================================================
 //  BOT2 ENGINE STORAGE (tracking + matching)
 // ==========================================================
@@ -413,13 +412,10 @@ function maxWindowMs() {
 // FIRST ENGINE (PER SYMBOL 4H COOLDOWN)
 // ==========================================================
 
-let firstState = persisted.firstState || {};
-// firstState[symbol] = lastTriggerTimestamp
+// ❌ Removed old firstState — now using global lastSeenState
 
 // RESTORED FROM DISK (persistence)
 const lastAlert = persisted.lastAlert || {};
-
-
 
 
 // -----------------------------
@@ -2269,22 +2265,21 @@ function processCobra(symbol, group, ts) {
 }
 
 // ==========================================================
-// FIRST (PER SYMBOL — 4H COOLDOWN + STALE STATE PROTECTION)
+// FIRST (PER SYMBOL — 4H COOLDOWN, GLOBAL ENGINE)
 // Bot 2
 // ==========================================================
 
 const FIRST_WINDOW_MS = 4 * 60 * 60 * 1000;
-const HARD_RESET_MS   = 12 * 60 * 60 * 1000; // safety against bad persisted state
 
 function processFirst(symbol, group, ts) {
 
     if (!symbol) return;
 
-    const last = firstState[symbol];
-    const elapsed = last ? (ts - last) : null;
+    const key = "ALL"; // 🔑 ONE KEY PER SYMBOL
+    const last = getLastSeen(symbol, key);
 
-    // 🔥 SINGLE CLEAN CONDITION (handles everything)
-    if (!last || elapsed >= FIRST_WINDOW_MS || elapsed >= HARD_RESET_MS) {
+    // 🔥 FIRST or after 4h
+    if (!last || (ts - last >= FIRST_WINDOW_MS)) {
 
         sendToTelegram2(
             `🥇 FIRST\n` +
@@ -2294,8 +2289,7 @@ function processFirst(symbol, group, ts) {
             `Now: ${formatDateTime(ts)}`
         );
 
-        firstState[symbol] = ts;
-        saveState();
+        setLastSeen(symbol, key, ts);
     }
 
     // else → ignore
