@@ -36,10 +36,9 @@ function loadState() {
             return {
                 lastAlert: parsed.lastAlert || {},
                 cooldownUntil: parsed.cooldownUntil || {},
-                firstState: parsed.firstState || {},
                 tangoState: parsed.tangoState || {},
                 scoreState: parsed.scoreState || {},
-                lastSeenState: parsed.lastSeenState || {} // ✅ NEW
+                lastSeenState: parsed.lastSeenState || {}
             };
         }
     } catch {}
@@ -47,10 +46,9 @@ function loadState() {
     return {
         lastAlert: {},
         cooldownUntil: {},
-        firstState: {},
         tangoState: {},
         scoreState: {},
-        lastSeenState: {} // ✅ NEW
+        lastSeenState: {}
     };
 }
 
@@ -62,10 +60,9 @@ function saveState() {
                 {
                     lastAlert,
                     cooldownUntil,
-                    firstState,
                     tangoState,
                     scoreState,
-                    lastSeenState // ✅ NEW
+                    lastSeenState
                 },
                 null,
                 2
@@ -81,7 +78,7 @@ function saveState() {
 const persisted = loadState();
 
 let scoreState = persisted.scoreState || {};
-let lastSeenState = persisted.lastSeenState || {}; // ✅ NEW
+let lastSeenState = persisted.lastSeenState || {};
 
 // ==========================================================
 // 🔒 GLOBAL LAST-SEEN ENGINE (PERSISTENT)
@@ -98,8 +95,6 @@ function setLastSeen(symbol, key, ts) {
     lastSeenState[symbol][key] = ts;
     saveState();
 }
-
-
 // -----------------------------
 // ENVIRONMENT VARIABLES
 // -----------------------------
