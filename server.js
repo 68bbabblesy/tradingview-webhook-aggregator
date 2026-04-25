@@ -79,6 +79,7 @@ const persisted = loadState();
 
 let scoreState = persisted.scoreState || {};
 let lastSeenState = persisted.lastSeenState || {};
+lastSeenState = {};
 
 // ==========================================================
 // 🔒 GLOBAL LAST-SEEN ENGINE (PERSISTENT)
