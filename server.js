@@ -154,6 +154,35 @@ RULES = RULES.map((r, idx) => ({
     windowSeconds: Number(r.windowSeconds || WINDOW_SECONDS_DEF)
 })).filter(r => r.groups.length);
 
+// ==========================================================
+// STC SOURCE CONFIG (EASY CONTROL)
+// ==========================================================
+
+const STC_SOURCE_CONFIG = {
+    TANGO:   { enabled: true },
+    GAMMA:   { enabled: true },
+    ZULU:    { enabled: true },
+    JUPITER: { enabled: true }
+};
+
+function isSTCSourceAllowed(source) {
+    return STC_SOURCE_CONFIG[source]?.enabled === true;
+}
+
+// ==========================================================
+// REGISTER STC SOURCE
+// ==========================================================
+
+function registerSTCSource(symbol, source, ts) {
+
+    if (!isSTCSourceAllowed(source)) return;
+
+    stcWatch[symbol] = {
+        source,
+        startTime: ts
+    };
+}
+
 // -----------------------------
 // TIME HELPERS
 // -----------------------------
@@ -619,103 +648,76 @@ function processBazooka(symbol, group, ts) {
 }
 
 // ==========================================================
-//  WAKANDA (SCORE ENGINE — REFACTORED)
+//  WAKANDA (STC CONFIRMATION ENGINE — SOURCE CONTROLLED)
 //  Bot 9
 // ==========================================================
 
-function processWakanda(symbol, group, ts) {
+function processWakanda(symbol, group, ts, body) {
 
-    if (!symbol || !group) return;
+    // Only STC signals
+    if (group !== "#F") return;
+
+    if (!symbol) return;
+
+    const watch = stcWatch[symbol];
+
+    // Must have valid source
+    if (!watch || !isSTCSourceAllowed(watch.source)) {
+        return;
+    }
+
+    // Only valid for 15 minutes after trigger
+    if (ts - watch.startTime > 15 * 60 * 1000) {
+        delete stcWatch[symbol];
+        delete scoreState[symbol];
+        return;
+    }
 
     if (!scoreState[symbol]) {
         scoreState[symbol] = {
-            lastTime: 0,
-            lastNums: [],
-            lastFamily: null,
-            gaps: []
+            hits: []
         };
     }
 
     const state = scoreState[symbol];
 
-    const nums = parseNumbers(group);
-    const family = getFamily(group);
+    const dir = body.dir || "UNKNOWN";
 
-    let score = 0;
-    let reasons = [];
+    // Add hit
+    state.hits.push({ time: ts, dir });
 
-    const gap = state.lastTime ? ts - state.lastTime : 0;
+    // Keep last 2 minutes
+    const cutoff = ts - (2 * 60 * 1000);
+    state.hits = state.hits.filter(x => x.time > cutoff);
 
-    // 🔥 1. FIRST AFTER LONG GAP
-    if (gap > 4 * 60 * 60 * 1000) {
-        score += 25;
-        reasons.push("First after long silence");
-    }
+    const count = state.hits.length;
 
-    // 🔥 2. HINGE (shared number)
-    const shared = nums.find(n => state.lastNums.includes(n));
-    if (shared) {
-        score += 30;
-        reasons.push(`Hinge (${shared})`);
-    }
+    let strength = "LOW";
+    if (count >= 2) strength = "MEDIUM";
+    if (count >= 3) strength = "HIGH";
 
-    // 🔥 3. SAME FAMILY
-    if (family === state.lastFamily) {
-        score += 10;
-        reasons.push(`Family ${family} repeating`);
-    }
+    // Direction bias
+    let longCount = state.hits.filter(x => x.dir === "LONG").length;
+    let shortCount = state.hits.filter(x => x.dir === "SHORT").length;
 
-    // 🔥 4. COMPRESSION
-    if (state.gaps.length >= 3) {
-        const avg = state.gaps.reduce((a,b)=>a+b,0) / state.gaps.length;
-        if (gap > 0 && gap < avg * 0.75) {
-            score += 15;
-            reasons.push("Compression");
-        }
-    }
+    let bias = "NEUTRAL";
+    if (longCount > shortCount) bias = "LONG";
+    if (shortCount > longCount) bias = "SHORT";
 
-    // 🔥 5. STRONG NUMBERS
-    const strong = [66, 59, 33, 57, 58];
-    const strongHit = nums.find(n => strong.includes(n));
-    if (strongHit) {
-        score += 10;
-        reasons.push(`Strong (${strongHit})`);
-    }
+    // Fire only if meaningful
+    if (count >= 2) {
 
-    // -------------------------
-    // UPDATE STATE
-    // -------------------------
-    if (gap > 0) {
-        state.gaps.push(gap);
-        if (state.gaps.length > 5) state.gaps.shift();
-    }
-
-    state.lastTime = ts;
-    state.lastNums = nums;
-    state.lastFamily = family;
-
-    // -------------------------
-    // OUTPUT (Bot 9 ONLY)
-    // -------------------------
-    if (score >= 70) {
-
-        let level = "HIGH";
-        if (score >= 85) level = "EXTREME";
-
-        const msg =
-            `🚨 ${level} SCORE\n` +
+        sendToTelegram9(
+            `🚨 STC CONFIRMATION\n` +
             `Symbol: ${symbol}\n` +
-            `Group: ${group}\n` +
-            `Score: ${score}\n\n` +
-            `Reasons:\n• ${reasons.join("\n• ")}\n\n` +
-            `${score >= 85 ? "🔥 Rare structure — act fast" : "⚠️ Structure forming"}`;
-
-        sendToTelegram9(msg);
+            `Source: ${watch.source}\n` +
+            `Bias: ${bias}\n` +
+            `Strength: ${strength}\n` +
+            `Signals: ${count} in 2m\n\n` +
+            `⚠️ Post-${watch.source} structure forming`
+        );
     }
-
-    saveState();
 }
-
 
 // ==========================================================
 //  BLACK_PANTHER (10 groups → 3 distinct groups, ≤ 300s)
@@ -810,6 +812,7 @@ function processGamma(symbol, group, ts) {
                 `Second hit: ${formatDateTime(ts)}\n` +
                 `Gap: ${diffMin}m ${diffSec}s`
             );
+			registerSTCSource(symbol, "GAMMA", ts);
         }
 
         // ======================================================
@@ -1007,66 +1010,71 @@ function processCheck(symbol, group, ts, body) {
 }
 
 // ==========================================================
-//  SALSA (Batch detector — mandatory "19" or "29" group)
-//  Condition: Same symbol must include at least one group starting with "19" OR "29"
-//  Window: 10 minutes
-//  Batch delay: 10 minutes
-//  Bot 6
+//  SALSA (Exact subgroup repeat detector)
+//  Condition:
+//    - Same symbol
+//    - EXACT same group repeats
+//    - Within 90 seconds
+//  Bot 9
 // ==========================================================
 
-const SALSA_WINDOW_MS = 10 * 60 * 1000;
+const SALSA_WINDOW_MS = 90 * 1000; // 90 seconds
 
-const salsaState = {};
-
-// salsaState[symbol] = { events: [], timer }
+// salsaMemory[symbol][group] = lastTimestamp
+const salsaMemory = {};
 
 function processSalsa(symbol, group, ts) {
 
     if (!symbol || !group) return;
 
-    if (!salsaState[symbol]) {
-
-        salsaState[symbol] = {
-            events: [],
-            timer: null
-        };
-
-        salsaState[symbol].timer = setTimeout(() => {
-
-            const state = salsaState[symbol];
-            const events = state.events;
-
-            const hasMandatory = events.some(e =>
-                e.group.startsWith("19") || e.group.startsWith("29")
-            );
-
-            if (events.length >= 2 && hasMandatory) {
-
-                const lines = events
-                    .sort((a,b)=>a.time-b.time)
-                    .map(e =>
-                        `• ${e.group} @ ${formatTime(e.time)}`
-                    )
-                    .join("\n");
-
-                sendToTelegram6(
-                    `💃 SALSA\n` +
-                    `Symbol: ${symbol}\n` +
-                    `Count: ${events.length}\n` +
-                    `Window: 10m\n` +
-                    `Alerts:\n${lines}`
-                );
-            }
-
-            delete salsaState[symbol];
-
-        }, SALSA_WINDOW_MS);
+    if (!salsaMemory[symbol]) {
+        salsaMemory[symbol] = {};
     }
 
-    salsaState[symbol].events.push({
-        group,
-        time: ts
-    });
+    const last = salsaMemory[symbol][group];
+
+    // ======================================================
+    // 🔥 FIRE if repeat within 90 seconds
+    // ======================================================
+    if (last && (ts - last <= SALSA_WINDOW_MS)) {
+
+        const diffMs = ts - last;
+        const diffSec = Math.floor(diffMs / 1000);
+
+        sendToTelegram9(
+            `💃 SALSA\n` +
+            `Symbol: ${symbol}\n` +
+            `Group: ${group}\n\n` +
+            `First hit: ${formatDateTime(last)}\n` +
+            `Second hit: ${formatDateTime(ts)}\n` +
+            `Gap: ${diffSec}s\n` +
+            `Window: 90s`
+        );
+    }
+
+    // Always update latest hit
+    salsaMemory[symbol][group] = ts;
+
+    // ======================================================
+    // Safety cleanup
+    // ======================================================
+    if (Object.keys(salsaMemory).length > 5000) {
+        const cutoff = ts - (2 * 60 * 60 * 1000);
+
+        for (const sym of Object.keys(salsaMemory)) {
+            const groups = salsaMemory[sym];
+
+            for (const g of Object.keys(groups)) {
+                if (groups[g] < cutoff) {
+                    delete groups[g];
+                }
+            }
+
+            if (!Object.keys(groups).length) {
+                delete salsaMemory[sym];
+            }
+        }
+    }
 }
 
 // ==========================================================
@@ -1080,6 +1088,11 @@ const TANGO_WINDOW_MS = 4 * 60 * 60 * 1000;
 
 // PERSISTED STATE
 let tangoState = persisted.tangoState || {};
+// ==========================================================
+// STC TRACKING STATE
+// ==========================================================
+let stcWatch = {};
+let scoreState = {};
 
 // tangoState[symbol][family] = lastTimestamp
 
@@ -1118,6 +1131,7 @@ function processTango(symbol, group, ts) {
             `Family: ${family}\n` +
             `Time: ${formatDateTime(ts)}`
         );
+		registerSTCSource(symbol, "TANGO", ts);
 
         tangoState[symbol][family] = ts;
         saveState();
@@ -1282,6 +1296,7 @@ function processZulu(symbol, group, ts) {
             `Gap: ${diffMin}m ${diffSec}s\n` +
             `Condition: First-in-4h + Pair ≤10m`
         );
+		registerSTCSource(symbol, "ZULU", ts);
 
         // RESET after fire
         delete zuluState[symbol][family];
@@ -1910,6 +1925,7 @@ function processJupiter(symbol, group, ts) {
                 `Gap: ${diffMin}m ${diffSec}s\n` +
                 `Condition: First-in-4h + Pair ≤20m`
             );
+			registerSTCSource(symbol, "JUPITER", ts);
 
             // 🔥 RESET after firing (one clean cycle)
             delete jupiterState[symbol];
@@ -2372,7 +2388,7 @@ if (!isHash) {
     processAudit(symbol, group, ts, body);
     processBababia(symbol, group, ts);
     processMAMAMIA(symbol, group, ts);
-    processWakanda(symbol, group, ts);
+    processWakanda(symbol, group, ts, body);
     processJupiter(symbol, group, ts);
 
 } else {
