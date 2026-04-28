@@ -1033,9 +1033,7 @@ function processSalsa(symbol, group, ts) {
 
     const last = salsaMemory[symbol][group];
 
-    // ======================================================
     // 🔥 FIRE if repeat within 90 seconds
-    // ======================================================
     if (last && (ts - last <= SALSA_WINDOW_MS)) {
 
         const diffMs = ts - last;
@@ -1055,9 +1053,7 @@ function processSalsa(symbol, group, ts) {
     // Always update latest hit
     salsaMemory[symbol][group] = ts;
 
-    // ======================================================
     // Safety cleanup
-    // ======================================================
     if (Object.keys(salsaMemory).length > 5000) {
         const cutoff = ts - (2 * 60 * 60 * 1000);
 
@@ -1076,7 +1072,6 @@ function processSalsa(symbol, group, ts) {
         }
     }
 }
-
 // ==========================================================
 //  TANGO (FIRST per SYMBOL + GROUP FAMILY)
 //  Family = prefix (26A → 26, 43X → 43, C → C)
