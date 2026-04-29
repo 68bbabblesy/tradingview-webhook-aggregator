@@ -1083,11 +1083,13 @@ const TANGO_WINDOW_MS = 4 * 60 * 60 * 1000;
 
 // PERSISTED STATE
 let tangoState = persisted.tangoState || {};
+
+
 // ==========================================================
 // STC TRACKING STATE
 // ==========================================================
 let stcWatch = {};
-let scoreState = {};
+
 
 // tangoState[symbol][family] = lastTimestamp
 
