@@ -183,6 +183,15 @@ function registerSTCSource(symbol, source, ts) {
     };
 }
 
+function registerAnchor(symbol, source, ts) {
+    if (!symbol) return;
+
+    anchorWatch[symbol] = {
+        source,
+        startTime: ts
+    };
+}
+
 // -----------------------------
 // TIME HELPERS
 // -----------------------------
@@ -560,91 +569,38 @@ function processGodzilla(symbol, group, ts) {
 }
 
 // ==========================================================
-//  BAZOOKA (GLOBAL ABCDWX burst detector — standalone)
-//  Window: 50 seconds | Min count: 10 | Bot 6
+//  BAZOOKA (ANCHOR → STC ENGINE)
+//  FIRST / YABA → STC (#E/#J)
+//  Bot 9
 // ==========================================================
 
+function processBazooka(symbol, group, ts, body) {
 
-// ==========================================================
-//  BAZOOKA — FROZEN SNAPSHOT (windowed, split-safe)
-// ==========================================================
+    if (group !== "#E" && group !== "#J") return;
 
-const BAZOOKA_WINDOW_MS = 50 * 1000;
-const BAZOOKA_MIN_COUNT = 10;
-const BAZOOKA_CHUNK_SIZE = 12; // presentation only
+    const watch = anchorWatch[symbol];
+    if (!watch) return;
 
-const bazookaState = {
-    active: false,
-    symbols: new Map(), // symbol → { time, group }
-    timer: null
-};
-
-
-
-// bazookaGlobal[group] = Map(symbol → time)
-
-function processBazooka(symbol, group, ts) {
-    // Same global groups as before (matches BABABIA/MAMAMIA universe)
-    if (!["A","B","C","D","W","X","S","T","U","V"].includes(group)) return;
-
-    // Start frozen snapshot on FIRST hit
-    if (!bazookaState.active) {
-        bazookaState.active = true;
-        bazookaState.symbols.clear();
-
-        bazookaState.timer = setTimeout(() => {
-            const entries = [...bazookaState.symbols.entries()];
-            const total = entries.length;
-
-            // OPTION A: silent discard if below threshold
-            if (total >= BAZOOKA_MIN_COUNT) {
-
-                // Split ONLY for Telegram delivery
-                const chunks = [];
-                for (let i = 0; i < entries.length; i += BAZOOKA_CHUNK_SIZE) {
-                    chunks.push(entries.slice(i, i + BAZOOKA_CHUNK_SIZE));
-                }
-
-                chunks.forEach((chunk, idx) => {
-                    const lines = chunk
-                        .sort((a, b) => a[1].time - b[1].time)
-                        .map(([sym, info]) =>
-                            `• ${sym} (${info.group}) @ ${formatTime(info.time)}`
-                        )
-                        .join("\n");
-
-                    const suffix =
-                        chunks.length > 1
-                            ? ` (Part ${idx + 1}/${chunks.length})`
-                            : "";
-
-                    sendToTelegram9(
-                        `💥 BAZOOKA${suffix}\n` +
-                        `Total Symbols: ${total}\n` +
-                        `Window: 50s\n` +
-                        `Symbols:\n${lines}`
-                    );
-                });
-
-                
-
-                
-
-            }
-
-            // Reset snapshot (prevents late symbols)
-            bazookaState.active = false;
-            bazookaState.symbols.clear();
-            clearTimeout(bazookaState.timer);
-            bazookaState.timer = null;
-
-        }, BAZOOKA_WINDOW_MS);
+    // Expire after 60 min
+    if (ts - watch.startTime > 60 * 60 * 1000) {
+        delete anchorWatch[symbol];
+        return;
     }
 
-    // Collect symbol ONCE during the window (no overwrite)
-    if (!bazookaState.symbols.has(symbol)) {
-        bazookaState.symbols.set(symbol, { time: ts, group });
-    }
+    const type = group === "#E" ? "SUPPORT" : "RESISTANCE";
+    const cycleTime = body.cycleTimeSec || "n/a";
+
+    sendToTelegram7(
+        `💥 BAZOOKA\n` +
+        `Anchor: ${watch.source}\n` +
+        `Symbol: ${symbol}\n` +
+        `Type: ${type}\n` +
+        `CycleTime: ${cycleTime}s\n` +
+        `Time: ${formatDateTime(ts)}`
+    );
+
+    // Reset after one clean cycle
+    delete anchorWatch[symbol];
 }
 
 // ==========================================================
@@ -799,22 +755,26 @@ function processGamma(symbol, group, ts) {
         const diffMin = Math.floor(diffMs / 60000);
         const diffSec = Math.floor((diffMs % 60000) / 1000);
 
-        // ======================================================
-        // 🟣 REAL ALERT (≤10 min)
-        // ======================================================
-        if (diffMs <= GAMMA_WINDOW_MS) {
+   // ======================================================
+// 🟣 REAL ALERT (≤10 min)
+// ======================================================
+if (diffMs <= GAMMA_WINDOW_MS) {
 
-            sendToTelegram4(
-                `🟣 GAMMA\n` +
-                `Symbol: ${symbol}\n` +
-                `Group: ${group}\n\n` +
-                `First hit: ${formatDateTime(last)}\n` +
-                `Second hit: ${formatDateTime(ts)}\n` +
-                `Gap: ${diffMin}m ${diffSec}s`
-            );
-			registerSTCSource(symbol, "GAMMA", ts);
-        }
+    sendToTelegram4(
+        `🟣 GAMMA\n` +
+        `Symbol: ${symbol}\n` +
+        `Group: ${group}\n\n` +
+        `First hit: ${formatDateTime(last)}\n` +
+        `Second hit: ${formatDateTime(ts)}\n` +
+        `Gap: ${diffMin}m ${diffSec}s`
+    );
 
+    // existing (leave this)
+    registerSTCSource(symbol, "GAMMA", ts);
+
+    // 🔥 ADD THIS LINE (for BAZOOKA)
+    registerAnchor(symbol, "GAMMA", ts);
+}
         // ======================================================
         // 🟡 NEAR MISS (10–15 min)
         // ======================================================
@@ -1089,6 +1049,10 @@ let tangoState = persisted.tangoState || {};
 // STC TRACKING STATE
 // ==========================================================
 let stcWatch = {};
+// ==========================================================
+//  ANCHOR TRACKER (FIRST + YABA)
+// ==========================================================
+const anchorWatch = {};
 
 
 // tangoState[symbol][family] = lastTimestamp
@@ -2055,6 +2019,7 @@ function processYaba(symbol, group, ts) {
         );
 
         // 🔥 Reset after fire (one clean cycle)
+		registerAnchor(symbol, "YABA", ts);
         delete yabaMemory[symbol][family];
         return;
     }
@@ -2296,6 +2261,7 @@ function processFirst(symbol, group, ts) {
         );
 
         setLastSeen(symbol, key, ts);
+		registerAnchor(symbol, "FIRST", ts);
     }
 
     // else → ignore
@@ -2349,8 +2315,13 @@ app.post("/incoming", (req, res) => {
 
         
 
-        processCheck(symbol, group, ts, body);
-		processFirst(symbol, group, ts);
+        //processCheck(symbol, group, ts, body);
+		
+		  // ✅ FIX: FIRST must IGNORE # groups
+        if (!isHash) {
+            processFirst(symbol, group, ts);
+        }
+
 
 // ==========================================
 // 🧠 SPLIT PIPELINE
@@ -2361,7 +2332,7 @@ if (!isHash) {
 
     processAnyTwo(symbol, group, ts);	
     processBundle(symbol, group, ts);      
-    processBazooka(symbol, group, ts, body);
+    //processBazooka(symbol, group, ts, body);
 
     processBlackPanther(symbol, group, ts);
     processSideFlip(symbol, group, ts);
@@ -2374,12 +2345,12 @@ if (!isHash) {
     processZulu(symbol, group, ts);
     processMinta(symbol, group, ts);
     processMamba(symbol, group, ts);
-    processSpesh(symbol, group, ts);
-    processCabal(symbol, group, ts);
-    processBoom(symbol, group, ts);
-    processKooky(symbol, group, ts);        
-    processTesting(symbol, group, ts);
-    processAudit(symbol, group, ts, body);
+    //processSpesh(symbol, group, ts);
+    //processCabal(symbol, group, ts);
+    //processBoom(symbol, group, ts);
+    //processKooky(symbol, group, ts);        
+    //processTesting(symbol, group, ts);
+    //processAudit(symbol, group, ts, body);
     processBababia(symbol, group, ts);
     processMAMAMIA(symbol, group, ts);
     processWakanda(symbol, group, ts, body);
@@ -2390,7 +2361,7 @@ if (!isHash) {
 
     //processGodzilla(symbol, group, ts);
 
-    // 👉 future hash bots go here
+    processBazooka(symbol, group, ts, body);
 }
 
 
