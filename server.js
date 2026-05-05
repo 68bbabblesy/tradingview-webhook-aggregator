@@ -590,7 +590,7 @@ function processBazooka(symbol, group, ts, body) {
     const type = group === "#E" ? "SUPPORT" : "RESISTANCE";
     const cycleTime = body.cycleTimeSec || "n/a";
 
-    sendToTelegram9(
+    sendToTelegram7(
         `💥 BAZOOKA\n` +
         `Anchor: ${watch.source}\n` +
         `Symbol: ${symbol}\n` +
