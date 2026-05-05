@@ -2388,7 +2388,7 @@ if (!isHash) {
 } else {
     // 🔴 HASH ECOSYSTEM (isolated)
 
-    processGodzilla(symbol, group, ts);
+    //processGodzilla(symbol, group, ts);
 
     // 👉 future hash bots go here
 }
