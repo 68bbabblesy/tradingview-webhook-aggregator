@@ -2311,7 +2311,7 @@ app.post("/incoming", (req, res) => {
 
         
 
-        processCheck(symbol, group, ts, body);
+        //processCheck(symbol, group, ts, body);
 		processFirst(symbol, group, ts);
 
 // ==========================================
