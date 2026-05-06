@@ -568,20 +568,6 @@ function processGodzilla(symbol, group, ts) {
     }
 }
 
-// ==========================================================
-// 💥 BAZOOKA — STC CORRELATION ENGINE (FINAL ARCHITECTURE)
-// Purpose:
-//   - Wait for divergence anchor (YABA/GAMMA/FIRST etc)
-//   - Then react to ANY # event from STC ecosystem
-//   - Pine already handles cycle intelligence internally
-// ==========================================================
-
-// anchorWatch[symbol] = {
-//   source: "YABA" | "GAMMA" | "FIRST",
-//   startTime: ts
-// }
-
-const anchorWatch = {};
 
 
 
