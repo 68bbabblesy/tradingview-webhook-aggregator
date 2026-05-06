@@ -569,39 +569,66 @@ function processGodzilla(symbol, group, ts) {
 }
 
 // ==========================================================
-//  BAZOOKA (ANCHOR → STC ENGINE)
-//  FIRST / YABA → STC (#E/#J)
-//  Bot 9
+// 💥 BAZOOKA — STC CORRELATION ENGINE (FINAL ARCHITECTURE)
+// Purpose:
+//   - Wait for divergence anchor (YABA/GAMMA/FIRST etc)
+//   - Then react to ANY # event from STC ecosystem
+//   - Pine already handles cycle intelligence internally
 // ==========================================================
 
+// anchorWatch[symbol] = {
+//   source: "YABA" | "GAMMA" | "FIRST",
+//   startTime: ts
+// }
+
+const anchorWatch = {};
+
+// ==========================================================
+// REGISTER ANCHOR
+// ==========================================================
+function registerAnchor(symbol, source, ts) {
+
+    if (!symbol) return;
+
+    anchorWatch[symbol] = {
+        source,
+        startTime: ts
+    };
+}
+
+// ==========================================================
+// BAZOOKA
+// ==========================================================
 function processBazooka(symbol, group, ts, body) {
 
-    if (group !== "#E" && group !== "#J") return;
+    if (!symbol || !group) return;
 
+    // 🔒 ONLY HASH/STC EVENTS
+    if (!group.startsWith("#")) return;
+
+    // Must already have divergence anchor
     const watch = anchorWatch[symbol];
     if (!watch) return;
 
-    // Expire after 60 min
-    if (ts - watch.startTime > 60 * 60 * 1000) {
-        delete anchorWatch[symbol];
-        return;
-    }
-
-    const type = group === "#E" ? "SUPPORT" : "RESISTANCE";
-    const cycleTime = body.cycleTimeSec || "n/a";
+    const elapsedSec = Math.floor((ts - watch.startTime) / 1000);
+    const elapsedMin = (elapsedSec / 60).toFixed(1);
 
     sendToTelegram7(
-        `💥 BAZOOKA\n` +
-        `Anchor: ${watch.source}\n` +
-        `Symbol: ${symbol}\n` +
-        `Type: ${type}\n` +
-        `CycleTime: ${cycleTime}s\n` +
-        `Time: ${formatDateTime(ts)}`
+        `💥 BAZOOKA V3 — ${watch.source}\n` +
+        `Symbol: ${symbol}\n\n` +
+
+        `STC Event: ${group}\n\n` +
+
+        `Anchor Time: ${formatDateTime(watch.startTime)}\n` +
+        `Completion Time: ${formatDateTime(ts)}\n\n` +
+
+        `Elapsed: ${elapsedMin} min (${elapsedSec}s)`
     );
 
-    // Reset after one clean cycle
+    // 🔥 RESET AFTER SUCCESSFUL CORRELATION
     delete anchorWatch[symbol];
 }
+
 
 // ==========================================================
 //  WAKANDA (STC CONFIRMATION ENGINE — SOURCE CONTROLLED)
