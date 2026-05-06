@@ -583,18 +583,7 @@ function processGodzilla(symbol, group, ts) {
 
 const anchorWatch = {};
 
-// ==========================================================
-// REGISTER ANCHOR
-// ==========================================================
-function registerAnchor(symbol, source, ts) {
 
-    if (!symbol) return;
-
-    anchorWatch[symbol] = {
-        source,
-        startTime: ts
-    };
-}
 
 // ==========================================================
 // BAZOOKA
