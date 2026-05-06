@@ -183,6 +183,25 @@ function registerSTCSource(symbol, source, ts) {
     };
 }
 
+// ==========================================================
+// ARM STC TRACKER
+// ==========================================================
+function armSTC(symbol, source, ts) {
+
+    if (!symbol || !source) return;
+
+    const key = `${symbol}_${source}`;
+
+    stcTracker[key] = {
+        symbol,
+        source,
+        count: 0,
+        lastDir: null,
+        startTime: ts
+    };
+}
+
+
 function registerAnchor(symbol, source, ts) {
     if (!symbol) return;
 
@@ -569,7 +588,80 @@ function processGodzilla(symbol, group, ts) {
 }
 
 
+// ==========================================================
+// STC CYCLE ENGINE
+// ==========================================================
+function processSTC(symbol, group, ts) {
 
+    if (!symbol || !group) return;
+
+    // Only STC flip events
+    if (group !== "#BUY" && group !== "#SELL") return;
+
+    // Loop through ALL active trackers
+    for (const key in stcTracker) {
+
+        const tracker = stcTracker[key];
+
+        // Safety
+        if (!tracker) continue;
+
+        // Wrong symbol
+        if (tracker.symbol !== symbol) continue;
+
+        // ==========================================
+        // FIRST FLIP AFTER DIVERGENCE
+        // ==========================================
+        if (tracker.lastDir === null) {
+
+            tracker.lastDir = group;
+            tracker.count = 1;
+
+            continue;
+        }
+
+        // ==========================================
+        // IGNORE SAME DIRECTION REPEATS
+        // ==========================================
+        if (tracker.lastDir === group) {
+            continue;
+        }
+
+        // ==========================================
+        // ALTERNATING FLIP
+        // ==========================================
+        tracker.lastDir = group;
+        tracker.count += 1;
+
+        // ==========================================
+        // FULL 3-CYCLE COMPLETE
+        // ==========================================
+        if (tracker.count >= 3) {
+
+            const elapsedSec =
+                Math.floor((ts - tracker.startTime) / 1000);
+
+            const elapsedMin =
+                Math.floor(elapsedSec / 60);
+
+            const remainSec =
+                elapsedSec % 60;
+
+            sendToTelegram7(
+                `💥 BAZOOKA\n` +
+                `Anchor: ${tracker.source}\n` +
+                `Symbol: ${symbol}\n` +
+                `Final Flip: ${group}\n` +
+                `Started: ${formatDateTime(tracker.startTime)}\n` +
+                `Completed: ${formatDateTime(ts)}\n` +
+                `Elapsed: ${elapsedMin}m ${remainSec}s`
+            );
+
+            // Remove completed tracker
+            delete stcTracker[key];
+        }
+    }
+}
 
 // ==========================================================
 // BAZOOKA
@@ -770,6 +862,8 @@ if (diffMs <= GAMMA_WINDOW_MS) {
         `Second hit: ${formatDateTime(ts)}\n` +
         `Gap: ${diffMin}m ${diffSec}s`
     );
+	
+	armSTC(symbol, "GAMMA", ts);
 
     // existing (leave this)
     registerSTCSource(symbol, "GAMMA", ts);
@@ -1055,6 +1149,20 @@ let stcWatch = {};
 //  ANCHOR TRACKER (FIRST + YABA)
 // ==========================================================
 const anchorWatch = {};
+
+
+// ==========================================================
+// RENDER STC CYCLE TRACKER
+// ==========================================================
+
+// stcTracker[symbol] = {
+//     source: "YABA" | "GAMMA" | "FIRST",
+//     count: number,
+//     lastDir: "#BUY" | "#SELL",
+//     startTime: timestamp
+// }
+
+const stcTracker = {};
 
 
 // tangoState[symbol][family] = lastTimestamp
@@ -2019,6 +2127,8 @@ function processYaba(symbol, group, ts) {
             `Gap: ${diffSec}s\n` +
             `Window: 90s`
         );
+		
+		armSTC(symbol, "YABA", ts);
 
         // 🔥 Reset after fire (one clean cycle)
 		registerAnchor(symbol, "YABA", ts);
@@ -2264,6 +2374,7 @@ function processFirst(symbol, group, ts) {
 
         setLastSeen(symbol, key, ts);
 		registerAnchor(symbol, "FIRST", ts);
+		armSTC(symbol, "FIRST", ts);
     }
 
     // else → ignore
@@ -2362,6 +2473,7 @@ if (!isHash) {
     // 🔴 HASH ECOSYSTEM (isolated)
 
     //processGodzilla(symbol, group, ts);
+	processSTC(symbol, group, ts);
 
     processBazooka(symbol, group, ts, body);
 }
