@@ -38,7 +38,8 @@ function loadState() {
                 cooldownUntil: parsed.cooldownUntil || {},
                 tangoState: parsed.tangoState || {},
                 scoreState: parsed.scoreState || {},
-                lastSeenState: parsed.lastSeenState || {}
+                lastSeenState: parsed.lastSeenState || {},
+                godzillaState: parsed.godzillaState || {}
             };
         }
     } catch {}
@@ -48,7 +49,8 @@ function loadState() {
         cooldownUntil: {},
         tangoState: {},
         scoreState: {},
-        lastSeenState: {}
+        lastSeenState: {},
+        godzillaState: {}
     };
 }
 
@@ -62,7 +64,8 @@ function saveState() {
                     cooldownUntil,
                     tangoState,
                     scoreState,
-                    lastSeenState
+                    lastSeenState,
+                    godzillaState
                 },
                 null,
                 2
@@ -153,63 +156,6 @@ RULES = RULES.map((r, idx) => ({
     threshold: Number(r.threshold || 3),
     windowSeconds: Number(r.windowSeconds || WINDOW_SECONDS_DEF)
 })).filter(r => r.groups.length);
-
-// ==========================================================
-// STC SOURCE CONFIG (EASY CONTROL)
-// ==========================================================
-
-const STC_SOURCE_CONFIG = {
-    TANGO:   { enabled: true },
-    GAMMA:   { enabled: true },
-    ZULU:    { enabled: true },
-    JUPITER: { enabled: true }
-};
-
-function isSTCSourceAllowed(source) {
-    return STC_SOURCE_CONFIG[source]?.enabled === true;
-}
-
-// ==========================================================
-// REGISTER STC SOURCE
-// ==========================================================
-
-function registerSTCSource(symbol, source, ts) {
-
-    if (!isSTCSourceAllowed(source)) return;
-
-    stcWatch[symbol] = {
-        source,
-        startTime: ts
-    };
-}
-
-// ==========================================================
-// ARM STC TRACKER
-// ==========================================================
-function armSTC(symbol, source, ts) {
-
-    if (!symbol || !source) return;
-
-    const key = `${symbol}_${source}`;
-
-    stcTracker[key] = {
-        symbol,
-        source,
-        count: 0,
-        lastDir: null,
-        startTime: ts
-    };
-}
-
-
-function registerAnchor(symbol, source, ts) {
-    if (!symbol) return;
-
-    anchorWatch[symbol] = {
-        source,
-        startTime: ts
-    };
-}
 
 // -----------------------------
 // TIME HELPERS
@@ -501,274 +447,130 @@ function biasFromGroup(group) {
 
 
 // ==========================================================
-//  GODZILLA (Buffered #E / #J merge detector)
-//  Condition:
-//    - Track ALL groups per symbol
-//    - Wait for BOTH #E and #J
-//    - Delay output to batch events
+//  GODZILLA (PERSISTENT — FIRST → #E + #J CONFIRMATION)
+//  Source:
+//    - FIRST fires first
+//    - Then same symbol must receive BOTH #E and #J
+//    - Order does not matter: #E → #J OR #J → #E
 //  Bot 3
 // ==========================================================
 
-const GODZILLA_DELAY_MS = 60 * 1000; // 🔧 change to 120000 if you want 2 mins
-
-const godzillaState = {};
-
 // godzillaState[symbol] = {
-//   events: [{ group, time }],
-//   hasE: false,
-//   hasJ: false,
-//   triggered: false,
-//   timer: null
+//   source: "FIRST",
+//   sourceTime: ts,
+//   sourceGroup: group,
+//   eTime: ts | null,
+//   jTime: ts | null,
+//   firstHashGroup: "#E" | "#J" | null,
+//   firstHashTime: ts | null
 // }
+
+let godzillaState = persisted.godzillaState || {};
+
+function activateGodzilla(symbol, source, sourceTime, sourceGroup) {
+
+    if (!symbol || !source) return;
+
+    godzillaState[symbol] = {
+        source,
+        sourceTime,
+        sourceGroup: sourceGroup || "n/a",
+        eTime: null,
+        jTime: null,
+        firstHashGroup: null,
+        firstHashTime: null
+    };
+
+    saveState();
+}
 
 function processGodzilla(symbol, group, ts) {
 
     if (!symbol || !group) return;
 
-    if (!godzillaState[symbol]) {
-        godzillaState[symbol] = {
-            events: [],
-            hasE: false,
-            hasJ: false,
-            triggered: false,
-            timer: null
-        };
-    }
+    // GODZILLA only listens to #E and #J for now
+    if (group !== "#E" && group !== "#J") return;
 
     const state = godzillaState[symbol];
 
-    // Always collect everything
-    state.events.push({
-        group,
-        time: ts
-    });
+    // Must be activated by FIRST first
+    if (!state) return;
 
-    if (group === "#E") state.hasE = true;
-    if (group === "#J") state.hasJ = true;
-
-    // Trigger condition met
-    if (state.hasE && state.hasJ && !state.triggered) {
-
-        state.triggered = true;
-
-        // 🔥 Start delay timer (batching phase)
-        state.timer = setTimeout(() => {
-
-            const lines = state.events
-                .sort((a,b)=>a.time-b.time)
-                .map(e =>
-                    `• ${e.group} @ ${formatTime(e.time)}`
-                )
-                .join("\n");
-
-            sendToTelegram3(
-                `🦖 GODZILLA\n` +
-                `Symbol: ${symbol}\n` +
-                `Trigger: #E + #J\n` +
-                `Count: ${state.events.length}\n` +
-                `Events:\n${lines}`
-            );
-
-            // Reset AFTER sending
-            delete godzillaState[symbol];
-
-        }, GODZILLA_DELAY_MS);
+    // Store #E / #J time
+    if (group === "#E" && !state.eTime) {
+        state.eTime = ts;
     }
 
-    // Optional cleanup
-    if (Object.keys(godzillaState).length > 5000) {
-        const cutoff = ts - (2 * 60 * 60 * 1000);
-        for (const sym of Object.keys(godzillaState)) {
-            const s = godzillaState[sym];
-            if (!s.events.length || s.events[s.events.length - 1].time < cutoff) {
-                delete godzillaState[sym];
-            }
-        }
+    if (group === "#J" && !state.jTime) {
+        state.jTime = ts;
     }
-}
 
+    // Store whichever hash came first
+    if (!state.firstHashGroup) {
+        state.firstHashGroup = group;
+        state.firstHashTime = ts;
 
-// ==========================================================
-// STC CYCLE ENGINE
-// ==========================================================
-function processSTC(symbol, group, ts) {
-
-    if (!symbol || !group) return;
-
-    // Only STC flip events
-    if (group !== "#BUY" && group !== "#SELL") return;
-
-    // Loop through ALL active trackers
-    for (const key in stcTracker) {
-
-        const tracker = stcTracker[key];
-
-        // Safety
-        if (!tracker) continue;
-
-        // Wrong symbol
-        if (tracker.symbol !== symbol) continue;
-
-        // ==========================================
-        // FIRST FLIP AFTER DIVERGENCE
-        // ==========================================
-        if (tracker.lastDir === null) {
-
-            tracker.lastDir = group;
-            tracker.count = 1;
-
-            continue;
-        }
-
-        // ==========================================
-        // IGNORE SAME DIRECTION REPEATS
-        // ==========================================
-        if (tracker.lastDir === group) {
-            continue;
-        }
-
-        // ==========================================
-        // ALTERNATING FLIP
-        // ==========================================
-        tracker.lastDir = group;
-        tracker.count += 1;
-
-        // ==========================================
-        // FULL 3-CYCLE COMPLETE
-        // ==========================================
-        if (tracker.count >= 3) {
-
-            const elapsedSec =
-                Math.floor((ts - tracker.startTime) / 1000);
-
-            const elapsedMin =
-                Math.floor(elapsedSec / 60);
-
-            const remainSec =
-                elapsedSec % 60;
-
-            sendToTelegram7(
-                `💥 BAZOOKA\n` +
-                `Anchor: ${tracker.source}\n` +
-                `Symbol: ${symbol}\n` +
-                `Final Flip: ${group}\n` +
-                `Started: ${formatDateTime(tracker.startTime)}\n` +
-                `Completed: ${formatDateTime(ts)}\n` +
-                `Elapsed: ${elapsedMin}m ${remainSec}s`
-            );
-
-            // Remove completed tracker
-            delete stcTracker[key];
-        }
-    }
-}
-
-// ==========================================================
-// BAZOOKA
-// ==========================================================
-function processBazooka(symbol, group, ts, body) {
-
-    if (!symbol || !group) return;
-
-    // 🔒 ONLY HASH/STC EVENTS
-    if (!group.startsWith("#")) return;
-
-    // Must already have divergence anchor
-    const watch = anchorWatch[symbol];
-    if (!watch) return;
-
-    const elapsedSec = Math.floor((ts - watch.startTime) / 1000);
-    const elapsedMin = (elapsedSec / 60).toFixed(1);
-
-    sendToTelegram7(
-        `💥 BAZOOKA V3 — ${watch.source}\n` +
-        `Symbol: ${symbol}\n\n` +
-
-        `STC Event: ${group}\n\n` +
-
-        `Anchor Time: ${formatDateTime(watch.startTime)}\n` +
-        `Completion Time: ${formatDateTime(ts)}\n\n` +
-
-        `Elapsed: ${elapsedMin} min (${elapsedSec}s)`
-    );
-
-    // 🔥 RESET AFTER SUCCESSFUL CORRELATION
-    delete anchorWatch[symbol];
-}
-
-
-// ==========================================================
-//  WAKANDA (STC CONFIRMATION ENGINE — SOURCE CONTROLLED)
-//  Bot 9
-// ==========================================================
-
-function processWakanda(symbol, group, ts, body) {
-
-    // Only STC signals
-    if (group !== "#F") return;
-
-    if (!symbol) return;
-
-    const watch = stcWatch[symbol];
-
-    // Must have valid source
-    if (!watch || !isSTCSourceAllowed(watch.source)) {
+        saveState();
         return;
     }
 
-    // Only valid for 15 minutes after trigger
-    if (ts - watch.startTime > 15 * 60 * 1000) {
-        delete stcWatch[symbol];
-        delete scoreState[symbol];
+    // Ignore repeat of first hash group
+    if (group === state.firstHashGroup) {
+        saveState();
         return;
     }
 
-    if (!scoreState[symbol]) {
-        scoreState[symbol] = {
-            hits: []
-        };
-    }
+    // We now have BOTH #E and #J
+    if (state.eTime && state.jTime) {
 
-    const state = scoreState[symbol];
+        const eFirst = state.eTime <= state.jTime;
 
-    const dir = body.dir || "UNKNOWN";
+        const firstHashLabel = eFirst ? "#E" : "#J";
+        const firstHashTime  = eFirst ? state.eTime : state.jTime;
 
-    // Add hit
-    state.hits.push({ time: ts, dir });
+        const secondHashLabel = eFirst ? "#J" : "#E";
+        const secondHashTime  = eFirst ? state.jTime : state.eTime;
 
-    // Keep last 2 minutes
-    const cutoff = ts - (2 * 60 * 1000);
-    state.hits = state.hits.filter(x => x.time > cutoff);
+        const gapFromSourceMs = secondHashTime - state.sourceTime;
+        const gapHashMs       = secondHashTime - firstHashTime;
 
-    const count = state.hits.length;
+        const sourceGapMin = Math.floor(gapFromSourceMs / 60000);
+        const sourceGapSec = Math.floor((gapFromSourceMs % 60000) / 1000);
 
-    let strength = "LOW";
-    if (count >= 2) strength = "MEDIUM";
-    if (count >= 3) strength = "HIGH";
+        const hashGapMin = Math.floor(gapHashMs / 60000);
+        const hashGapSec = Math.floor((gapHashMs % 60000) / 1000);
 
-    // Direction bias
-    let longCount = state.hits.filter(x => x.dir === "LONG").length;
-    let shortCount = state.hits.filter(x => x.dir === "SHORT").length;
+        sendToTelegram3(
+            `🦖 GODZILLA\n` +
+            `Source: ${state.source}\n` +
+            `Symbol: ${symbol}\n\n` +
 
-    let bias = "NEUTRAL";
-    if (longCount > shortCount) bias = "LONG";
-    if (shortCount > longCount) bias = "SHORT";
+            `${state.source} Alert:\n` +
+            `Group: ${state.sourceGroup}\n` +
+            `Time: ${formatDateTime(state.sourceTime)}\n\n` +
 
-    // Fire only if meaningful
-    if (count >= 2) {
+            `Hash Sequence:\n` +
+            `1) ${firstHashLabel} @ ${formatDateTime(firstHashTime)}\n` +
+            `2) ${secondHashLabel} @ ${formatDateTime(secondHashTime)}\n\n` +
 
-        sendToTelegram9(
-            `🚨 STC CONFIRMATION\n` +
-            `Symbol: ${symbol}\n` +
-            `Source: ${watch.source}\n` +
-            `Bias: ${bias}\n` +
-            `Strength: ${strength}\n` +
-            `Signals: ${count} in 2m\n\n` +
-            `⚠️ Post-${watch.source} structure forming`
+            `Gap from ${state.source}: ${sourceGapMin}m ${sourceGapSec}s\n` +
+            `Gap between #E/#J: ${hashGapMin}m ${hashGapSec}s`
         );
+
+        delete godzillaState[symbol];
+        saveState();
+        return;
     }
+
+    saveState();
 }
 
+// ==========================================================
+// STC setup removed intentionally.
+// ==========================================================
+// ==========================================================
+// BAZOOKA disabled/removed intentionally. Name reserved for future implementation.
+// ==========================================================
 // ==========================================================
 //  BLACK_PANTHER (10 groups → 3 distinct groups, ≤ 300s)
 // ==========================================================
@@ -862,14 +664,13 @@ if (diffMs <= GAMMA_WINDOW_MS) {
         `Second hit: ${formatDateTime(ts)}\n` +
         `Gap: ${diffMin}m ${diffSec}s`
     );
-	
-	armSTC(symbol, "GAMMA", ts);
+
 
     // existing (leave this)
-    registerSTCSource(symbol, "GAMMA", ts);
+
 
     // 🔥 ADD THIS LINE (for BAZOOKA)
-    registerAnchor(symbol, "GAMMA", ts);
+
 }
         // ======================================================
         // 🟡 NEAR MISS (10–15 min)
@@ -1141,29 +942,7 @@ const TANGO_WINDOW_MS = 4 * 60 * 60 * 1000;
 let tangoState = persisted.tangoState || {};
 
 
-// ==========================================================
-// STC TRACKING STATE
-// ==========================================================
-let stcWatch = {};
-// ==========================================================
-//  ANCHOR TRACKER (FIRST + YABA)
-// ==========================================================
-const anchorWatch = {};
-
-
-// ==========================================================
-// RENDER STC CYCLE TRACKER
-// ==========================================================
-
-// stcTracker[symbol] = {
-//     source: "YABA" | "GAMMA" | "FIRST",
-//     count: number,
-//     lastDir: "#BUY" | "#SELL",
-//     startTime: timestamp
-// }
-
-const stcTracker = {};
-
+// STC tracking state removed intentionally.
 
 // tangoState[symbol][family] = lastTimestamp
 
@@ -1202,7 +981,7 @@ function processTango(symbol, group, ts) {
             `Family: ${family}\n` +
             `Time: ${formatDateTime(ts)}`
         );
-		registerSTCSource(symbol, "TANGO", ts);
+
 
         tangoState[symbol][family] = ts;
         saveState();
@@ -1367,7 +1146,7 @@ function processZulu(symbol, group, ts) {
             `Gap: ${diffMin}m ${diffSec}s\n` +
             `Condition: First-in-4h + Pair ≤10m`
         );
-		registerSTCSource(symbol, "ZULU", ts);
+
 
         // RESET after fire
         delete zuluState[symbol][family];
@@ -1996,7 +1775,7 @@ function processJupiter(symbol, group, ts) {
                 `Gap: ${diffMin}m ${diffSec}s\n` +
                 `Condition: First-in-4h + Pair ≤20m`
             );
-			registerSTCSource(symbol, "JUPITER", ts);
+
 
             // 🔥 RESET after firing (one clean cycle)
             delete jupiterState[symbol];
@@ -2127,11 +1906,10 @@ function processYaba(symbol, group, ts) {
             `Gap: ${diffSec}s\n` +
             `Window: 90s`
         );
-		
-		armSTC(symbol, "YABA", ts);
+
 
         // 🔥 Reset after fire (one clean cycle)
-		registerAnchor(symbol, "YABA", ts);
+
         delete yabaMemory[symbol][family];
         return;
     }
@@ -2373,8 +2151,9 @@ function processFirst(symbol, group, ts) {
         );
 
         setLastSeen(symbol, key, ts);
-		registerAnchor(symbol, "FIRST", ts);
-		armSTC(symbol, "FIRST", ts);
+        activateGodzilla(symbol, "FIRST", ts, group);
+
+
     }
 
     // else → ignore
@@ -2472,10 +2251,7 @@ if (!isHash) {
 } else {
     // 🔴 HASH ECOSYSTEM (isolated)
 
-    //processGodzilla(symbol, group, ts);
-	processSTC(symbol, group, ts);
-
-    processBazooka(symbol, group, ts, body);
+    processGodzilla(symbol, group, ts);
 }
 
 
