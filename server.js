@@ -2192,7 +2192,7 @@ if (!isHash) {
     //processAudit(symbol, group, ts, body);
     processBababia(symbol, group, ts);
     processMAMAMIA(symbol, group, ts);
-    processWakanda(symbol, group, ts, body);
+    //processWakanda(symbol, group, ts, body);
     processJupiter(symbol, group, ts);
 
 } else {
