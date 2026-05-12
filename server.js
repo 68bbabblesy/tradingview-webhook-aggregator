@@ -447,22 +447,18 @@ function biasFromGroup(group) {
 
 
 // ==========================================================
-//  GODZILLA (PERSISTENT — FIRST → #E + #J CONFIRMATION)
+//  GODZILLA (PERSISTENT — FIRST → FIRST HASH CONFIRMATION)
 //  Source:
 //    - FIRST fires first
-//    - Then same symbol must receive BOTH #E and #J
-//    - Order does not matter: #E → #J OR #J → #E
+//    - Then same symbol must receive the FIRST # group of any kind
+//    - Any group starting with # is accepted
 //  Bot 3
 // ==========================================================
 
 // godzillaState[symbol] = {
 //   source: "FIRST",
 //   sourceTime: ts,
-//   sourceGroup: group,
-//   eTime: ts | null,
-//   jTime: ts | null,
-//   firstHashGroup: "#E" | "#J" | null,
-//   firstHashTime: ts | null
+//   sourceGroup: group
 // }
 
 let godzillaState = persisted.godzillaState || {};
@@ -474,11 +470,7 @@ function activateGodzilla(symbol, source, sourceTime, sourceGroup) {
     godzillaState[symbol] = {
         source,
         sourceTime,
-        sourceGroup: sourceGroup || "n/a",
-        eTime: null,
-        jTime: null,
-        firstHashGroup: null,
-        firstHashTime: null
+        sourceGroup: sourceGroup || "n/a"
     };
 
     saveState();
@@ -488,84 +480,39 @@ function processGodzilla(symbol, group, ts) {
 
     if (!symbol || !group) return;
 
-    // GODZILLA only listens to #E and #J for now
-    if (group !== "#E" && group !== "#J") return;
+    // GODZILLA listens to the first # group after FIRST
+    if (!group.startsWith("#")) return;
 
     const state = godzillaState[symbol];
 
     // Must be activated by FIRST first
     if (!state) return;
 
-    // Store #E / #J time
-    if (group === "#E" && !state.eTime) {
-        state.eTime = ts;
-    }
+    const gapFromSourceMs = ts - state.sourceTime;
+    const gapMin = Math.floor(gapFromSourceMs / 60000);
+    const gapSec = Math.floor((gapFromSourceMs % 60000) / 1000);
 
-    if (group === "#J" && !state.jTime) {
-        state.jTime = ts;
-    }
+    sendToTelegram3(
+        `🦖 GODZILLA\n` +
+        `Source: ${state.source}\n` +
+        `Symbol: ${symbol}\n\n` +
 
-    // Store whichever hash came first
-    if (!state.firstHashGroup) {
-        state.firstHashGroup = group;
-        state.firstHashTime = ts;
+        `${state.source} Alert:\n` +
+        `Group: ${state.sourceGroup || "n/a"}\n` +
+        `Time: ${formatDateTime(state.sourceTime)}\n\n` +
 
-        saveState();
-        return;
-    }
+        `Hash Confirmation:\n` +
+        `Group: ${group}\n` +
+        `Time: ${formatDateTime(ts)}\n\n` +
 
-    // Ignore repeat of first hash group
-    if (group === state.firstHashGroup) {
-        saveState();
-        return;
-    }
+        `Gap from ${state.source}: ${gapMin}m ${gapSec}s`
+    );
 
-    // We now have BOTH #E and #J
-    if (state.eTime && state.jTime) {
-
-        const eFirst = state.eTime <= state.jTime;
-
-        const firstHashLabel = eFirst ? "#E" : "#J";
-        const firstHashTime  = eFirst ? state.eTime : state.jTime;
-
-        const secondHashLabel = eFirst ? "#J" : "#E";
-        const secondHashTime  = eFirst ? state.jTime : state.eTime;
-
-        const gapFromSourceMs = secondHashTime - state.sourceTime;
-        const gapHashMs       = secondHashTime - firstHashTime;
-
-        const sourceGapMin = Math.floor(gapFromSourceMs / 60000);
-        const sourceGapSec = Math.floor((gapFromSourceMs % 60000) / 1000);
-
-        const hashGapMin = Math.floor(gapHashMs / 60000);
-        const hashGapSec = Math.floor((gapHashMs % 60000) / 1000);
-
-        sendToTelegram3(
-            `🦖 GODZILLA\n` +
-            `Source: ${state.source}\n` +
-            `Symbol: ${symbol}\n\n` +
-
-            `${state.source} Alert:\n` +
-            `Group: ${state.sourceGroup}\n` +
-            `Time: ${formatDateTime(state.sourceTime)}\n\n` +
-
-            `Hash Sequence:\n` +
-            `1) ${firstHashLabel} @ ${formatDateTime(firstHashTime)}\n` +
-            `2) ${secondHashLabel} @ ${formatDateTime(secondHashTime)}\n\n` +
-
-            `Gap from ${state.source}: ${sourceGapMin}m ${sourceGapSec}s\n` +
-            `Gap between #E/#J: ${hashGapMin}m ${hashGapSec}s`
-        );
-
-        delete godzillaState[symbol];
-        saveState();
-        return;
-    }
-
+    // Reset after first hash confirmation
+    delete godzillaState[symbol];
     saveState();
 }
-
-// ==========================================================
+\n// ==========================================================
 // STC setup removed intentionally.
 // ==========================================================
 // ==========================================================
