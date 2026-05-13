@@ -463,6 +463,8 @@ function biasFromGroup(group) {
 
 let godzillaState = persisted.godzillaState || {};
 
+const GODZILLA_EXPIRE_MS = 2 * 60 * 60 * 1000; // 2 hours
+
 function activateGodzilla(symbol, source, sourceTime, sourceGroup) {
 
     if (!symbol || !source) return;
@@ -489,6 +491,26 @@ function processGodzilla(symbol, group, ts) {
     if (!state) return;
 
     const gapFromSourceMs = ts - state.sourceTime;
+
+    // Expire stale FIRST → # tracking after 2 hours
+    if (gapFromSourceMs > GODZILLA_EXPIRE_MS) {
+        console.log(
+            "GODZILLA expired:",
+            symbol,
+            "source:",
+            state.source,
+            "sourceTime:",
+            formatDateTime(state.sourceTime),
+            "hash:",
+            group,
+            "hashTime:",
+            formatDateTime(ts)
+        );
+
+        delete godzillaState[symbol];
+        saveState();
+        return;
+    }
     const gapMin = Math.floor(gapFromSourceMs / 60000);
     const gapSec = Math.floor((gapFromSourceMs % 60000) / 1000);
 
