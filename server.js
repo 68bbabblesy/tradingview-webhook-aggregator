@@ -2128,6 +2128,271 @@ function processFirst(symbol, group, ts) {
     // else → ignore
 }
 
+
+// ==========================================================
+//  ZONEFORGE (Intraday support/resistance pressure zones)
+//  Bot 8
+//
+//  Concept:
+//    - positive_regular_divergence  → SUPPORT pressure
+//    - negative_regular_divergence  → RESISTANCE pressure
+//    - same symbol + same direction + multi-group clustering
+//    - tiered for daytrading: FAST / CORE / PRIME
+// ==========================================================
+
+const ZONEFORGE_MAX_WINDOW_MS = 15 * 60 * 1000;
+
+const ZONEFORGE_TIERS = [
+    {
+        name: "FAST",
+        emoji: "⚡",
+        windowMs: 5 * 60 * 1000,
+        minAlerts: 3,
+        minGroups: 2,
+        minFamilies: 1,
+        minEngines: 1,
+        cooldownMs: 30 * 60 * 1000
+    },
+    {
+        name: "CORE",
+        emoji: "🔥",
+        windowMs: 10 * 60 * 1000,
+        minAlerts: 4,
+        minGroups: 3,
+        minFamilies: 2,
+        minEngines: 2,
+        cooldownMs: 45 * 60 * 1000
+    },
+    {
+        name: "PRIME",
+        emoji: "🚨",
+        windowMs: 15 * 60 * 1000,
+        minAlerts: 6,
+        minGroups: 4,
+        minFamilies: 3,
+        minEngines: 3,
+        cooldownMs: 60 * 60 * 1000
+    }
+];
+
+const ZONEFORGE_TIER_RANK = {
+    FAST: 1,
+    CORE: 2,
+    PRIME: 3
+};
+
+// zoneforgeMemory[symbol][bias] = [{ group, family, engine, time }]
+const zoneforgeMemory = {};
+
+// zoneforgeLastFire[symbol][bias] = { tier, time }
+const zoneforgeLastFire = {};
+
+function cleanLabel(value, fallback) {
+    const s = String(value || "").trim();
+    return s || fallback;
+}
+
+function normalizeEngineName(body) {
+    // Use any available source/name field from the TradingView JSON.
+    // If none exists, fall back to "raw" so FAST can still work.
+    return cleanLabel(
+        body.source ||
+        body.engine ||
+        body.name ||
+        body.alert_name ||
+        body.indicator ||
+        body.script ||
+        body.bot ||
+        body.kind ||
+        body.signal,
+        "raw"
+    );
+}
+
+function getZoneforgeBias(body) {
+    const fields = [
+        body.kind,
+        body.signal,
+        body.type,
+        body.action,
+        body.direction,
+        body.name,
+        body.source,
+        body.message
+    ]
+        .filter(Boolean)
+        .map(x => String(x).toLowerCase())
+        .join(" ");
+
+    if (
+        fields.includes("positive_regular_divergence") ||
+        fields.includes("positive regular divergence") ||
+        fields.includes("positive_divergence")
+    ) {
+        return "SUPPORT";
+    }
+
+    if (
+        fields.includes("negative_regular_divergence") ||
+        fields.includes("negative regular divergence") ||
+        fields.includes("negative_divergence")
+    ) {
+        return "RESISTANCE";
+    }
+
+    return null;
+}
+
+function zoneforgeReadLine(bias, tierName) {
+    if (bias === "SUPPORT") {
+        if (tierName === "FAST") return "EARLY SUPPORT PRESSURE";
+        if (tierName === "CORE") return "SUPPORT ZONE FORMING";
+        return "STRONG SUPPORT ZONE";
+    }
+
+    if (tierName === "FAST") return "EARLY RESISTANCE PRESSURE";
+    if (tierName === "CORE") return "RESISTANCE ZONE FORMING";
+    return "STRONG RESISTANCE ZONE";
+}
+
+function zoneforgeNextWatch(bias) {
+    if (bias === "SUPPORT") {
+        return "Retest / deviation below zone + fresh positive divergence";
+    }
+    return "Retest / deviation above zone + fresh negative divergence";
+}
+
+function processZoneforge(symbol, group, ts, body) {
+    if (!symbol || !group || !body) return;
+
+    const bias = getZoneforgeBias(body);
+    if (!bias) return;
+
+    const family = getFamily(group);
+    const engine = normalizeEngineName(body);
+
+    if (!zoneforgeMemory[symbol]) {
+        zoneforgeMemory[symbol] = {};
+    }
+
+    if (!zoneforgeMemory[symbol][bias]) {
+        zoneforgeMemory[symbol][bias] = [];
+    }
+
+    const buf = zoneforgeMemory[symbol][bias];
+
+    buf.push({
+        group,
+        family,
+        engine,
+        time: ts
+    });
+
+    // Keep only the maximum lookback needed by PRIME.
+    const cutoff = ts - ZONEFORGE_MAX_WINDOW_MS;
+    while (buf.length && buf[0].time < cutoff) {
+        buf.shift();
+    }
+
+    let bestTier = null;
+    let bestEvents = [];
+
+    for (const tier of ZONEFORGE_TIERS) {
+        const tierCutoff = ts - tier.windowMs;
+        const recent = buf.filter(e => e.time >= tierCutoff);
+
+        const groups = new Set(recent.map(e => e.group).filter(Boolean));
+        const families = new Set(recent.map(e => e.family).filter(Boolean));
+        const engines = new Set(recent.map(e => e.engine).filter(Boolean));
+
+        const passed =
+            recent.length >= tier.minAlerts &&
+            groups.size >= tier.minGroups &&
+            families.size >= tier.minFamilies &&
+            engines.size >= tier.minEngines;
+
+        if (passed) {
+            bestTier = tier;
+            bestEvents = recent;
+        }
+    }
+
+    if (!bestTier) return;
+
+    if (!zoneforgeLastFire[symbol]) {
+        zoneforgeLastFire[symbol] = {};
+    }
+
+    const lastFire = zoneforgeLastFire[symbol][bias];
+    const previousRank = lastFire ? ZONEFORGE_TIER_RANK[lastFire.tier] : 0;
+    const newRank = ZONEFORGE_TIER_RANK[bestTier.name];
+
+    const isUpgrade = lastFire && newRank > previousRank;
+    const cooldownExpired = !lastFire || (ts - lastFire.time >= bestTier.cooldownMs);
+
+    // Fire when this is a fresh zone or an upgrade FAST → CORE → PRIME.
+    if (!isUpgrade && !cooldownExpired) return;
+
+    const groups = [...new Set(bestEvents.map(e => e.group).filter(Boolean))];
+    const families = [...new Set(bestEvents.map(e => e.family).filter(Boolean))];
+    const engines = [...new Set(bestEvents.map(e => e.engine).filter(Boolean))];
+
+    const firstTime = bestEvents[0].time;
+    const lastTime = bestEvents[bestEvents.length - 1].time;
+    const spanMs = lastTime - firstTime;
+    const spanMin = Math.floor(spanMs / 60000);
+    const spanSec = Math.floor((spanMs % 60000) / 1000);
+
+    const groupLines = groups.slice(0, 18).join(", ") + (groups.length > 18 ? " ..." : "");
+    const engineLines = engines.slice(0, 10).join(", ") + (engines.length > 10 ? " ..." : "");
+
+    const upgradeLine = isUpgrade ? `UPGRADE: ${lastFire.tier} → ${bestTier.name}\n` : "";
+
+    sendToTelegram8(
+        `${bestTier.emoji} ZONEFORGE ${bestTier.name} ${bias}\n` +
+        upgradeLine +
+        `Symbol: ${symbol}\n` +
+        `Bias: ${bias}\n` +
+        `Read: ${zoneforgeReadLine(bias, bestTier.name)}\n\n` +
+
+        `Window: ${Math.floor(bestTier.windowMs / 60000)}m\n` +
+        `Span: ${spanMin}m ${spanSec}s\n` +
+        `Alerts: ${bestEvents.length}\n` +
+        `Groups: ${groups.length} (${groupLines})\n` +
+        `Families: ${families.length} (${families.join(", ")})\n` +
+        `Engines: ${engines.length} (${engineLines})\n\n` +
+
+        `First: ${formatDateTime(firstTime)}\n` +
+        `Latest: ${formatDateTime(lastTime)}\n` +
+        `Next watch: ${zoneforgeNextWatch(bias)}`
+    );
+
+    zoneforgeLastFire[symbol][bias] = {
+        tier: bestTier.name,
+        time: ts
+    };
+
+    // Memory guard
+    if (Object.keys(zoneforgeMemory).length > 5000) {
+        const pruneCutoff = ts - (60 * 60 * 1000);
+
+        for (const sym of Object.keys(zoneforgeMemory)) {
+            for (const b of Object.keys(zoneforgeMemory[sym])) {
+                zoneforgeMemory[sym][b] = zoneforgeMemory[sym][b]
+                    .filter(e => e.time >= pruneCutoff);
+
+                if (!zoneforgeMemory[sym][b].length) {
+                    delete zoneforgeMemory[sym][b];
+                }
+            }
+
+            if (!Object.keys(zoneforgeMemory[sym]).length) {
+                delete zoneforgeMemory[sym];
+            }
+        }
+    }
+}
+
 // ==========================================================
 //  WEBHOOK HANDLER
 // ==========================================================
@@ -2214,6 +2479,7 @@ if (!isHash) {
     //processAudit(symbol, group, ts, body);
     processBababia(symbol, group, ts);
     processMAMAMIA(symbol, group, ts);
+    processZoneforge(symbol, group, ts, body);
     //processWakanda(symbol, group, ts, body);
     processJupiter(symbol, group, ts);
 
