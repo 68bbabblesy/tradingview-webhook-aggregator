@@ -39,7 +39,8 @@ function loadState() {
                 tangoState: parsed.tangoState || {},
                 scoreState: parsed.scoreState || {},
                 lastSeenState: parsed.lastSeenState || {},
-                godzillaState: parsed.godzillaState || {}
+                godzillaState: parsed.godzillaState || {},
+                bazookaState: parsed.bazookaState || {}
             };
         }
     } catch {}
@@ -50,7 +51,8 @@ function loadState() {
         tangoState: {},
         scoreState: {},
         lastSeenState: {},
-        godzillaState: {}
+        godzillaState: {},
+        bazookaState: {}
     };
 }
 
@@ -65,7 +67,8 @@ function saveState() {
                     tangoState,
                     scoreState,
                     lastSeenState,
-                    godzillaState
+                    godzillaState,
+                    bazookaState
                 },
                 null,
                 2
@@ -538,8 +541,95 @@ function processGodzilla(symbol, group, ts) {
 // STC setup removed intentionally.
 // ==========================================================
 // ==========================================================
-// BAZOOKA disabled/removed intentionally. Name reserved for future implementation.
+//  BAZOOKA (PERSISTENT — YABA → FIRST HASH CONFIRMATION)
+//  Source:
+//    - YABA fires first
+//    - Then same symbol must receive the FIRST # group of any kind
+//    - Any group starting with # is accepted
+//  Bot 7
 // ==========================================================
+
+// bazookaState[symbol] = {
+//   source: "YABA",
+//   sourceTime: ts,
+//   sourceGroup: group
+// }
+
+let bazookaState = persisted.bazookaState || {};
+
+const BAZOOKA_EXPIRE_MS = 2 * 60 * 60 * 1000; // 2 hours
+
+function activateBazooka(symbol, source, sourceTime, sourceGroup) {
+
+    if (!symbol || !source) return;
+
+    bazookaState[symbol] = {
+        source,
+        sourceTime,
+        sourceGroup: sourceGroup || "n/a"
+    };
+
+    saveState();
+}
+
+function processBazooka(symbol, group, ts) {
+
+    if (!symbol || !group) return;
+
+    // BAZOOKA listens to the first # group after YABA
+    if (!group.startsWith("#")) return;
+
+    const state = bazookaState[symbol];
+
+    // Must be activated by YABA first
+    if (!state) return;
+
+    const gapFromSourceMs = ts - state.sourceTime;
+
+    // Expire stale YABA → # tracking after 2 hours
+    if (gapFromSourceMs > BAZOOKA_EXPIRE_MS) {
+        console.log(
+            "BAZOOKA expired:",
+            symbol,
+            "source:",
+            state.source,
+            "sourceTime:",
+            formatDateTime(state.sourceTime),
+            "hash:",
+            group,
+            "hashTime:",
+            formatDateTime(ts)
+        );
+
+        delete bazookaState[symbol];
+        saveState();
+        return;
+    }
+
+    const gapMin = Math.floor(gapFromSourceMs / 60000);
+    const gapSec = Math.floor((gapFromSourceMs % 60000) / 1000);
+
+    sendToTelegram7(
+        `💥 BAZOOKA\n` +
+        `Source: ${state.source}\n` +
+        `Symbol: ${symbol}\n\n` +
+
+        `${state.source} Alert:\n` +
+        `Group: ${state.sourceGroup || "n/a"}\n` +
+        `Time: ${formatDateTime(state.sourceTime)}\n\n` +
+
+        `Hash Confirmation:\n` +
+        `Group: ${group}\n` +
+        `Time: ${formatDateTime(ts)}\n\n` +
+
+        `Gap from ${state.source}: ${gapMin}m ${gapSec}s`
+    );
+
+    // Reset after first hash confirmation
+    delete bazookaState[symbol];
+    saveState();
+}
+
 // ==========================================================
 //  BLACK_PANTHER (Family subgroup burst detector)
 //  Condition:
@@ -1923,7 +2013,9 @@ function processYaba(symbol, group, ts) {
         );
 
 
-        // 🔥 Reset after fire (one clean cycle)
+        
+        activateBazooka(symbol, "YABA", ts, group);
+// 🔥 Reset after fire (one clean cycle)
 
         delete yabaMemory[symbol][family];
         return;
@@ -2533,6 +2625,7 @@ if (!isHash) {
     // 🔴 HASH ECOSYSTEM (isolated)
 
     processGodzilla(symbol, group, ts);
+    processBazooka(symbol, group, ts);
 }
 
 
