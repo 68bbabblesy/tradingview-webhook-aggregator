@@ -160,6 +160,16 @@ RULES = RULES.map((r, idx) => ({
     windowSeconds: Number(r.windowSeconds || WINDOW_SECONDS_DEF)
 })).filter(r => r.groups.length);
 
+// Optional: disable selected RULES without editing the big RULES JSON.
+// Example Render env:
+// DISABLED_RULES=ANY3
+const DISABLED_RULES = new Set(
+    (process.env.DISABLED_RULES || "")
+        .split(",")
+        .map(s => s.trim())
+        .filter(Boolean)
+);
+
 // -----------------------------
 // TIME HELPERS
 // -----------------------------
@@ -891,66 +901,85 @@ function processBababia(symbol, group, ts) {
 
 
 // ==========================================================
-//  MAMAMIA (Buffered Burst Engine — E / Q)
-//  Logical Window: 50 seconds
-//  Delivery Buffer: 60 seconds
+//  MAMAMIA (HASH ECOSYSTEM — same symbol, different # groups)
+//  Condition:
+//    - # ecosystem only
+//    - Same symbol
+//    - Different # groups
+//    - Within 20 seconds
+//  Bot 1
 // ==========================================================
 
-const MAMAMIA_WINDOW_MS = 50 * 1000;
-const MAMAMIA_BUFFER_MS = 60 * 1000;
-const MAMAMIA_MIN_COUNT = 10;
+const MAMAMIA_HASH_WINDOW_MS = 20 * 1000; // 20 seconds
 
-const mamamiaState = {
-    E: { active: false, symbols: new Map(), startTime: null, timer: null },
-    Q: { active: false, symbols: new Map(), startTime: null, timer: null }
-};
+// mamamiaHashMemory[symbol] = [{ group, time }]
+const mamamiaHashMemory = {};
 
 function processMAMAMIA(symbol, group, ts) {
 
-    if (!mamamiaState[group]) return;
+    if (!symbol || !group) return;
 
-    const state = mamamiaState[group];
+    // MAMAMIA is now only for # ecosystem
+    if (!group.startsWith("#")) return;
 
-    if (!state.active) {
-        state.active = true;
-        state.startTime = ts;
-        state.symbols.clear();
-
-        state.timer = setTimeout(() => {
-
-            const cutoff = state.startTime + MAMAMIA_WINDOW_MS;
-
-            const entries = [...state.symbols.entries()]
-                .filter(([_, time]) => time <= cutoff);
-
-            if (entries.length >= MAMAMIA_MIN_COUNT) {
-
-                const lines = entries
-                    .sort((a, b) => a[1] - b[1])
-                    .map(([sym, time]) =>
-                        `• ${sym} @ ${new Date(time).toLocaleTimeString()}`
-                    )
-                    .join("\n");
-
-                sendToTelegram9(
-                    `🎶 MAMAMIA\n` +
-                    `Group: ${group}\n` +
-                    `Unique Symbols: ${entries.length}\n` +
-                    `Window: 50s\n` +
-                    `Symbols:\n${lines}`
-                );
-            }
-
-            state.active = false;
-            state.symbols.clear();
-            state.startTime = null;
-            clearTimeout(state.timer);
-            state.timer = null;
-
-        }, MAMAMIA_WINDOW_MS + MAMAMIA_BUFFER_MS);
+    if (!mamamiaHashMemory[symbol]) {
+        mamamiaHashMemory[symbol] = [];
     }
 
-    state.symbols.set(symbol, ts);
+    const buf = mamamiaHashMemory[symbol];
+
+    // Keep only last 20 seconds
+    const cutoff = ts - MAMAMIA_HASH_WINDOW_MS;
+    while (buf.length && buf[0].time < cutoff) {
+        buf.shift();
+    }
+
+    // Look for a DIFFERENT # group within window
+    const match = buf.find(e => e.group !== group);
+
+    if (match) {
+        const diffMs = ts - match.time;
+        const diffSec = Math.floor(diffMs / 1000);
+
+        const firstTime = match.time <= ts ? match.time : ts;
+        const secondTime = match.time <= ts ? ts : match.time;
+
+        const firstGroup = match.time <= ts ? match.group : group;
+        const secondGroup = match.time <= ts ? group : match.group;
+
+        sendToTelegram1(
+            `🎶 MAMAMIA\n` +
+            `Symbol: ${symbol}\n` +
+            `Condition: Different # groups within 20s\n\n` +
+            `1) ${firstGroup} @ ${formatDateTime(firstTime)}\n` +
+            `2) ${secondGroup} @ ${formatDateTime(secondTime)}\n` +
+            `Gap: ${diffSec}s`
+        );
+
+        // Reset after alert to avoid spam on same cluster
+        delete mamamiaHashMemory[symbol];
+        return;
+    }
+
+    // Store latest # group
+    buf.push({
+        group,
+        time: ts
+    });
+
+    // Safety cleanup
+    if (Object.keys(mamamiaHashMemory).length > 5000) {
+        const pruneCutoff = ts - (2 * 60 * 60 * 1000);
+
+        for (const sym of Object.keys(mamamiaHashMemory)) {
+            mamamiaHashMemory[sym] = mamamiaHashMemory[sym]
+                .filter(e => e.time >= pruneCutoff);
+
+            if (!mamamiaHashMemory[sym].length) {
+                delete mamamiaHashMemory[sym];
+            }
+        }
+    }
 }
 
 // ==========================================================
@@ -2616,7 +2645,7 @@ if (!isHash) {
     //processTesting(symbol, group, ts);
     //processAudit(symbol, group, ts, body);
     processBababia(symbol, group, ts);
-    processMAMAMIA(symbol, group, ts);
+    // processMAMAMIA(symbol, group, ts); // moved to hash ecosystem
     processZoneforge(symbol, group, ts, body);
     //processWakanda(symbol, group, ts, body);
     processJupiter(symbol, group, ts);
@@ -2625,6 +2654,7 @@ if (!isHash) {
     // 🔴 HASH ECOSYSTEM (isolated)
 
     processGodzilla(symbol, group, ts);
+    processMAMAMIA(symbol, group, ts);
     processBazooka(symbol, group, ts);
 }
 
@@ -2658,6 +2688,8 @@ setInterval(async () => {
 
     for (const r of RULES) {
         const { name, groups, threshold, windowSeconds } = r;
+
+        if (DISABLED_RULES.has(name)) continue;
 
         for (const g of groups) pruneOld(access(g), windowSeconds * 1000);
 
