@@ -541,52 +541,98 @@ function processGodzilla(symbol, group, ts) {
 // BAZOOKA disabled/removed intentionally. Name reserved for future implementation.
 // ==========================================================
 // ==========================================================
-//  BLACK_PANTHER (10 groups → 3 distinct groups, ≤ 300s)
+//  BLACK_PANTHER (Family subgroup burst detector)
+//  Condition:
+//    - Same symbol
+//    - Same family: 16A/16B/16C => family 16
+//    - 3 DISTINCT subgroups within 1 minute
+//  Bot 4
 // ==========================================================
 
-const BLACK_PANTHER_WINDOW_MS = 300 * 1000;
+const BLACK_PANTHER_WINDOW_MS = 60 * 1000; // 1 minute
+
+// blackPantherMemory[symbol][family] = [{ group, time }]
+const blackPantherMemory = {};
 
 function processBlackPanther(symbol, group, ts) {
-    const ABCDWXSTUV = ["A", "B", "C", "D", "W", "X", "S", "T", "U", "V"];
 
-    if (!ABCDWXSTUV.includes(group)) return;
+    if (!symbol || !group) return;
 
-    // Collect recent distinct groups within window
-    const recent = ABCDWXSTUV
-        .map(g => safeGet(symbol, g))
-        .filter(Boolean)
-        .filter(x => Math.abs(ts - x.time) <= BLACK_PANTHER_WINDOW_MS);
+    const family = getFamily(group);
+    if (!family) return;
 
-    // We need at least 3 DISTINCT groups
-    const distinct = {};
-    for (const x of recent) {
-        distinct[x.payload.group] = x;
+    if (!blackPantherMemory[symbol]) {
+        blackPantherMemory[symbol] = {};
     }
 
-    const groups = Object.keys(distinct);
-    if (groups.length < 3) return;
+    if (!blackPantherMemory[symbol][family]) {
+        blackPantherMemory[symbol][family] = [];
+    }
 
-    // Pick the latest 3 distinct groups by time
-    const picked = Object.values(distinct)
+    const buf = blackPantherMemory[symbol][family];
+
+    // Keep only last 1 minute
+    const cutoff = ts - BLACK_PANTHER_WINDOW_MS;
+    while (buf.length && buf[0].time < cutoff) {
+        buf.shift();
+    }
+
+    // Keep groups distinct: if same subgroup repeats, refresh its timestamp
+    const existingIndex = buf.findIndex(e => e.group === group);
+    if (existingIndex !== -1) {
+        buf.splice(existingIndex, 1);
+    }
+
+    buf.push({ group, time: ts });
+
+    // Need 3 distinct subgroups
+    if (buf.length < 3) return;
+
+    const picked = buf
+        .slice()
         .sort((a, b) => a.time - b.time)
         .slice(-3);
 
-    const times = picked.map(p => new Date(p.time).toLocaleString());
+    const firstTime = picked[0].time;
+    const lastTime  = picked[picked.length - 1].time;
 
-    const msg =
+    const gapMs  = lastTime - firstTime;
+    const gapSec = Math.floor(gapMs / 1000);
+
+    sendToTelegram4(
         `🖤 BLACK_PANTHER\n` +
         `Symbol: ${symbol}\n` +
-        `Groups: ${picked.map(p => p.payload.group).join(" → ")}\n` +
+        `Family: ${family}\n` +
+        `Subgroups: ${picked.map(e => e.group).join(" → ")}\n` +
+        `Window: ${gapSec}s\n\n` +
         `Times:\n` +
-        `1) ${times[0]}\n` +
-        `2) ${times[1]}\n` +
-        `3) ${times[2]}`;
+        picked.map((e, i) =>
+            `${i + 1}) ${e.group} @ ${formatDateTime(e.time)}`
+        ).join("\n")
+    );
 
-    sendToTelegram4(msg);
-	
-	
+    // Reset this symbol+family after firing to avoid spam
+    delete blackPantherMemory[symbol][family];
 
-	
+    // Safety cleanup
+    if (Object.keys(blackPantherMemory).length > 5000) {
+        const pruneCutoff = ts - (2 * 60 * 60 * 1000);
+
+        for (const sym of Object.keys(blackPantherMemory)) {
+            const families = blackPantherMemory[sym];
+
+            for (const fam of Object.keys(families)) {
+                const arr = families[fam];
+                if (!arr.length || arr[arr.length - 1].time < pruneCutoff) {
+                    delete families[fam];
+                }
+            }
+
+            if (!Object.keys(families).length) {
+                delete blackPantherMemory[sym];
+            }
+        }
+    }
 }
 
 // ==========================================================
