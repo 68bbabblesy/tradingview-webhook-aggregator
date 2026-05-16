@@ -919,33 +919,33 @@ function processMAMAMIA(symbol, group, ts) {
 
     if (!symbol || !group) return;
 
-    // MAMAMIA is now only for # ecosystem
+    // MAMAMIA is only for # ecosystem
     if (!group.startsWith("#")) return;
 
     if (!mamamiaHashMemory[symbol]) {
         mamamiaHashMemory[symbol] = [];
     }
 
-    const buf = mamamiaHashMemory[symbol];
+    let buf = mamamiaHashMemory[symbol];
 
     // Keep only last 20 seconds
     const cutoff = ts - MAMAMIA_HASH_WINDOW_MS;
-    while (buf.length && buf[0].time < cutoff) {
-        buf.shift();
-    }
+    buf = buf.filter(e => e.time >= cutoff);
+    mamamiaHashMemory[symbol] = buf;
 
-    // Look for a DIFFERENT # group within window
+    // Find a DIFFERENT # group inside the 20s window
     const match = buf.find(e => e.group !== group);
 
     if (match) {
-        const diffMs = ts - match.time;
-        const diffSec = Math.floor(diffMs / 1000);
 
         const firstTime = match.time <= ts ? match.time : ts;
         const secondTime = match.time <= ts ? ts : match.time;
 
         const firstGroup = match.time <= ts ? match.group : group;
         const secondGroup = match.time <= ts ? group : match.group;
+
+        const diffMs = secondTime - firstTime;
+        const diffSec = Math.floor(diffMs / 1000);
 
         sendToTelegram1(
             `🎶 MAMAMIA\n` +
@@ -956,16 +956,33 @@ function processMAMAMIA(symbol, group, ts) {
             `Gap: ${diffSec}s`
         );
 
-        // Reset after alert to avoid spam on same cluster
-        delete mamamiaHashMemory[symbol];
+        // Reset cluster, but keep current # as fresh seed for future pairs
+        mamamiaHashMemory[symbol] = [
+            {
+                group,
+                time: ts
+            }
+        ];
+
         return;
     }
 
-    // Store latest # group
-    buf.push({
-        group,
-        time: ts
-    });
+    // Avoid stacking exact same # repeatedly; refresh timestamp instead
+    const sameIndex = buf.findIndex(e => e.group === group);
+
+    if (sameIndex !== -1) {
+        buf[sameIndex] = {
+            group,
+            time: ts
+        };
+    } else {
+        buf.push({
+            group,
+            time: ts
+        });
+    }
+
+    mamamiaHashMemory[symbol] = buf;
 
     // Safety cleanup
     if (Object.keys(mamamiaHashMemory).length > 5000) {
