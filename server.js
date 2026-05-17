@@ -40,7 +40,8 @@ function loadState() {
                 scoreState: parsed.scoreState || {},
                 lastSeenState: parsed.lastSeenState || {},
                 godzillaState: parsed.godzillaState || {},
-                bazookaState: parsed.bazookaState || {}
+                bazookaState: parsed.bazookaState || {},
+                hashMemory: parsed.hashMemory || {}
             };
         }
     } catch {}
@@ -52,7 +53,8 @@ function loadState() {
         scoreState: {},
         lastSeenState: {},
         godzillaState: {},
-        bazookaState: {}
+        bazookaState: {},
+        hashMemory: {}
     };
 }
 
@@ -68,7 +70,8 @@ function saveState() {
                     scoreState,
                     lastSeenState,
                     godzillaState,
-                    bazookaState
+                    bazookaState,
+                    hashMemory
                 },
                 null,
                 2
@@ -551,11 +554,67 @@ function processGodzilla(symbol, group, ts) {
 // STC setup removed intentionally.
 // ==========================================================
 // ==========================================================
-//  BAZOOKA (PERSISTENT — YABA → FIRST HASH CONFIRMATION)
-//  Source:
-//    - YABA fires first
-//    - Then same symbol must receive the FIRST # group of any kind
-//    - Any group starting with # is accepted
+//  HASH MEMORY (PERSISTENT — used by BAZOOKA + PREMIER)
+//  Stores recent # alerts so reverse-mode setups can fire:
+//    - HASH → YABA  = BAZOOKA Mode 2
+//    - HASH → FIRST = PREMIER
+// ==========================================================
+
+let hashMemory = persisted.hashMemory || {};
+
+const HASH_LOOKBACK_MS = 30 * 60 * 1000; // 30 minutes
+
+// hashMemory[symbol] = [{ group, time }]
+function recordHashEvent(symbol, group, ts) {
+
+    if (!symbol || !group) return;
+    if (!group.startsWith("#")) return;
+
+    if (!hashMemory[symbol]) {
+        hashMemory[symbol] = [];
+    }
+
+    hashMemory[symbol].push({
+        group,
+        time: ts
+    });
+
+    const cutoff = ts - HASH_LOOKBACK_MS;
+    hashMemory[symbol] = hashMemory[symbol].filter(e => e.time >= cutoff);
+
+    // Safety cleanup
+    if (Object.keys(hashMemory).length > 5000) {
+        const pruneCutoff = ts - (2 * 60 * 60 * 1000);
+
+        for (const sym of Object.keys(hashMemory)) {
+            hashMemory[sym] = hashMemory[sym].filter(e => e.time >= pruneCutoff);
+
+            if (!hashMemory[sym].length) {
+                delete hashMemory[sym];
+            }
+        }
+    }
+
+    saveState();
+}
+
+function getRecentHashBefore(symbol, ts, windowMs) {
+
+    const events = hashMemory[symbol] || [];
+    const cutoff = ts - windowMs;
+
+    const recent = events
+        .filter(e => e.time <= ts && e.time >= cutoff)
+        .sort((a, b) => b.time - a.time);
+
+    return recent[0] || null;
+}
+
+// ==========================================================
+//  BAZOOKA (PERSISTENT — YABA ↔ HASH CONFIRMATION)
+//  Modes:
+//    - Mode 1: YABA → HASH within 30m
+//    - Mode 2: HASH → YABA within 30m
 //  Bot 7
 // ==========================================================
 
@@ -567,12 +626,60 @@ function processGodzilla(symbol, group, ts) {
 
 let bazookaState = persisted.bazookaState || {};
 
-const BAZOOKA_EXPIRE_MS = 2 * 60 * 60 * 1000; // 2 hours
+const BAZOOKA_EXPIRE_MS = 30 * 60 * 1000; // 30 minutes
+
+function sendBazookaAlert(symbol, mode, sourceGroup, sourceTime, hashGroup, hashTime) {
+
+    const firstTime = sourceTime <= hashTime ? sourceTime : hashTime;
+    const secondTime = sourceTime <= hashTime ? hashTime : sourceTime;
+
+    const gapMs = secondTime - firstTime;
+    const gapMin = Math.floor(gapMs / 60000);
+    const gapSec = Math.floor((gapMs % 60000) / 1000);
+
+    sendToTelegram7(
+        `💥 BAZOOKA\n` +
+        `Mode: ${mode}\n` +
+        `Source: YABA\n` +
+        `Symbol: ${symbol}\n\n` +
+
+        `YABA Alert:\n` +
+        `Group: ${sourceGroup || "n/a"}\n` +
+        `Time: ${formatDateTime(sourceTime)}\n\n` +
+
+        `Hash Confirmation:\n` +
+        `Group: ${hashGroup}\n` +
+        `Time: ${formatDateTime(hashTime)}\n\n` +
+
+        `Gap: ${gapMin}m ${gapSec}s`
+    );
+}
 
 function activateBazooka(symbol, source, sourceTime, sourceGroup) {
 
     if (!symbol || !source) return;
 
+    // BAZOOKA is currently only for YABA.
+    if (source !== "YABA") return;
+
+    // MODE 2: HASH → YABA
+    // If a recent hash already happened before YABA, fire Mode 2 immediately.
+    const priorHash = getRecentHashBefore(symbol, sourceTime, BAZOOKA_EXPIRE_MS);
+
+    if (priorHash) {
+        sendBazookaAlert(
+            symbol,
+            "HASH → YABA",
+            sourceGroup,
+            sourceTime,
+            priorHash.group,
+            priorHash.time
+        );
+    }
+
+    // IMPORTANT:
+    // Even if Mode 2 fired, still arm Mode 1.
+    // This allows a later hash after YABA to fire YABA → HASH as well.
     bazookaState[symbol] = {
         source,
         sourceTime,
@@ -596,7 +703,7 @@ function processBazooka(symbol, group, ts) {
 
     const gapFromSourceMs = ts - state.sourceTime;
 
-    // Expire stale YABA → # tracking after 2 hours
+    // Expire stale YABA → HASH tracking after 30 minutes
     if (gapFromSourceMs > BAZOOKA_EXPIRE_MS) {
         console.log(
             "BAZOOKA expired:",
@@ -616,28 +723,57 @@ function processBazooka(symbol, group, ts) {
         return;
     }
 
-    const gapMin = Math.floor(gapFromSourceMs / 60000);
-    const gapSec = Math.floor((gapFromSourceMs % 60000) / 1000);
-
-    sendToTelegram7(
-        `💥 BAZOOKA\n` +
-        `Source: ${state.source}\n` +
-        `Symbol: ${symbol}\n\n` +
-
-        `${state.source} Alert:\n` +
-        `Group: ${state.sourceGroup || "n/a"}\n` +
-        `Time: ${formatDateTime(state.sourceTime)}\n\n` +
-
-        `Hash Confirmation:\n` +
-        `Group: ${group}\n` +
-        `Time: ${formatDateTime(ts)}\n\n` +
-
-        `Gap from ${state.source}: ${gapMin}m ${gapSec}s`
+    // MODE 1: YABA → HASH
+    sendBazookaAlert(
+        symbol,
+        "YABA → HASH",
+        state.sourceGroup,
+        state.sourceTime,
+        group,
+        ts
     );
 
-    // Reset after first hash confirmation
+    // Reset only after Mode 1 completes.
     delete bazookaState[symbol];
     saveState();
+}
+
+// ==========================================================
+//  PREMIER (PERSISTENT HASH MEMORY — HASH → FIRST)
+//  Mode-2 version of GODZILLA:
+//    - # comes first
+//    - FIRST fires within 30m after #
+//  Bot 2
+// ==========================================================
+
+function processPremier(symbol, firstGroup, firstTime) {
+
+    if (!symbol) return;
+
+    const priorHash = getRecentHashBefore(symbol, firstTime, HASH_LOOKBACK_MS);
+
+    if (!priorHash) return;
+
+    const gapMs = firstTime - priorHash.time;
+    const gapMin = Math.floor(gapMs / 60000);
+    const gapSec = Math.floor((gapMs % 60000) / 1000);
+
+    sendToTelegram2(
+        `🏆 PREMIER\n` +
+        `Mode: HASH → FIRST\n` +
+        `Source: FIRST\n` +
+        `Symbol: ${symbol}\n\n` +
+
+        `Hash Confirmation:\n` +
+        `Group: ${priorHash.group}\n` +
+        `Time: ${formatDateTime(priorHash.time)}\n\n` +
+
+        `FIRST Alert:\n` +
+        `Group: ${firstGroup || "n/a"}\n` +
+        `Time: ${formatDateTime(firstTime)}\n\n` +
+
+        `Gap: ${gapMin}m ${gapSec}s`
+    );
 }
 
 // ==========================================================
@@ -2060,7 +2196,7 @@ function processYaba(symbol, group, ts) {
 
 
         
-        activateBazooka(symbol, "YABA", ts, group);
+        activateBazooka(symbol, "YABA", ts, `${last.group} → ${group}`);
 // 🔥 Reset after fire (one clean cycle)
 
         delete yabaMemory[symbol][family];
@@ -2307,7 +2443,9 @@ function processFirst(symbol, group, ts) {
         activateGodzilla(symbol, "FIRST", ts, group);
 
 
-    }
+    
+        processPremier(symbol, group, ts);
+}
 
     // else → ignore
 }
@@ -2670,9 +2808,15 @@ if (!isHash) {
 } else {
     // 🔴 HASH ECOSYSTEM (isolated)
 
+    recordHashEvent(symbol, group, ts);
+
     processGodzilla(symbol, group, ts);
-    processMAMAMIA(symbol, group, ts);
     processBazooka(symbol, group, ts);
+
+    // MAMAMIA may be active if you patched the hash-pair test bot.
+    if (typeof processMAMAMIA === "function") {
+        processMAMAMIA(symbol, group, ts);
+    }
 }
 
 
