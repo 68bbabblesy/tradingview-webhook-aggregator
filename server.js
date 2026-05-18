@@ -41,7 +41,9 @@ function loadState() {
                 lastSeenState: parsed.lastSeenState || {},
                 godzillaState: parsed.godzillaState || {},
                 bazookaState: parsed.bazookaState || {},
-                hashMemory: parsed.hashMemory || {}
+                hashMemory: parsed.hashMemory || {},
+                wakandaState: parsed.wakandaState || {},
+                boomPairState: parsed.boomPairState || {}
             };
         }
     } catch {}
@@ -54,7 +56,9 @@ function loadState() {
         lastSeenState: {},
         godzillaState: {},
         bazookaState: {},
-        hashMemory: {}
+        hashMemory: {},
+        wakandaState: {},
+        boomPairState: {}
     };
 }
 
@@ -71,7 +75,9 @@ function saveState() {
                     lastSeenState,
                     godzillaState,
                     bazookaState,
-                    hashMemory
+                    hashMemory,
+                    wakandaState,
+                    boomPairState
                 },
                 null,
                 2
@@ -758,7 +764,7 @@ function processPremier(symbol, firstGroup, firstTime) {
     const gapMin = Math.floor(gapMs / 60000);
     const gapSec = Math.floor((gapMs % 60000) / 1000);
 
-    sendToTelegram2(
+    sendToTelegram6(
         `🏆 PREMIER\n` +
         `Mode: HASH → FIRST\n` +
         `Source: FIRST\n` +
@@ -774,6 +780,133 @@ function processPremier(symbol, firstGroup, firstTime) {
 
         `Gap: ${gapMin}m ${gapSec}s`
     );
+}
+
+// ==========================================================
+//  WAKANDA (PERSISTENT — GAMMA ↔ HASH CONFIRMATION)
+//  Modes:
+//    - Mode 1: GAMMA → HASH within 30m
+//    - Mode 2: HASH → GAMMA within 30m
+//  Bot 7
+// ==========================================================
+
+// wakandaState[symbol] = {
+//   source: "GAMMA",
+//   sourceTime: ts,
+//   sourceGroup: group
+// }
+
+let wakandaState = persisted.wakandaState || {};
+
+const WAKANDA_EXPIRE_MS = 30 * 60 * 1000; // 30 minutes
+
+function sendWakandaAlert(symbol, mode, sourceGroup, sourceTime, hashGroup, hashTime) {
+
+    const firstTime = sourceTime <= hashTime ? sourceTime : hashTime;
+    const secondTime = sourceTime <= hashTime ? hashTime : sourceTime;
+
+    const gapMs = secondTime - firstTime;
+    const gapMin = Math.floor(gapMs / 60000);
+    const gapSec = Math.floor((gapMs % 60000) / 1000);
+
+    sendToTelegram7(
+        `🚨 WAKANDA\n` +
+        `Mode: ${mode}\n` +
+        `Source: GAMMA\n` +
+        `Symbol: ${symbol}\n\n` +
+
+        `GAMMA Alert:\n` +
+        `Group: ${sourceGroup || "n/a"}\n` +
+        `Time: ${formatDateTime(sourceTime)}\n\n` +
+
+        `Hash Confirmation:\n` +
+        `Group: ${hashGroup}\n` +
+        `Time: ${formatDateTime(hashTime)}\n\n` +
+
+        `Gap: ${gapMin}m ${gapSec}s`
+    );
+}
+
+function activateWakanda(symbol, source, sourceTime, sourceGroup) {
+
+    if (!symbol || !source) return;
+
+    // WAKANDA is currently only for GAMMA.
+    if (source !== "GAMMA") return;
+
+    // MODE 2: HASH → GAMMA
+    // If a recent hash already happened before GAMMA, fire Mode 2 immediately.
+    const priorHash = getRecentHashBefore(symbol, sourceTime, WAKANDA_EXPIRE_MS);
+
+    if (priorHash) {
+        sendWakandaAlert(
+            symbol,
+            "HASH → GAMMA",
+            sourceGroup,
+            sourceTime,
+            priorHash.group,
+            priorHash.time
+        );
+    }
+
+    // Even if Mode 2 fired, still arm Mode 1.
+    // This allows a later hash after GAMMA to fire GAMMA → HASH as well.
+    wakandaState[symbol] = {
+        source,
+        sourceTime,
+        sourceGroup: sourceGroup || "n/a"
+    };
+
+    saveState();
+}
+
+function processWakanda(symbol, group, ts) {
+
+    if (!symbol || !group) return;
+
+    // WAKANDA listens to the first # group after GAMMA
+    if (!group.startsWith("#")) return;
+
+    const state = wakandaState[symbol];
+
+    // Must be activated by GAMMA first
+    if (!state) return;
+
+    const gapFromSourceMs = ts - state.sourceTime;
+
+    // Expire stale GAMMA → HASH tracking after 30 minutes
+    if (gapFromSourceMs > WAKANDA_EXPIRE_MS) {
+        console.log(
+            "WAKANDA expired:",
+            symbol,
+            "source:",
+            state.source,
+            "sourceTime:",
+            formatDateTime(state.sourceTime),
+            "hash:",
+            group,
+            "hashTime:",
+            formatDateTime(ts)
+        );
+
+        delete wakandaState[symbol];
+        saveState();
+        return;
+    }
+
+    // MODE 1: GAMMA → HASH
+    sendWakandaAlert(
+        symbol,
+        "GAMMA → HASH",
+        state.sourceGroup,
+        state.sourceTime,
+        group,
+        ts
+    );
+
+    // Reset only after Mode 1 completes.
+    delete wakandaState[symbol];
+    saveState();
 }
 
 // ==========================================================
@@ -917,7 +1050,10 @@ if (diffMs <= GAMMA_WINDOW_MS) {
     );
 
 
-    // existing (leave this)
+    
+
+    activateWakanda(symbol, "GAMMA", ts, group);
+// existing (leave this)
 
 
     // 🔥 ADD THIS LINE (for BAZOOKA)
@@ -1424,7 +1560,7 @@ function processZulu(symbol, group, ts) {
         const diffMin = Math.floor(diffMs / 60000);
         const diffSec = Math.floor((diffMs % 60000) / 1000);
 
-        sendToTelegram6(
+        sendToTelegram5(
             `🟡 ZULU\n` +
             `Symbol: ${symbol}\n` +
             `Family: ${family}\n` +
@@ -1771,77 +1907,149 @@ function processCabal(symbol, group, ts) {
 }
 
 // ==========================================================
-//  BOOM (BTCUSDT / TOTAL same symbol — AAA→ZZZ groups)
-//  Any 2 distinct groups within 5.5 minutes
-//  Bot 7
+//  BOOM (Single-letter group pair detector)
+//  Condition:
+//    - Same symbol
+//    - Single-letter alphabet groups only: A-Z
+//    - Different groups
+//    - Within 20 minutes
+//    - Max 2 alerts per same symbol+pair within 2 hours
+//  Bot 8
 // ==========================================================
 
-const BOOM_WINDOW_MS = 5.5 * 60 * 1000;
-
-const BOOM_SYMBOLS = new Set(["BTCUSDT", "TOTAL"]);
-
-// AAA → ZZZ checker
-function isTripleLetter(group) {
-    return /^[A-Z]{3}$/.test(group) &&
-           group[0] === group[1] &&
-           group[1] === group[2];
-}
+const BOOM_WINDOW_MS = 20 * 60 * 1000; // 20 minutes
+const BOOM_PAIR_LIMIT_WINDOW_MS = 2 * 60 * 60 * 1000; // 2 hours
+const BOOM_PAIR_MAX_ALERTS = 2;
 
 // boomMemory[symbol] = [{ group, time }]
 const boomMemory = {};
 
+// boomPairState[symbol][pairKey] = [fireTimestamps]
+let boomPairState = persisted.boomPairState || {};
+
+function isSingleLetterGroup(group) {
+    return /^[A-Z]$/.test(group);
+}
+
+function boomPairKey(g1, g2) {
+    return [g1, g2].sort().join("+");
+}
+
+function canFireBoomPair(symbol, pairKey, ts) {
+
+    if (!boomPairState[symbol]) {
+        boomPairState[symbol] = {};
+    }
+
+    if (!boomPairState[symbol][pairKey]) {
+        boomPairState[symbol][pairKey] = [];
+    }
+
+    const cutoff = ts - BOOM_PAIR_LIMIT_WINDOW_MS;
+
+    boomPairState[symbol][pairKey] = boomPairState[symbol][pairKey]
+        .filter(t => t >= cutoff);
+
+    return boomPairState[symbol][pairKey].length < BOOM_PAIR_MAX_ALERTS;
+}
+
+function recordBoomPairFire(symbol, pairKey, ts) {
+
+    if (!boomPairState[symbol]) {
+        boomPairState[symbol] = {};
+    }
+
+    if (!boomPairState[symbol][pairKey]) {
+        boomPairState[symbol][pairKey] = [];
+    }
+
+    boomPairState[symbol][pairKey].push(ts);
+    saveState();
+}
+
 function processBoom(symbol, group, ts) {
 
-    if (!BOOM_SYMBOLS.has(symbol)) return;
-    if (!isTripleLetter(group)) return;
+    if (!symbol || !group) return;
+    if (!isSingleLetterGroup(group)) return;
 
     if (!boomMemory[symbol]) {
         boomMemory[symbol] = [];
     }
 
-    const buf = boomMemory[symbol];
+    let buf = boomMemory[symbol];
 
-    // remove expired entries
+    // Keep only last 20 minutes
     const cutoff = ts - BOOM_WINDOW_MS;
-    while (buf.length && buf[0].time < cutoff) {
-        buf.shift();
-    }
+    buf = buf.filter(e => e.time >= cutoff);
 
-    // look for different group
-    const existing = buf.find(e => e.group !== group);
+    // Look for a DIFFERENT single-letter group inside the window
+    const match = buf.find(e => e.group !== group);
 
-    if (existing) {
+    if (match) {
 
-        const diffMs = ts - existing.time;
+        const pairKey = boomPairKey(match.group, group);
+
+        const firstTime = match.time <= ts ? match.time : ts;
+        const secondTime = match.time <= ts ? ts : match.time;
+
+        const firstGroup = match.time <= ts ? match.group : group;
+        const secondGroup = match.time <= ts ? group : match.group;
+
+        const diffMs = secondTime - firstTime;
         const diffMin = Math.floor(diffMs / 60000);
         const diffSec = Math.floor((diffMs % 60000) / 1000);
 
-        sendToTelegram7(
-    `💥 BOOM\n` +
-    `Symbol: ${symbol}\n` +
-    `1) ${existing.group} @ ${formatTime(existing.time)}\n` +
-    `2) ${group} @ ${formatTime(ts)}\n` +
-    `Gap: ${diffMin}m ${diffSec}s`
-     );
+        if (canFireBoomPair(symbol, pairKey, ts)) {
+
+            sendToTelegram8(
+                `💥 BOOM\n` +
+                `Symbol: ${symbol}\n` +
+                `Pair: ${pairKey}\n` +
+                `Condition: Different single-letter groups within 20m\n` +
+                `Pair cap: max 2 alerts per 2h\n\n` +
+                `1) ${firstGroup} @ ${formatDateTime(firstTime)}\n` +
+                `2) ${secondGroup} @ ${formatDateTime(secondTime)}\n` +
+                `Gap: ${diffMin}m ${diffSec}s`
+            );
+
+            recordBoomPairFire(symbol, pairKey, ts);
+        }
+
+        // Reset cluster but keep current group as fresh seed for future pairs
+        boomMemory[symbol] = [
+            {
+                group,
+                time: ts
+            }
+        ];
+
+        return;
     }
 
-    // avoid duplicate same-group stacking
-    if (!buf.some(e => e.group === group)) {
+    // Avoid stacking exact same group repeatedly; refresh timestamp instead
+    const sameIndex = buf.findIndex(e => e.group === group);
+
+    if (sameIndex !== -1) {
+        buf[sameIndex] = { group, time: ts };
+    } else {
         buf.push({ group, time: ts });
     }
 
-    // safety prune
+    boomMemory[symbol] = buf;
+
+    // Safety cleanup
     if (Object.keys(boomMemory).length > 5000) {
-        const pruneCutoff = ts - (60 * 60 * 1000);
+        const pruneCutoff = ts - (2 * 60 * 60 * 1000);
+
         for (const sym of Object.keys(boomMemory)) {
-            const arr = boomMemory[sym];
-            if (!arr.length || arr[arr.length - 1].time < pruneCutoff) {
+            boomMemory[sym] = boomMemory[sym].filter(e => e.time >= pruneCutoff);
+
+            if (!boomMemory[sym].length) {
                 delete boomMemory[sym];
             }
         }
     }
 }
-
 
 // ==========================================================
 //  KOOKY (BTCUSDT ↔ TOTAL same-group within 45s)
@@ -2795,7 +3003,7 @@ if (!isHash) {
     processMamba(symbol, group, ts);
     //processSpesh(symbol, group, ts);
     //processCabal(symbol, group, ts);
-    //processBoom(symbol, group, ts);
+    processBoom(symbol, group, ts);
     //processKooky(symbol, group, ts);        
     //processTesting(symbol, group, ts);
     //processAudit(symbol, group, ts, body);
@@ -2811,7 +3019,12 @@ if (!isHash) {
     recordHashEvent(symbol, group, ts);
 
     processGodzilla(symbol, group, ts);
-    processBazooka(symbol, group, ts);
+
+    if (typeof processBazooka === "function") {
+        processBazooka(symbol, group, ts);
+    }
+
+    processWakanda(symbol, group, ts);
 
     // MAMAMIA may be active if you patched the hash-pair test bot.
     if (typeof processMAMAMIA === "function") {
