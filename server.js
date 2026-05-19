@@ -43,7 +43,8 @@ function loadState() {
                 bazookaState: parsed.bazookaState || {},
                 hashMemory: parsed.hashMemory || {},
                 wakandaState: parsed.wakandaState || {},
-                boomPairState: parsed.boomPairState || {}
+                boomPairState: parsed.boomPairState || {},
+                inauguralState: parsed.inauguralState || {}
             };
         }
     } catch {}
@@ -58,7 +59,8 @@ function loadState() {
         bazookaState: {},
         hashMemory: {},
         wakandaState: {},
-        boomPairState: {}
+        boomPairState: {},
+        inauguralState: {}
     };
 }
 
@@ -77,7 +79,8 @@ function saveState() {
                     bazookaState,
                     hashMemory,
                     wakandaState,
-                    boomPairState
+                    boomPairState,
+                    inauguralState
                 },
                 null,
                 2
@@ -2924,6 +2927,58 @@ function processZoneforge(symbol, group, ts, body) {
 }
 
 // ==========================================================
+//  INAUGURAL (PERSISTENT — first single-letter group in 2h)
+//  Condition:
+//    - Main ecosystem only
+//    - Same symbol
+//    - Single-letter alphabet group only: A-Z
+//    - First time symbol+group appears in 2 hours
+//  Bot 1
+// ==========================================================
+
+const INAUGURAL_WINDOW_MS = 2 * 60 * 60 * 1000; // 2 hours
+
+// inauguralState[symbol][group] = lastTimestamp
+let inauguralState = persisted.inauguralState || {};
+
+function isInauguralSingleLetterGroup(group) {
+    return /^[A-Z]$/.test(group);
+}
+
+function processInaugural(symbol, group, ts) {
+
+    if (!symbol || !group) return;
+
+    // Main ecosystem only — ignore # groups and subgroup families like 16A
+    if (!isInauguralSingleLetterGroup(group)) return;
+
+    if (!inauguralState[symbol]) {
+        inauguralState[symbol] = {};
+    }
+
+    const last = inauguralState[symbol][group];
+
+    if (!last || (ts - last >= INAUGURAL_WINDOW_MS)) {
+
+        sendToTelegram1(
+            `🎖 INAUGURAL\n` +
+            `Symbol: ${symbol}\n` +
+            `Group: ${group}\n` +
+            `Rule: First ${group} in 2 hours\n` +
+            `Last: ${last ? formatDateTime(last) : "none"}\n` +
+            `Now: ${formatDateTime(ts)}`
+        );
+
+        inauguralState[symbol][group] = ts;
+        saveState();
+        return;
+    }
+
+    // else ignore, but keep existing last timestamp unchanged
+    // so the 2-hour clock is based on the last INAUGURAL trigger.
+}
+
+// ==========================================================
 //  WEBHOOK HANDLER
 // ==========================================================
 
@@ -2976,7 +3031,9 @@ app.post("/incoming", (req, res) => {
 		  // ✅ FIX: FIRST must IGNORE # groups
         if (!isHash) {
             processFirst(symbol, group, ts);
-        }
+        
+            processInaugural(symbol, group, ts);
+}
 
 
 // ==========================================
@@ -3028,7 +3085,7 @@ if (!isHash) {
 
     // MAMAMIA may be active if you patched the hash-pair test bot.
     if (typeof processMAMAMIA === "function") {
-        processMAMAMIA(symbol, group, ts);
+    // processMAMAMIA(symbol, group, ts); // disabled while testing INAUGURAL
     }
 }
 
