@@ -44,7 +44,8 @@ function loadState() {
                 hashMemory: parsed.hashMemory || {},
                 wakandaState: parsed.wakandaState || {},
                 boomPairState: parsed.boomPairState || {},
-                inauguralState: parsed.inauguralState || {}
+                inauguralState: parsed.inauguralState || {},
+                kookyMemory: parsed.kookyMemory || {}
             };
         }
     } catch {}
@@ -60,7 +61,8 @@ function loadState() {
         hashMemory: {},
         wakandaState: {},
         boomPairState: {},
-        inauguralState: {}
+        inauguralState: {},
+        kookyMemory: {}
     };
 }
 
@@ -80,7 +82,8 @@ function saveState() {
                     hashMemory,
                     wakandaState,
                     boomPairState,
-                    inauguralState
+                    inauguralState,
+                    kookyMemory
                 },
                 null,
                 2
@@ -2055,55 +2058,97 @@ function processBoom(symbol, group, ts) {
 }
 
 // ==========================================================
-//  KOOKY (BTCUSDT ↔ TOTAL same-group within 45s)
-//  Groups: AAA → ZZZ
+//  KOOKY (PERSISTENT — same symbol + same group gap detector)
+//  Condition:
+//    - Main ecosystem only
+//    - Same symbol
+//    - Same exact single-letter group
+//    - Allowed groups: C,D,Q,R,S,T,G,H,O,P
+//    - Immediate repeat gap >25 minutes and <2 hours
 //  Bot 7
 // ==========================================================
 
-const KOOKY_WINDOW_MS = 45 * 1000;
+const KOOKY_MIN_GAP_MS = 25 * 60 * 1000;       // more than 25 minutes
+const KOOKY_MAX_GAP_MS = 2 * 60 * 60 * 1000;   // less than 2 hours
 
-const KOOKY_SYMBOLS = new Set(["BTCUSDT", "TOTAL"]);
+const KOOKY_GROUPS = new Set([
+    "C",
+    "D",
+    "Q",
+    "R",
+    "S",
+    "T",
+    "G",
+    "H",
+    "O",
+    "P"
+]);
 
-// AAA → ZZZ auto-generate
-const KOOKY_GROUPS = new Set(
-    Array.from({ length: 26 }, (_, i) => {
-        const letter = String.fromCharCode(65 + i);
-        return letter + letter + letter;
-    })
-);
-
-const kookyLast = {
-    BTCUSDT: {},
-    TOTAL: {}
-};
+// kookyMemory[symbol][group] = lastTimestamp
+let kookyMemory = persisted.kookyMemory || {};
 
 function processKooky(symbol, group, ts) {
 
-    if (!KOOKY_SYMBOLS.has(symbol)) return;
+    if (!symbol || !group) return;
+
+    // Only selected single-letter groups
     if (!KOOKY_GROUPS.has(group)) return;
 
-    const otherSymbol = symbol === "BTCUSDT" ? "TOTAL" : "BTCUSDT";
-    const otherTs = kookyLast[otherSymbol][group];
-
-    if (otherTs && Math.abs(ts - otherTs) <= KOOKY_WINDOW_MS) {
-
-        const diffMs = Math.abs(ts - otherTs);
-        const diffSec = Math.floor(diffMs / 1000);
-
-        sendToTelegram7(
-    `🟣 KOOKY\n` +
-    `Group: ${group}\n` +
-    `BTCUSDT: ${formatTime(
-        symbol === "BTCUSDT" ? ts : otherTs
-    )}\n` +
-    `TOTAL: ${formatTime(
-        symbol === "TOTAL" ? ts : otherTs
-    )}\n` +
-    `Gap: ${diffSec}s`
-    );
+    if (!kookyMemory[symbol]) {
+        kookyMemory[symbol] = {};
     }
 
-    kookyLast[symbol][group] = ts;
+    const last = kookyMemory[symbol][group];
+
+    if (last) {
+
+        const gapMs = ts - last;
+
+        const isMoreThan25m = gapMs > KOOKY_MIN_GAP_MS;
+        const isLessThan2h  = gapMs < KOOKY_MAX_GAP_MS;
+
+        if (isMoreThan25m && isLessThan2h) {
+
+            const gapMin = Math.floor(gapMs / 60000);
+            const gapSec = Math.floor((gapMs % 60000) / 1000);
+
+            sendToTelegram7(
+                `🟣 KOOKY\n` +
+                `Symbol: ${symbol}\n` +
+                `Group: ${group}\n` +
+                `Condition: Same group repeat gap >25m and <2h\n\n` +
+                `Previous: ${formatDateTime(last)}\n` +
+                `Current: ${formatDateTime(ts)}\n` +
+                `Gap: ${gapMin}m ${gapSec}s`
+            );
+        }
+    }
+
+    // Always update to the immediate latest alert.
+    // This means KOOKY checks the gap between immediate same-symbol/same-group alerts.
+    kookyMemory[symbol][group] = ts;
+    saveState();
+
+    // Safety cleanup
+    if (Object.keys(kookyMemory).length > 5000) {
+        const pruneCutoff = ts - (3 * 60 * 60 * 1000);
+
+        for (const sym of Object.keys(kookyMemory)) {
+            const groups = kookyMemory[sym];
+
+            for (const g of Object.keys(groups)) {
+                if (groups[g] < pruneCutoff) {
+                    delete groups[g];
+                }
+            }
+
+            if (!Object.keys(groups).length) {
+                delete kookyMemory[sym];
+            }
+        }
+
+        saveState();
+    }
 }
 
 // ==========================================================
@@ -3097,7 +3142,7 @@ if (!isHash) {
     //processSpesh(symbol, group, ts);
     //processCabal(symbol, group, ts);
     processBoom(symbol, group, ts);
-    //processKooky(symbol, group, ts);        
+    processKooky(symbol, group, ts);        
     //processTesting(symbol, group, ts);
     //processAudit(symbol, group, ts, body);
     processBababia(symbol, group, ts);
