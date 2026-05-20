@@ -2927,18 +2927,22 @@ function processZoneforge(symbol, group, ts, body) {
 }
 
 // ==========================================================
-//  INAUGURAL (PERSISTENT — first single-letter group in 2h)
+//  INAUGURAL (PERSISTENT — first 2 single-letter groups in 2h)
 //  Condition:
 //    - Main ecosystem only
 //    - Same symbol
 //    - Single-letter alphabet group only: A-Z
-//    - First time symbol+group appears in 2 hours
+//    - Alert only first 2 DIFFERENT single-letter groups per symbol within 2h
 //  Bot 1
 // ==========================================================
 
 const INAUGURAL_WINDOW_MS = 2 * 60 * 60 * 1000; // 2 hours
+const INAUGURAL_MAX_ALERTS_PER_WINDOW = 2;
 
-// inauguralState[symbol][group] = lastTimestamp
+// inauguralState[symbol] = {
+//   windowStart: timestamp,
+//   alerts: [{ group, time }]
+// }
 let inauguralState = persisted.inauguralState || {};
 
 function isInauguralSingleLetterGroup(group) {
@@ -2952,30 +2956,62 @@ function processInaugural(symbol, group, ts) {
     // Main ecosystem only — ignore # groups and subgroup families like 16A
     if (!isInauguralSingleLetterGroup(group)) return;
 
-    if (!inauguralState[symbol]) {
-        inauguralState[symbol] = {};
-    }
+    const current = inauguralState[symbol];
 
-    const last = inauguralState[symbol][group];
-
-    if (!last || (ts - last >= INAUGURAL_WINDOW_MS)) {
-
-        sendToTelegram1(
-            `🎖 INAUGURAL\n` +
-            `Symbol: ${symbol}\n` +
-            `Group: ${group}\n` +
-            `Rule: First ${group} in 2 hours\n` +
-            `Last: ${last ? formatDateTime(last) : "none"}\n` +
-            `Now: ${formatDateTime(ts)}`
+    // Handle old persisted format safely.
+    // Old version stored: inauguralState[symbol][group] = timestamp
+    const invalidOldFormat =
+        current &&
+        (
+            typeof current.windowStart !== "number" ||
+            !Array.isArray(current.alerts)
         );
 
-        inauguralState[symbol][group] = ts;
-        saveState();
+    // Start fresh if:
+    // - no state
+    // - old incompatible state
+    // - 2h window has expired
+    if (
+        !current ||
+        invalidOldFormat ||
+        (ts - current.windowStart >= INAUGURAL_WINDOW_MS)
+    ) {
+        inauguralState[symbol] = {
+            windowStart: ts,
+            alerts: []
+        };
+    }
+
+    const state = inauguralState[symbol];
+
+    // If this exact group already alerted in this 2h window, ignore it.
+    if (state.alerts.some(e => e.group === group)) {
         return;
     }
 
-    // else ignore, but keep existing last timestamp unchanged
-    // so the 2-hour clock is based on the last INAUGURAL trigger.
+    // Only allow first 2 different single-letter groups in the 2h window.
+    if (state.alerts.length >= INAUGURAL_MAX_ALERTS_PER_WINDOW) {
+        return;
+    }
+
+    state.alerts.push({
+        group,
+        time: ts
+    });
+
+    const slot = state.alerts.length;
+
+    sendToTelegram1(
+        `🎖 INAUGURAL\n` +
+        `Symbol: ${symbol}\n` +
+        `Group: ${group}\n` +
+        `Slot: ${slot}/${INAUGURAL_MAX_ALERTS_PER_WINDOW}\n` +
+        `Rule: First 2 single-letter groups in 2 hours\n` +
+        `Window Start: ${formatDateTime(state.windowStart)}\n` +
+        `Now: ${formatDateTime(ts)}`
+    );
+
+    saveState();
 }
 
 // ==========================================================
