@@ -2708,14 +2708,17 @@ function processFirst(symbol, group, ts) {
 
 
 // ==========================================================
-//  ZONEFORGE (Intraday support/resistance pressure zones)
+//  ZONEFORGE V2 (Intraday support/resistance pressure zones)
 //  Bot 8
 //
-//  Concept:
-//    - positive_regular_divergence  → SUPPORT pressure
-//    - negative_regular_divergence  → RESISTANCE pressure
-//    - same symbol + same direction + multi-group clustering
-//    - tiered for daytrading: FAST / CORE / PRIME
+//  Upgrade:
+//    - Still uses divergence direction:
+//        positive_regular_divergence  → SUPPORT pressure
+//        negative_regular_divergence  → RESISTANCE pressure
+//    - Does NOT require an engine/name field in JSON.
+//    - Infers engine class from group structure:
+//        single-letter anchors, numbered families, double-letter groups.
+//    - This allows CORE / PRIME to fire from the actual group mix.
 // ==========================================================
 
 const ZONEFORGE_MAX_WINDOW_MS = 15 * 60 * 1000;
@@ -2729,7 +2732,7 @@ const ZONEFORGE_TIERS = [
         minGroups: 2,
         minFamilies: 1,
         minEngines: 1,
-        cooldownMs: 30 * 60 * 1000
+        cooldownMs: 25 * 60 * 1000
     },
     {
         name: "CORE",
@@ -2739,7 +2742,7 @@ const ZONEFORGE_TIERS = [
         minGroups: 3,
         minFamilies: 2,
         minEngines: 2,
-        cooldownMs: 45 * 60 * 1000
+        cooldownMs: 40 * 60 * 1000
     },
     {
         name: "PRIME",
@@ -2748,8 +2751,8 @@ const ZONEFORGE_TIERS = [
         minAlerts: 6,
         minGroups: 4,
         minFamilies: 3,
-        minEngines: 3,
-        cooldownMs: 60 * 60 * 1000
+        minEngines: 2,
+        cooldownMs: 55 * 60 * 1000
     }
 ];
 
@@ -2759,7 +2762,44 @@ const ZONEFORGE_TIER_RANK = {
     PRIME: 3
 };
 
-// zoneforgeMemory[symbol][bias] = [{ group, family, engine, time }]
+// Single-letter groups are treated as inferred engine anchors.
+// This avoids needing "engine" in the TradingView JSON.
+const ZONEFORGE_SINGLE_ENGINE_MAP = {
+    A: "AB_ANCHOR",
+    B: "AB_ANCHOR",
+
+    C: "CD_62TF",
+    D: "CD_62TF",
+
+    G: "GH_52TF",
+    H: "GH_52TF",
+
+    K: "KL_76TF",
+    L: "KL_76TF",
+
+    M: "MN_TF58",
+    N: "MN_TF58",
+
+    O: "OP_82TF",
+    P: "OP_82TF",
+
+    Q: "QR_69TF",
+    R: "QR_69TF",
+
+    S: "ST_ANCHOR",
+    T: "ST_ANCHOR",
+
+    U: "UV_ANCHOR",
+    V: "UV_ANCHOR",
+
+    W: "WX_ZAGALO",
+    X: "WX_ZAGALO",
+
+    Y: "YZ_ANCHOR",
+    Z: "YZ_ANCHOR"
+};
+
+// zoneforgeMemory[symbol][bias] = [{ group, family, engine, groupClass, time }]
 const zoneforgeMemory = {};
 
 // zoneforgeLastFire[symbol][bias] = { tier, time }
@@ -2768,23 +2808,6 @@ const zoneforgeLastFire = {};
 function cleanLabel(value, fallback) {
     const s = String(value || "").trim();
     return s || fallback;
-}
-
-function normalizeEngineName(body) {
-    // Use any available source/name field from the TradingView JSON.
-    // If none exists, fall back to "raw" so FAST can still work.
-    return cleanLabel(
-        body.source ||
-        body.engine ||
-        body.name ||
-        body.alert_name ||
-        body.indicator ||
-        body.script ||
-        body.bot ||
-        body.kind ||
-        body.signal,
-        "raw"
-    );
 }
 
 function getZoneforgeBias(body) {
@@ -2821,6 +2844,60 @@ function getZoneforgeBias(body) {
     return null;
 }
 
+function zoneforgeGroupClass(group) {
+    const g = String(group || "").trim().toUpperCase();
+
+    if (/^[A-Z]$/.test(g)) return "SINGLE";
+    if (/^\d+[A-Z]+$/.test(g)) return "NUMBERED";
+    if (/^[A-Z]{2}$/.test(g)) return "DOUBLE";
+    if (/^[A-Z]{3,}$/.test(g)) return "MULTI_LETTER";
+
+    return "OTHER";
+}
+
+function inferZoneforgeFamily(group) {
+    const g = String(group || "").trim().toUpperCase();
+
+    const numeric = g.match(/^(\d+)/);
+    if (numeric) return numeric[1];
+
+    if (/^[A-Z]$/.test(g)) return g;
+    if (/^[A-Z]{2,}$/.test(g)) return g;
+
+    return getFamily(g) || "OTHER";
+}
+
+function inferZoneforgeEngineClass(group, body) {
+    const g = String(group || "").trim().toUpperCase();
+
+    if (/^[A-Z]$/.test(g)) {
+        return ZONEFORGE_SINGLE_ENGINE_MAP[g] || `SINGLE_${g}`;
+    }
+
+    if (/^\d+[A-Z]+$/.test(g)) {
+        return `NUM_${getFamily(g)}`;
+    }
+
+    if (/^[A-Z]{2}$/.test(g)) {
+        return `DOUBLE_${g}`;
+    }
+
+    if (/^[A-Z]{3,}$/.test(g)) {
+        return `MULTI_${g}`;
+    }
+
+    return cleanLabel(
+        body.source ||
+        body.engine ||
+        body.name ||
+        body.alert_name ||
+        body.indicator ||
+        body.script ||
+        body.bot,
+        "RAW"
+    );
+}
+
 function zoneforgeReadLine(bias, tierName) {
     if (bias === "SUPPORT") {
         if (tierName === "FAST") return "EARLY SUPPORT PRESSURE";
@@ -2835,19 +2912,21 @@ function zoneforgeReadLine(bias, tierName) {
 
 function zoneforgeNextWatch(bias) {
     if (bias === "SUPPORT") {
-        return "Retest / deviation below zone + fresh positive divergence";
+        return "Retest / deviation below zone + fresh support pressure";
     }
-    return "Retest / deviation above zone + fresh negative divergence";
+    return "Retest / deviation above zone + fresh resistance pressure";
 }
 
 function processZoneforge(symbol, group, ts, body) {
     if (!symbol || !group || !body) return;
+    if (group.startsWith("#")) return;
 
     const bias = getZoneforgeBias(body);
     if (!bias) return;
 
-    const family = getFamily(group);
-    const engine = normalizeEngineName(body);
+    const family = inferZoneforgeFamily(group);
+    const engine = inferZoneforgeEngineClass(group, body);
+    const groupClass = zoneforgeGroupClass(group);
 
     if (!zoneforgeMemory[symbol]) {
         zoneforgeMemory[symbol] = {};
@@ -2863,6 +2942,7 @@ function processZoneforge(symbol, group, ts, body) {
         group,
         family,
         engine,
+        groupClass,
         time: ts
     });
 
@@ -2914,6 +2994,12 @@ function processZoneforge(symbol, group, ts, body) {
     const groups = [...new Set(bestEvents.map(e => e.group).filter(Boolean))];
     const families = [...new Set(bestEvents.map(e => e.family).filter(Boolean))];
     const engines = [...new Set(bestEvents.map(e => e.engine).filter(Boolean))];
+    const singleAnchors = [...new Set(
+        bestEvents
+            .filter(e => e.groupClass === "SINGLE")
+            .map(e => e.group)
+            .filter(Boolean)
+    )];
 
     const firstTime = bestEvents[0].time;
     const lastTime = bestEvents[bestEvents.length - 1].time;
@@ -2923,6 +3009,7 @@ function processZoneforge(symbol, group, ts, body) {
 
     const groupLines = groups.slice(0, 18).join(", ") + (groups.length > 18 ? " ..." : "");
     const engineLines = engines.slice(0, 10).join(", ") + (engines.length > 10 ? " ..." : "");
+    const anchorLines = singleAnchors.length ? singleAnchors.join(", ") : "none";
 
     const upgradeLine = isUpgrade ? `UPGRADE: ${lastFire.tier} → ${bestTier.name}\n` : "";
 
@@ -2937,8 +3024,9 @@ function processZoneforge(symbol, group, ts, body) {
         `Span: ${spanMin}m ${spanSec}s\n` +
         `Alerts: ${bestEvents.length}\n` +
         `Groups: ${groups.length} (${groupLines})\n` +
-        `Families: ${families.length} (${families.join(", ")})\n` +
-        `Engines: ${engines.length} (${engineLines})\n\n` +
+        `Families/classes: ${families.length} (${families.join(", ")})\n` +
+        `Engine classes: ${engines.length} (${engineLines})\n` +
+        `Single anchors: ${singleAnchors.length} (${anchorLines})\n\n` +
 
         `First: ${formatDateTime(firstTime)}\n` +
         `Latest: ${formatDateTime(lastTime)}\n` +
@@ -2970,6 +3058,453 @@ function processZoneforge(symbol, group, ts, body) {
         }
     }
 }
+
+
+// ==========================================================
+//  ANCHORFORGE (Single-letter anchor support/resistance zones)
+//  Bot 7
+//
+//  Clean version: Peter_o is NOT included in ANCHORFORGE.
+//  Concept:
+//    - Single-letter groups are treated as anchor engines.
+//    - Numbered groups and double-letter groups add pressure/context.
+//    - Same symbol + same bias + anchor involvement = intraday zone.
+//    - Ignores all # groups.
+// ==========================================================
+
+const ANCHORFORGE_ENABLED = (process.env.ANCHORFORGE_ENABLED || "true").toLowerCase() !== "false";
+const ANCHORFORGE_MAX_WINDOW_MS = 15 * 60 * 1000;
+
+const ANCHORFORGE_TIERS = [
+    {
+        name: "SPARK",
+        emoji: "✨",
+        windowMs: 4 * 60 * 1000,
+        minAlerts: 3,
+        minGroups: 2,
+        minFamilies: 1,
+        minAnchors: 1,
+        cooldownMs: 20 * 60 * 1000
+    },
+    {
+        name: "ANCHOR",
+        emoji: "⚓",
+        windowMs: 8 * 60 * 1000,
+        minAlerts: 4,
+        minGroups: 3,
+        minFamilies: 2,
+        minAnchors: 1,
+        cooldownMs: 35 * 60 * 1000
+    },
+    {
+        name: "FORGE",
+        emoji: "🛠️",
+        windowMs: 12 * 60 * 1000,
+        minAlerts: 5,
+        minGroups: 3,
+        minFamilies: 2,
+        minAnchors: 2,
+        cooldownMs: 50 * 60 * 1000
+    },
+    {
+        name: "CITADEL",
+        emoji: "🛡️",
+        windowMs: 15 * 60 * 1000,
+        minAlerts: 7,
+        minGroups: 4,
+        minFamilies: 3,
+        minAnchors: 2,
+        cooldownMs: 75 * 60 * 1000
+    }
+];
+
+const ANCHORFORGE_TIER_RANK = {
+    SPARK: 1,
+    ANCHOR: 2,
+    FORGE: 3,
+    CITADEL: 4
+};
+
+// anchorforgeMemory[symbol][bias] = [{ group, family, className, time }]
+const anchorforgeMemory = {};
+
+// anchorforgeLastFire[symbol][bias] = { tier, time }
+const anchorforgeLastFire = {};
+
+function isSingleLetterGroup(group) {
+    return /^[A-Z]$/.test(group || "");
+}
+
+function isDoubleLetterGroup(group) {
+    return /^[A-Z]{2}$/.test(group || "");
+}
+
+function isNumberedGroup(group) {
+    return /^\d+[A-Z]+$/.test(group || "");
+}
+
+function getAnchorforgeClass(group) {
+    if (isSingleLetterGroup(group)) return "SINGLE_ANCHOR";
+    if (isNumberedGroup(group)) return "NUMBERED_PRESSURE";
+    if (isDoubleLetterGroup(group)) return "DOUBLE_LETTER";
+    return "OTHER";
+}
+
+function anchorforgeReadLine(bias, tierName) {
+    if (bias === "SUPPORT") {
+        if (tierName === "SPARK") return "EARLY SUPPORT ANCHOR";
+        if (tierName === "ANCHOR") return "SUPPORT ZONE ANCHORING";
+        if (tierName === "FORGE") return "SUPPORT ZONE BEING FORGED";
+        return "STRONG SUPPORT CITADEL";
+    }
+
+    if (tierName === "SPARK") return "EARLY RESISTANCE ANCHOR";
+    if (tierName === "ANCHOR") return "RESISTANCE ZONE ANCHORING";
+    if (tierName === "FORGE") return "RESISTANCE ZONE BEING FORGED";
+    return "STRONG RESISTANCE CITADEL";
+}
+
+function anchorforgeNextWatch(bias) {
+    if (bias === "SUPPORT") {
+        return "Retest / deviation below zone + fresh single-letter support anchor";
+    }
+    return "Retest / deviation above zone + fresh single-letter resistance anchor";
+}
+
+function processAnchorforge(symbol, group, ts, body) {
+    if (!ANCHORFORGE_ENABLED) return;
+    if (!symbol || !group || !body) return;
+    if (group.startsWith("#")) return;
+
+    // Peter_o is deliberately kept OUT of ANCHORFORGE.
+    if (isPeterForgePayload(body, group)) return;
+
+    const bias = getZoneforgeBias(body);
+    if (!bias) return;
+
+    const className = getAnchorforgeClass(group);
+
+    // ANCHORFORGE is built around single-letter anchors.
+    // Non-anchor groups can contribute only after an anchor exists in the same symbol+bias buffer.
+    const isAnchor = className === "SINGLE_ANCHOR";
+    const family = isNumberedGroup(group) ? getFamily(group) : group;
+
+    if (!anchorforgeMemory[symbol]) {
+        anchorforgeMemory[symbol] = {};
+    }
+
+    if (!anchorforgeMemory[symbol][bias]) {
+        anchorforgeMemory[symbol][bias] = [];
+    }
+
+    const buf = anchorforgeMemory[symbol][bias];
+
+    buf.push({
+        group,
+        family,
+        className,
+        isAnchor,
+        time: ts
+    });
+
+    const cutoff = ts - ANCHORFORGE_MAX_WINDOW_MS;
+    while (buf.length && buf[0].time < cutoff) {
+        buf.shift();
+    }
+
+    let bestTier = null;
+    let bestEvents = [];
+
+    for (const tier of ANCHORFORGE_TIERS) {
+        const tierCutoff = ts - tier.windowMs;
+        const recent = buf.filter(e => e.time >= tierCutoff);
+
+        const groups = new Set(recent.map(e => e.group).filter(Boolean));
+        const families = new Set(recent.map(e => e.family).filter(Boolean));
+        const anchorGroups = new Set(
+            recent
+                .filter(e => e.isAnchor)
+                .map(e => e.group)
+                .filter(Boolean)
+        );
+
+        const passed =
+            recent.length >= tier.minAlerts &&
+            groups.size >= tier.minGroups &&
+            families.size >= tier.minFamilies &&
+            anchorGroups.size >= tier.minAnchors;
+
+        if (passed) {
+            bestTier = tier;
+            bestEvents = recent;
+        }
+    }
+
+    if (!bestTier) return;
+
+    if (!anchorforgeLastFire[symbol]) {
+        anchorforgeLastFire[symbol] = {};
+    }
+
+    const lastFire = anchorforgeLastFire[symbol][bias];
+    const previousRank = lastFire ? ANCHORFORGE_TIER_RANK[lastFire.tier] : 0;
+    const newRank = ANCHORFORGE_TIER_RANK[bestTier.name];
+
+    const isUpgrade = lastFire && newRank > previousRank;
+    const cooldownExpired = !lastFire || (ts - lastFire.time >= bestTier.cooldownMs);
+
+    if (!isUpgrade && !cooldownExpired) return;
+
+    const groups = [...new Set(bestEvents.map(e => e.group).filter(Boolean))];
+    const families = [...new Set(bestEvents.map(e => e.family).filter(Boolean))];
+    const anchorGroups = [...new Set(
+        bestEvents
+            .filter(e => e.isAnchor)
+            .map(e => e.group)
+            .filter(Boolean)
+    )];
+    const numberedFamilies = [...new Set(
+        bestEvents
+            .filter(e => e.className === "NUMBERED_PRESSURE")
+            .map(e => e.family)
+            .filter(Boolean)
+    )];
+    const doubleGroups = [...new Set(
+        bestEvents
+            .filter(e => e.className === "DOUBLE_LETTER")
+            .map(e => e.group)
+            .filter(Boolean)
+    )];
+
+    const firstTime = bestEvents[0].time;
+    const lastTime = bestEvents[bestEvents.length - 1].time;
+    const spanMs = lastTime - firstTime;
+    const spanMin = Math.floor(spanMs / 60000);
+    const spanSec = Math.floor((spanMs % 60000) / 1000);
+
+    const groupLines = groups.slice(0, 20).join(", ") + (groups.length > 20 ? " ..." : "");
+    const anchorLines = anchorGroups.slice(0, 14).join(", ") || "none";
+    const numberedLines = numberedFamilies.slice(0, 14).join(", ") || "none";
+    const doubleLines = doubleGroups.slice(0, 14).join(", ") || "none";
+    const upgradeLine = isUpgrade ? `UPGRADE: ${lastFire.tier} → ${bestTier.name}\n` : "";
+
+    sendToTelegram7(
+        `${bestTier.emoji} ANCHORFORGE ${bestTier.name} ${bias}\n` +
+        upgradeLine +
+        `Symbol: ${symbol}\n` +
+        `Bias: ${bias}\n` +
+        `Read: ${anchorforgeReadLine(bias, bestTier.name)}\n\n` +
+
+        `Window: ${Math.floor(bestTier.windowMs / 60000)}m\n` +
+        `Span: ${spanMin}m ${spanSec}s\n` +
+        `Alerts: ${bestEvents.length}\n` +
+        `Groups: ${groups.length} (${groupLines})\n` +
+        `Single-letter anchors: ${anchorGroups.length} (${anchorLines})\n` +
+        `Numbered families: ${numberedFamilies.length} (${numberedLines})\n` +
+        `Double-letter groups: ${doubleGroups.length} (${doubleLines})\n` +
+        `Families/classes: ${families.length} (${families.join(", ")})\n\n` +
+
+        `First: ${formatDateTime(firstTime)}\n` +
+        `Latest: ${formatDateTime(lastTime)}\n` +
+        `Next watch: ${anchorforgeNextWatch(bias)}`
+    );
+
+    anchorforgeLastFire[symbol][bias] = {
+        tier: bestTier.name,
+        time: ts
+    };
+
+    if (Object.keys(anchorforgeMemory).length > 5000) {
+        const pruneCutoff = ts - (60 * 60 * 1000);
+
+        for (const sym of Object.keys(anchorforgeMemory)) {
+            for (const b of Object.keys(anchorforgeMemory[sym])) {
+                anchorforgeMemory[sym][b] = anchorforgeMemory[sym][b]
+                    .filter(e => e.time >= pruneCutoff);
+
+                if (!anchorforgeMemory[sym][b].length) {
+                    delete anchorforgeMemory[sym][b];
+                }
+            }
+
+            if (!Object.keys(anchorforgeMemory[sym]).length) {
+                delete anchorforgeMemory[sym];
+            }
+        }
+    }
+}
+
+
+// ==========================================================
+//  PETERFORGE (Peter_o isolated price-anchor engine)
+//  Bot 7
+//
+//  Important:
+//    - This does NOT feed into ANCHORFORGE.
+//    - It stays silent unless Peter_o-style JSON appears.
+//    - Peter_o direction is treated as a price-zone marker,
+//      not as automatic support/resistance.
+// ==========================================================
+
+const PETERFORGE_ENABLED = (process.env.PETERFORGE_ENABLED || "true").toLowerCase() !== "false";
+const PETERFORGE_WINDOW_MS = 30 * 60 * 1000;
+const PETERFORGE_COOLDOWN_MS = 10 * 60 * 1000;
+
+// peterforgeMemory[symbol] = [{ direction, combo, price, time }]
+const peterforgeMemory = {};
+const peterforgeLastFire = {};
+
+function textFromBody(body) {
+    return [
+        body.kind,
+        body.signal,
+        body.type,
+        body.action,
+        body.direction,
+        body.name,
+        body.source,
+        body.message,
+        body.alert_name,
+        body.indicator,
+        body.script,
+        body.bot
+    ]
+        .filter(Boolean)
+        .map(x => String(x))
+        .join(" ");
+}
+
+function isPeterForgePayload(body, group) {
+    if (!body) return false;
+
+    const text = textFromBody(body).toUpperCase();
+
+    if (text.includes("PETER")) return true;
+
+    // Fallback for Peter_o JSON that may not carry the word PETER,
+    // but carries the distinctive MTF divergence fields.
+    const hasCombo = Boolean(body.matched_tfs || body.timeframes || body.tfs || body.tf_combo);
+    const hasPrice = body.price !== undefined && body.price !== null && String(body.price).trim() !== "";
+    const dir = String(body.direction || body.dir || "").toUpperCase();
+    const hasDirection = dir === "POSITIVE" || dir === "NEGATIVE" || dir === "BUY" || dir === "SELL";
+
+    return hasCombo && hasPrice && hasDirection && !group;
+}
+
+function getPeterDirection(body) {
+    const text = textFromBody(body).toUpperCase();
+    const dir = String(body.direction || body.dir || "").toUpperCase();
+
+    if (dir.includes("POS") || text.includes("POSITIVE")) return "POSITIVE";
+    if (dir.includes("NEG") || text.includes("NEGATIVE")) return "NEGATIVE";
+
+    return "UNKNOWN";
+}
+
+function getPeterCombo(body) {
+    return cleanLabel(
+        body.matched_tfs ||
+        body.timeframes ||
+        body.tfs ||
+        body.tf_combo ||
+        body.combo,
+        "n/a"
+    );
+}
+
+function getPeterPrice(body) {
+    const raw = body.price || body.close || body.level;
+    if (raw === undefined || raw === null || String(raw).trim() === "") return null;
+
+    const n = Number(String(raw).replace(/,/g, ""));
+    return Number.isFinite(n) ? n : null;
+}
+
+function formatPct(n) {
+    if (!Number.isFinite(n)) return "n/a";
+    return `${n >= 0 ? "+" : ""}${n.toFixed(2)}%`;
+}
+
+function processPeterforge(symbol, group, ts, body) {
+    if (!PETERFORGE_ENABLED) return;
+    if (!symbol || !body) return;
+    if (!isPeterForgePayload(body, group)) return;
+
+    const direction = getPeterDirection(body);
+    const combo = getPeterCombo(body);
+    const price = getPeterPrice(body);
+
+    if (!peterforgeMemory[symbol]) {
+        peterforgeMemory[symbol] = [];
+    }
+
+    const buf = peterforgeMemory[symbol];
+    const cutoff = ts - PETERFORGE_WINDOW_MS;
+    while (buf.length && buf[0].time < cutoff) {
+        buf.shift();
+    }
+
+    const previous = buf.length ? buf[buf.length - 1] : null;
+
+    buf.push({ direction, combo, price, time: ts });
+
+    const lastKey = `${symbol}-${direction}-${combo}`;
+    const lastSent = peterforgeLastFire[lastKey] || 0;
+    if (ts - lastSent < PETERFORGE_COOLDOWN_MS) return;
+
+    let title = "📍 PETERFORGE ANCHOR";
+    let read = "PRICE-ZONE MARKER ONLY — not automatic support/resistance";
+    let previousBlock = "Previous Peter_o: none";
+
+    if (previous) {
+        const sameDirection = previous.direction === direction;
+        title = sameDirection ? "📌 PETERFORGE STACK" : "⚠️ PETERFORGE FLIP";
+        read = sameDirection
+            ? "Same-direction Peter_o stack — price zone has repeated"
+            : "Opposite-direction Peter_o flip — possible failed zone / trap / deviation";
+
+        const gapMs = ts - previous.time;
+        const gapMin = Math.floor(gapMs / 60000);
+        const gapSec = Math.floor((gapMs % 60000) / 1000);
+
+        let priceMove = "n/a";
+        if (price !== null && previous.price !== null && previous.price !== 0) {
+            priceMove = formatPct(((price - previous.price) / previous.price) * 100);
+        }
+
+        previousBlock =
+            `Previous Peter_o:\n` +
+            `Direction: ${previous.direction}\n` +
+            `Combo: ${previous.combo}\n` +
+            `Price: ${previous.price !== null ? previous.price : "n/a"}\n` +
+            `Time: ${formatDateTime(previous.time)}\n` +
+            `Gap: ${gapMin}m ${gapSec}s\n` +
+            `Price move: ${priceMove}`;
+    }
+
+    sendToTelegram7(
+        `${title}\n` +
+        `Symbol: ${symbol}\n` +
+        `Direction: ${direction}\n` +
+        `Combo: ${combo}\n` +
+        `Price: ${price !== null ? price : "n/a"}\n` +
+        `Time: ${formatDateTime(ts)}\n\n` +
+        `${previousBlock}\n\n` +
+        `Read: ${read}\n` +
+        `Note: Peter_o is isolated and does NOT count inside ANCHORFORGE.`
+    );
+
+    peterforgeLastFire[lastKey] = ts;
+
+    if (Object.keys(peterforgeMemory).length > 5000) {
+        const pruneCutoff = ts - (2 * 60 * 60 * 1000);
+        for (const sym of Object.keys(peterforgeMemory)) {
+            peterforgeMemory[sym] = peterforgeMemory[sym].filter(e => e.time >= pruneCutoff);
+            if (!peterforgeMemory[sym].length) delete peterforgeMemory[sym];
+        }
+    }
+}
+
 
 // ==========================================================
 //  INAUGURAL (PERSISTENT — first 2 single-letter groups in 2h)
@@ -3089,33 +3624,38 @@ app.post("/incoming", (req, res) => {
 
         const group  = (body.group || "").trim();
         const symbol = normalizeSymbol(body.symbol);
-		const isHash = group.startsWith("#");
+        const isHash = group.startsWith("#");
+        const isPeterPayload = isPeterForgePayload(body, group);
 
         const ts = nowMs();
-		
 
-        const hash = alertHash(symbol, group, ts);
+        const effectiveHashGroup = group || (isPeterPayload
+            ? `PETER-${body.direction || ""}-${body.matched_tfs || body.timeframes || body.tfs || body.tf_combo || ""}`
+            : "");
+
+        const hash = alertHash(symbol, effectiveHashGroup, ts);
         if (recentHashes.has(hash)) return res.sendStatus(200);
         recentHashes.add(hash);
         setTimeout(() => recentHashes.delete(hash), 300000);
 
-        if (!group || !symbol) return res.sendStatus(200);
+        if (!symbol) return res.sendStatus(200);
+        if (!group && !isPeterPayload) return res.sendStatus(200);
 
-        if (!events[group]) events[group] = [];
-        events[group].push({ time: ts, data: body });
-        pruneOld(events[group], maxWindowMs());
+        if (group) {
+            if (!events[group]) events[group] = [];
+            events[group].push({ time: ts, data: body });
+            pruneOld(events[group], maxWindowMs());
+        }
 
-        
+
 
         //processCheck(symbol, group, ts, body);
 		
-		  // ✅ FIX: FIRST must IGNORE # groups
-        if (!isHash) {
+        // ✅ FIX: FIRST must IGNORE # groups and group-less Peter_o payloads
+        if (group && !isHash) {
             processFirst(symbol, group, ts);
-        
             processInaugural(symbol, group, ts);
-}
-
+        }
 
 // ==========================================
 // 🧠 SPLIT PIPELINE
@@ -3123,33 +3663,39 @@ app.post("/incoming", (req, res) => {
 
 if (!isHash) {
     // 🔵 NORMAL ECOSYSTEM
+    // Group-less Peter_o payloads are handled by PETERFORGE only.
 
-    processAnyTwo(symbol, group, ts);	
-    processBundle(symbol, group, ts);      
-    //processBazooka(symbol, group, ts, body);
+    if (group) {
+        processAnyTwo(symbol, group, ts);    
+        processBundle(symbol, group, ts);      
+        //processBazooka(symbol, group, ts, body);
 
-    processBlackPanther(symbol, group, ts);
-    processSideFlip(symbol, group, ts);
-    processGamma(symbol, group, ts);
-    processYaba(symbol, group, ts);
-    processSalsa(symbol, group, ts);
-    processTango(symbol, group, ts);
-    processCobra(symbol, group, ts);
-    processNeptune(symbol, group, ts);
-    processZulu(symbol, group, ts);
-    processMinta(symbol, group, ts);
-    processMamba(symbol, group, ts);
-    //processSpesh(symbol, group, ts);
-    //processCabal(symbol, group, ts);
-    processBoom(symbol, group, ts);
-    processKooky(symbol, group, ts);        
-    //processTesting(symbol, group, ts);
-    //processAudit(symbol, group, ts, body);
-    processBababia(symbol, group, ts);
-    // processMAMAMIA(symbol, group, ts); // moved to hash ecosystem
-    processZoneforge(symbol, group, ts, body);
-    //processWakanda(symbol, group, ts, body);
-    processJupiter(symbol, group, ts);
+        processBlackPanther(symbol, group, ts);
+        processSideFlip(symbol, group, ts);
+        processGamma(symbol, group, ts);
+        processYaba(symbol, group, ts);
+        processSalsa(symbol, group, ts);
+        processTango(symbol, group, ts);
+        processCobra(symbol, group, ts);
+        processNeptune(symbol, group, ts);
+        processZulu(symbol, group, ts);
+        processMinta(symbol, group, ts);
+        processMamba(symbol, group, ts);
+        //processSpesh(symbol, group, ts);
+        //processCabal(symbol, group, ts);
+        processBoom(symbol, group, ts);
+        processKooky(symbol, group, ts);        
+        //processTesting(symbol, group, ts);
+        //processAudit(symbol, group, ts, body);
+        processBababia(symbol, group, ts);
+        // processMAMAMIA(symbol, group, ts); // moved to hash ecosystem
+        processZoneforge(symbol, group, ts, body);
+        processAnchorforge(symbol, group, ts, body);
+        //processWakanda(symbol, group, ts, body);
+        processJupiter(symbol, group, ts);
+    }
+
+    processPeterforge(symbol, group, ts, body);
 
 } else {
     // 🔴 HASH ECOSYSTEM (isolated)
@@ -3249,4 +3795,10 @@ app.get("/ping", (req, res) => {
 //  START SERVER
 // ==========================================================
 const PORT = Number((process.env.PORT || "10000").trim());
-app.listen(PORT, () => console.log(`🚀 Server running on port ${PORT}`));
+app.listen(PORT, () => console.log(`🚀 Server running on port ${PORT}`))        // ✅ FIX: FIRST must IGNORE # groups and group-less Peter_o payloads
+        if (group && !isHash) {
+            processFirst(symbol, group, ts);
+            processInaugural(symbol, group, ts);
+        }
+
+;
