@@ -3062,7 +3062,7 @@ function processZoneforge(symbol, group, ts, body) {
 
 // ==========================================================
 //  ANCHORFORGE (Single-letter anchor support/resistance zones)
-//  Bot 7
+//  Bot 3
 //
 //  Clean version: Peter_o is NOT included in ANCHORFORGE.
 //  Concept:
@@ -3337,7 +3337,7 @@ function processAnchorforge(symbol, group, ts, body) {
 
 // ==========================================================
 //  PETERFORGE (Peter_o isolated price-anchor engine)
-//  Bot 7
+//  Bot 3
 //
 //  Important:
 //    - This does NOT feed into ANCHORFORGE.
