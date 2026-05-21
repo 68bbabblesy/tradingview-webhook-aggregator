@@ -46,7 +46,10 @@ function loadState() {
                 boomPairState: parsed.boomPairState || {},
                 inauguralState: parsed.inauguralState || {},
                 kookyMemory: parsed.kookyMemory || {},
-                speshMemory: parsed.speshMemory || {}
+                speshMemory: parsed.speshMemory || {},
+                kookyComboState: parsed.kookyComboState || {},
+                speshComboState: parsed.speshComboState || {},
+                cobraComboState: parsed.cobraComboState || {}
             };
         }
     } catch {}
@@ -64,7 +67,10 @@ function loadState() {
         boomPairState: {},
         inauguralState: {},
         kookyMemory: {},
-        speshMemory: {}
+        speshMemory: {},
+        kookyComboState: {},
+        speshComboState: {},
+        cobraComboState: {}
     };
 }
 
@@ -86,7 +92,10 @@ function saveState() {
                     boomPairState,
                     inauguralState,
                     kookyMemory,
-                    speshMemory
+                    speshMemory,
+                    kookyComboState,
+                    speshComboState,
+                    cobraComboState
                 },
                 null,
                 2
@@ -1819,87 +1828,34 @@ function processMamba(symbol, group, ts) {
     });
 }
 // ==========================================================
-//  SPESH (PERSISTENT — exact subgroup repeat gap detector)
+//  SPESH (PERSISTENT — number-letter subgroup combo repeat)
 //  Condition:
-//    - Main ecosystem only
 //    - Same symbol
-//    - Same exact subgroup
-//    - Subgroup must be number + single letter, e.g. 16A, 43X, 99M
-//    - Immediate repeat gap >25 minutes and <2 hours
+//    - 2+ exact number-letter subgroups within 20 seconds
+//    - Example: 16B + 28K + 43X
+//    - Stores all subset combos size 2+
+//    - Same combo repeats within 2 hours
 //  Bot 7
 // ==========================================================
 
-const SPESH_MIN_GAP_MS = 25 * 60 * 1000;       // more than 25 minutes
-const SPESH_MAX_GAP_MS = 2 * 60 * 60 * 1000;   // less than 2 hours
-
-// speshMemory[symbol][group] = lastTimestamp
-let speshMemory = persisted.speshMemory || {};
-
-function isNumberLetterSubgroup(group) {
-    return /^\d+[A-Z]$/.test(group);
-}
+// speshComboState[symbol][comboKey] = { time, groups }
+let speshComboState = persisted.speshComboState || {};
+const speshComboRuntime = {};
 
 function processSpesh(symbol, group, ts) {
-
-    if (!symbol || !group) return;
-
-    // Only exact number+letter subgroups like 16A / 43X / 99M
-    if (!isNumberLetterSubgroup(group)) return;
-
-    if (!speshMemory[symbol]) {
-        speshMemory[symbol] = {};
-    }
-
-    const last = speshMemory[symbol][group];
-
-    if (last) {
-
-        const gapMs = ts - last;
-
-        const isMoreThan25m = gapMs > SPESH_MIN_GAP_MS;
-        const isLessThan2h  = gapMs < SPESH_MAX_GAP_MS;
-
-        if (isMoreThan25m && isLessThan2h) {
-
-            const gapMin = Math.floor(gapMs / 60000);
-            const gapSec = Math.floor((gapMs % 60000) / 1000);
-
-            sendToTelegram7(
-                `🟢 SPESH\n` +
-                `Symbol: ${symbol}\n` +
-                `Subgroup: ${group}\n` +
-                `Condition: Same exact subgroup repeat gap >25m and <2h\n\n` +
-                `Previous: ${formatDateTime(last)}\n` +
-                `Current: ${formatDateTime(ts)}\n` +
-                `Gap: ${gapMin}m ${gapSec}s`
-            );
-        }
-    }
-
-    // Always update to the immediate latest alert.
-    speshMemory[symbol][group] = ts;
-    saveState();
-
-    // Safety cleanup
-    if (Object.keys(speshMemory).length > 5000) {
-        const pruneCutoff = ts - (3 * 60 * 60 * 1000);
-
-        for (const sym of Object.keys(speshMemory)) {
-            const groups = speshMemory[sym];
-
-            for (const g of Object.keys(groups)) {
-                if (groups[g] < pruneCutoff) {
-                    delete groups[g];
-                }
-            }
-
-            if (!Object.keys(groups).length) {
-                delete speshMemory[sym];
-            }
-        }
-
-        saveState();
-    }
+    processComboRepeatEngine(
+        {
+            name: "SPESH",
+            emoji: "🟢",
+            description: "Number-letter subgroup combo repeat",
+            state: speshComboState,
+            runtime: speshComboRuntime,
+            isValidGroup: isComboNumberLetter
+        },
+        symbol,
+        group,
+        ts
+    );
 }
 
 // ==========================================================
@@ -2093,86 +2049,34 @@ function processBoom(symbol, group, ts) {
 }
 
 // ==========================================================
-//  KOOKY (PERSISTENT — same symbol + same single-letter group gap detector)
+//  KOOKY (PERSISTENT — single-letter combo repeat)
 //  Condition:
-//    - Main ecosystem only
 //    - Same symbol
-//    - Same exact single-letter group: A-Z
-//    - Immediate repeat gap >25 minutes and <2 hours
+//    - 2+ single-letter groups within 20 seconds
+//    - Example: A + K + G
+//    - Stores all subset combos size 2+
+//    - Same combo repeats within 2 hours
 //  Bot 7
 // ==========================================================
 
-const KOOKY_MIN_GAP_MS = 25 * 60 * 1000;       // more than 25 minutes
-const KOOKY_MAX_GAP_MS = 2 * 60 * 60 * 1000;   // less than 2 hours
-
-// kookyMemory[symbol][group] = lastTimestamp
-let kookyMemory = persisted.kookyMemory || {};
-
-function isKookySingleLetterGroup(group) {
-    return /^[A-Z]$/.test(group);
-}
+// kookyComboState[symbol][comboKey] = { time, groups }
+let kookyComboState = persisted.kookyComboState || {};
+const kookyComboRuntime = {};
 
 function processKooky(symbol, group, ts) {
-
-    if (!symbol || !group) return;
-
-    // Any single-letter group A-Z
-    if (!isKookySingleLetterGroup(group)) return;
-
-    if (!kookyMemory[symbol]) {
-        kookyMemory[symbol] = {};
-    }
-
-    const last = kookyMemory[symbol][group];
-
-    if (last) {
-
-        const gapMs = ts - last;
-
-        const isMoreThan25m = gapMs > KOOKY_MIN_GAP_MS;
-        const isLessThan2h  = gapMs < KOOKY_MAX_GAP_MS;
-
-        if (isMoreThan25m && isLessThan2h) {
-
-            const gapMin = Math.floor(gapMs / 60000);
-            const gapSec = Math.floor((gapMs % 60000) / 1000);
-
-            sendToTelegram7(
-                `🟣 KOOKY\n` +
-                `Symbol: ${symbol}\n` +
-                `Group: ${group}\n` +
-                `Condition: Same single-letter group repeat gap >25m and <2h\n\n` +
-                `Previous: ${formatDateTime(last)}\n` +
-                `Current: ${formatDateTime(ts)}\n` +
-                `Gap: ${gapMin}m ${gapSec}s`
-            );
-        }
-    }
-
-    // Always update to the immediate latest alert.
-    kookyMemory[symbol][group] = ts;
-    saveState();
-
-    // Safety cleanup
-    if (Object.keys(kookyMemory).length > 5000) {
-        const pruneCutoff = ts - (3 * 60 * 60 * 1000);
-
-        for (const sym of Object.keys(kookyMemory)) {
-            const groups = kookyMemory[sym];
-
-            for (const g of Object.keys(groups)) {
-                if (groups[g] < pruneCutoff) {
-                    delete groups[g];
-                }
-            }
-
-            if (!Object.keys(groups).length) {
-                delete kookyMemory[sym];
-            }
-        }
-
-        saveState();
-    }
+    processComboRepeatEngine(
+        {
+            name: "KOOKY",
+            emoji: "🟣",
+            description: "Single-letter combo repeat",
+            state: kookyComboState,
+            runtime: kookyComboRuntime,
+            isValidGroup: isComboSingleLetter
+        },
+        symbol,
+        group,
+        ts
+    );
 }
 
 // ==========================================================
@@ -2643,55 +2547,213 @@ function processMinta(symbol, group, ts) {
 }
 
 // ==========================================================
-//  COBRA (Same symbol Y/Z repeat within 30 minutes)
-//  Groups: Y or Z
-//  Same symbol
-//  Window: 30 minutes
-//  Bot 8
+//  COMBO REPEAT ENGINE (shared by KOOKY / SPESH / COBRA)
+//  Logic:
+//    - Same symbol
+//    - 2+ qualifying groups within 20 seconds = combo cluster
+//    - Stores ALL subset combos of size 2+
+//    - Order does not matter: A+K = K+A
+//    - If the same combo appears again within 2 hours, alert
 // ==========================================================
 
-const COBRA_WINDOW_MS = 30 * 60 * 1000; // 30 minutes
+const COMBO_BUILD_WINDOW_MS  = 20 * 1000;             // 20 seconds
+const COMBO_REPEAT_WINDOW_MS = 2 * 60 * 60 * 1000;    // 2 hours
 
-// cobraMemory[symbol] = { group, time }
-const cobraMemory = {};
+function isComboSingleLetter(group) {
+    return /^[A-Z]$/.test(group);
+}
 
-function processCobra(symbol, group, ts) {
+function isComboNumberLetter(group) {
+    return /^\d+[A-Z]$/.test(group);
+}
 
-    if (!["Y", "Z"].includes(group)) return;
+function comboKeyFromGroups(groups) {
+    return [...new Set(groups)].sort().join("+");
+}
 
-    const last = cobraMemory[symbol];
+function comboFormatGroups(groups) {
+    return [...new Set(groups)].sort().join(" + ");
+}
 
-    if (last && (ts - last.time <= COBRA_WINDOW_MS)) {
+function comboGroupSubsets(groups) {
+    const unique = [...new Set(groups)].sort();
+    const result = [];
 
-        const diffMs  = ts - last.time;
-        const diffMin = Math.floor(diffMs / 60000);
-        const diffSec = Math.floor((diffMs % 60000) / 1000);
+    function walk(start, picked) {
+        if (picked.length >= 2) {
+            result.push([...picked]);
+        }
 
-        sendToTelegram8(
-            `🐍 COBRA\n` +
-            `Symbol: ${symbol}\n` +
-            `1) ${last.group} @ ${new Date(last.time).toLocaleString()}\n` +
-            `2) ${group} @ ${formatDateTime(ts)}\n` +
-            `Gap: ${diffMin}m ${diffSec}s`
-        );
-
-        // Reset for this symbol after firing
-        delete cobraMemory[symbol];
-        return;
-    }
-
-    // Always update latest hit
-    cobraMemory[symbol] = { group, time: ts };
-
-    // Optional pruning safety (memory guard)
-    if (Object.keys(cobraMemory).length > 5000) {
-        const cutoff = ts - (60 * 60 * 1000); // keep only last 1h
-        for (const sym of Object.keys(cobraMemory)) {
-            if (cobraMemory[sym].time < cutoff) {
-                delete cobraMemory[sym];
-            }
+        for (let i = start; i < unique.length; i++) {
+            picked.push(unique[i]);
+            walk(i + 1, picked);
+            picked.pop();
         }
     }
+
+    walk(0, []);
+    return result;
+}
+
+function pruneComboState(state, ts) {
+    const cutoff = ts - COMBO_REPEAT_WINDOW_MS;
+
+    for (const sym of Object.keys(state)) {
+        for (const key of Object.keys(state[sym])) {
+            if (!state[sym][key] || state[sym][key].time < cutoff) {
+                delete state[sym][key];
+            }
+        }
+
+        if (!Object.keys(state[sym]).length) {
+            delete state[sym];
+        }
+    }
+}
+
+function processComboRepeatEngine(cfg, symbol, group, ts) {
+
+    if (!symbol || !group) return;
+    if (!cfg.isValidGroup(group)) return;
+
+    if (!cfg.runtime[symbol]) {
+        cfg.runtime[symbol] = {
+            events: [],
+            firedCombos: {}
+        };
+    }
+
+    const rt = cfg.runtime[symbol];
+
+    const cutoff = ts - COMBO_BUILD_WINDOW_MS;
+    rt.events = rt.events.filter(e => e.time >= cutoff);
+
+    // If old cluster expired fully, reset fired combo memory for this live cluster.
+    if (!rt.events.length) {
+        rt.firedCombos = {};
+    }
+
+    // Keep one live event per group in the 20s cluster; refresh repeated group timestamp.
+    const existingIndex = rt.events.findIndex(e => e.group === group);
+
+    if (existingIndex !== -1) {
+        rt.events[existingIndex] = {
+            group,
+            time: ts
+        };
+    } else {
+        rt.events.push({
+            group,
+            time: ts
+        });
+    }
+
+    rt.events.sort((a, b) => a.time - b.time);
+
+    const liveGroups = rt.events.map(e => e.group);
+    const liveSubsets = comboGroupSubsets(liveGroups);
+
+    if (!cfg.state[symbol]) {
+        cfg.state[symbol] = {};
+    }
+
+    const repeated = [];
+
+    for (const subset of liveSubsets) {
+        const key = comboKeyFromGroups(subset);
+        const previous = cfg.state[symbol][key];
+
+        if (!previous) continue;
+
+        const gapMs = ts - previous.time;
+
+        const isNotSameLiveCluster = gapMs > COMBO_BUILD_WINDOW_MS;
+        const isWithinRepeatWindow = gapMs <= COMBO_REPEAT_WINDOW_MS;
+        const notAlreadyFiredInCluster = !rt.firedCombos[key];
+
+        if (isNotSameLiveCluster && isWithinRepeatWindow && notAlreadyFiredInCluster) {
+            repeated.push({
+                key,
+                groups: subset,
+                previousTime: previous.time,
+                gapMs
+            });
+
+            rt.firedCombos[key] = true;
+        }
+    }
+
+    if (repeated.length) {
+
+        const lines = repeated
+            .sort((a, b) => a.groups.length - b.groups.length || a.key.localeCompare(b.key))
+            .map((x, i) => {
+                const gapMin = Math.floor(x.gapMs / 60000);
+                const gapSec = Math.floor((x.gapMs % 60000) / 1000);
+
+                return (
+                    `${i + 1}) ${x.groups.length}-group combo: ${comboFormatGroups(x.groups)}\n` +
+                    `   Previous: ${formatDateTime(x.previousTime)}\n` +
+                    `   Current: ${formatDateTime(ts)}\n` +
+                    `   Gap: ${gapMin}m ${gapSec}s`
+                );
+            })
+            .join("\n\n");
+
+        sendToTelegram7(
+            `${cfg.emoji} ${cfg.name}\n` +
+            `Symbol: ${symbol}\n` +
+            `Type: ${cfg.description}\n` +
+            `Live Cluster: ${comboFormatGroups(liveGroups)}\n` +
+            `Matched Combos: ${repeated.length}\n` +
+            `Window: repeat within 2h after 20s cluster\n\n` +
+            lines
+        );
+    }
+
+    // Store/refresh ALL subset combos from this live cluster.
+    for (const subset of liveSubsets) {
+        const key = comboKeyFromGroups(subset);
+
+        cfg.state[symbol][key] = {
+            time: ts,
+            groups: [...subset].sort()
+        };
+    }
+
+    pruneComboState(cfg.state, ts);
+    saveState();
+}
+
+// ==========================================================
+//  COBRA (PERSISTENT — any valid combo repeat)
+//  Condition:
+//    - Same symbol
+//    - 2+ groups within 20 seconds
+//    - Groups allowed: single letters OR number+letter subgroups
+//    - Stores all subset combos size 2+
+//    - Same combo repeats within 2 hours
+//  Bot 7
+// ==========================================================
+
+// cobraComboState[symbol][comboKey] = { time, groups }
+let cobraComboState = persisted.cobraComboState || {};
+const cobraComboRuntime = {};
+
+function processCobra(symbol, group, ts) {
+    processComboRepeatEngine(
+        {
+            name: "COBRA",
+            emoji: "🐍",
+            description: "Single-letter + number-letter combo repeat",
+            state: cobraComboState,
+            runtime: cobraComboRuntime,
+            isValidGroup: g => isComboSingleLetter(g) || isComboNumberLetter(g)
+        },
+        symbol,
+        group,
+        ts
+    );
 }
 
 // ==========================================================
