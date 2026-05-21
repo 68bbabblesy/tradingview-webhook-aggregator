@@ -45,7 +45,8 @@ function loadState() {
                 wakandaState: parsed.wakandaState || {},
                 boomPairState: parsed.boomPairState || {},
                 inauguralState: parsed.inauguralState || {},
-                kookyMemory: parsed.kookyMemory || {}
+                kookyMemory: parsed.kookyMemory || {},
+                speshMemory: parsed.speshMemory || {}
             };
         }
     } catch {}
@@ -62,7 +63,8 @@ function loadState() {
         wakandaState: {},
         boomPairState: {},
         inauguralState: {},
-        kookyMemory: {}
+        kookyMemory: {},
+        speshMemory: {}
     };
 }
 
@@ -83,7 +85,8 @@ function saveState() {
                     wakandaState,
                     boomPairState,
                     inauguralState,
-                    kookyMemory
+                    kookyMemory,
+                    speshMemory
                 },
                 null,
                 2
@@ -1816,55 +1819,87 @@ function processMamba(symbol, group, ts) {
     });
 }
 // ==========================================================
-//  SPESH (BTCUSDT ↔ TOTAL same-group within 45s)
-//  Groups: AA → ZZ
+//  SPESH (PERSISTENT — exact subgroup repeat gap detector)
+//  Condition:
+//    - Main ecosystem only
+//    - Same symbol
+//    - Same exact subgroup
+//    - Subgroup must be number + single letter, e.g. 16A, 43X, 99M
+//    - Immediate repeat gap >25 minutes and <2 hours
 //  Bot 7
 // ==========================================================
 
-const SPESH_WINDOW_MS = 45 * 1000;
+const SPESH_MIN_GAP_MS = 25 * 60 * 1000;       // more than 25 minutes
+const SPESH_MAX_GAP_MS = 2 * 60 * 60 * 1000;   // less than 2 hours
 
-const SPESH_SYMBOLS = new Set(["BTCUSDT", "TOTAL"]);
+// speshMemory[symbol][group] = lastTimestamp
+let speshMemory = persisted.speshMemory || {};
 
-// AA → ZZ auto-generate
-const SPESH_GROUPS = new Set(
-    Array.from({ length: 26 }, (_, i) => {
-        const letter = String.fromCharCode(65 + i);
-        return letter + letter;
-    })
-);
-
-const speshLast = {
-    BTCUSDT: {},
-    TOTAL: {}
-};
+function isNumberLetterSubgroup(group) {
+    return /^\d+[A-Z]$/.test(group);
+}
 
 function processSpesh(symbol, group, ts) {
 
-    if (!SPESH_SYMBOLS.has(symbol)) return;
-    if (!SPESH_GROUPS.has(group)) return;
+    if (!symbol || !group) return;
 
-    const otherSymbol = symbol === "BTCUSDT" ? "TOTAL" : "BTCUSDT";
-    const otherTs = speshLast[otherSymbol][group];
+    // Only exact number+letter subgroups like 16A / 43X / 99M
+    if (!isNumberLetterSubgroup(group)) return;
 
-    if (otherTs && Math.abs(ts - otherTs) <= SPESH_WINDOW_MS) {
-
-        const diffMs = Math.abs(ts - otherTs);
-        const diffSec = Math.floor(diffMs / 1000);
-
-        sendToTelegram7(
-            `🟢 SPESH\n` +
-            `Group: ${group}\n` +
-            `BTCUSDT: ${new Date(
-                symbol === "BTCUSDT" ? ts : otherTs
-            ).toLocaleTimeString()}\n` +
-            `TOTAL: ${new Date(
-                symbol === "TOTAL" ? ts : otherTs
-            ).toLocaleTimeString()}\n` +
-            `Gap: ${diffSec}s`
-        );
+    if (!speshMemory[symbol]) {
+        speshMemory[symbol] = {};
     }
 
-    speshLast[symbol][group] = ts;
+    const last = speshMemory[symbol][group];
+
+    if (last) {
+
+        const gapMs = ts - last;
+
+        const isMoreThan25m = gapMs > SPESH_MIN_GAP_MS;
+        const isLessThan2h  = gapMs < SPESH_MAX_GAP_MS;
+
+        if (isMoreThan25m && isLessThan2h) {
+
+            const gapMin = Math.floor(gapMs / 60000);
+            const gapSec = Math.floor((gapMs % 60000) / 1000);
+
+            sendToTelegram7(
+                `🟢 SPESH\n` +
+                `Symbol: ${symbol}\n` +
+                `Subgroup: ${group}\n` +
+                `Condition: Same exact subgroup repeat gap >25m and <2h\n\n` +
+                `Previous: ${formatDateTime(last)}\n` +
+                `Current: ${formatDateTime(ts)}\n` +
+                `Gap: ${gapMin}m ${gapSec}s`
+            );
+        }
+    }
+
+    // Always update to the immediate latest alert.
+    speshMemory[symbol][group] = ts;
+    saveState();
+
+    // Safety cleanup
+    if (Object.keys(speshMemory).length > 5000) {
+        const pruneCutoff = ts - (3 * 60 * 60 * 1000);
+
+        for (const sym of Object.keys(speshMemory)) {
+            const groups = speshMemory[sym];
+
+            for (const g of Object.keys(groups)) {
+                if (groups[g] < pruneCutoff) {
+                    delete groups[g];
+                }
+            }
+
+            if (!Object.keys(groups).length) {
+                delete speshMemory[sym];
+            }
+        }
+
+        saveState();
+    }
 }
 
 // ==========================================================
@@ -2058,12 +2093,11 @@ function processBoom(symbol, group, ts) {
 }
 
 // ==========================================================
-//  KOOKY (PERSISTENT — same symbol + same group gap detector)
+//  KOOKY (PERSISTENT — same symbol + same single-letter group gap detector)
 //  Condition:
 //    - Main ecosystem only
 //    - Same symbol
-//    - Same exact single-letter group
-//    - Allowed groups: C,D,Q,R,S,T,G,H,O,P
+//    - Same exact single-letter group: A-Z
 //    - Immediate repeat gap >25 minutes and <2 hours
 //  Bot 7
 // ==========================================================
@@ -2071,28 +2105,19 @@ function processBoom(symbol, group, ts) {
 const KOOKY_MIN_GAP_MS = 25 * 60 * 1000;       // more than 25 minutes
 const KOOKY_MAX_GAP_MS = 2 * 60 * 60 * 1000;   // less than 2 hours
 
-const KOOKY_GROUPS = new Set([
-    "C",
-    "D",
-    "Q",
-    "R",
-    "S",
-    "T",
-    "G",
-    "H",
-    "O",
-    "P"
-]);
-
 // kookyMemory[symbol][group] = lastTimestamp
 let kookyMemory = persisted.kookyMemory || {};
+
+function isKookySingleLetterGroup(group) {
+    return /^[A-Z]$/.test(group);
+}
 
 function processKooky(symbol, group, ts) {
 
     if (!symbol || !group) return;
 
-    // Only selected single-letter groups
-    if (!KOOKY_GROUPS.has(group)) return;
+    // Any single-letter group A-Z
+    if (!isKookySingleLetterGroup(group)) return;
 
     if (!kookyMemory[symbol]) {
         kookyMemory[symbol] = {};
@@ -2116,7 +2141,7 @@ function processKooky(symbol, group, ts) {
                 `🟣 KOOKY\n` +
                 `Symbol: ${symbol}\n` +
                 `Group: ${group}\n` +
-                `Condition: Same group repeat gap >25m and <2h\n\n` +
+                `Condition: Same single-letter group repeat gap >25m and <2h\n\n` +
                 `Previous: ${formatDateTime(last)}\n` +
                 `Current: ${formatDateTime(ts)}\n` +
                 `Gap: ${gapMin}m ${gapSec}s`
@@ -2125,7 +2150,6 @@ function processKooky(symbol, group, ts) {
     }
 
     // Always update to the immediate latest alert.
-    // This means KOOKY checks the gap between immediate same-symbol/same-group alerts.
     kookyMemory[symbol][group] = ts;
     saveState();
 
@@ -3677,7 +3701,7 @@ if (!isHash) {
         processZulu(symbol, group, ts);
         processMinta(symbol, group, ts);
         processMamba(symbol, group, ts);
-        //processSpesh(symbol, group, ts);
+        processSpesh(symbol, group, ts);
         //processCabal(symbol, group, ts);
         processBoom(symbol, group, ts);
         processKooky(symbol, group, ts);        
