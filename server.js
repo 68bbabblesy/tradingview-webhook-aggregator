@@ -3131,10 +3131,6 @@ const anchorforgeMemory = {};
 // anchorforgeLastFire[symbol][bias] = { tier, time }
 const anchorforgeLastFire = {};
 
-function isSingleLetterGroup(group) {
-    return /^[A-Z]$/.test(group || "");
-}
-
 function isDoubleLetterGroup(group) {
     return /^[A-Z]{2}$/.test(group || "");
 }
