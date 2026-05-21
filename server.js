@@ -3288,7 +3288,7 @@ function processAnchorforge(symbol, group, ts, body) {
     const doubleLines = doubleGroups.slice(0, 14).join(", ") || "none";
     const upgradeLine = isUpgrade ? `UPGRADE: ${lastFire.tier} → ${bestTier.name}\n` : "";
 
-    sendToTelegram7(
+    sendToTelegram3(
         `${bestTier.emoji} ANCHORFORGE ${bestTier.name} ${bias}\n` +
         upgradeLine +
         `Symbol: ${symbol}\n` +
@@ -3482,7 +3482,7 @@ function processPeterforge(symbol, group, ts, body) {
             `Price move: ${priceMove}`;
     }
 
-    sendToTelegram7(
+    sendToTelegram3(
         `${title}\n` +
         `Symbol: ${symbol}\n` +
         `Direction: ${direction}\n` +
