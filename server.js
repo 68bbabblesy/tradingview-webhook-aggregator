@@ -3791,10 +3791,4 @@ app.get("/ping", (req, res) => {
 //  START SERVER
 // ==========================================================
 const PORT = Number((process.env.PORT || "10000").trim());
-app.listen(PORT, () => console.log(`🚀 Server running on port ${PORT}`))        // ✅ FIX: FIRST must IGNORE # groups and group-less Peter_o payloads
-        if (group && !isHash) {
-            processFirst(symbol, group, ts);
-            processInaugural(symbol, group, ts);
-        }
-
-;
+app.listen(PORT, () => console.log(`🚀 Server running on port ${PORT}`));
