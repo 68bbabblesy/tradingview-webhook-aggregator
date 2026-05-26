@@ -49,7 +49,8 @@ function loadState() {
                 speshMemory: parsed.speshMemory || {},
                 kookyComboState: parsed.kookyComboState || {},
                 speshComboState: parsed.speshComboState || {},
-                cobraComboState: parsed.cobraComboState || {}
+                cobraComboState: parsed.cobraComboState || {},
+                cabalState: parsed.cabalState || {}
             };
         }
     } catch {}
@@ -70,7 +71,8 @@ function loadState() {
         speshMemory: {},
         kookyComboState: {},
         speshComboState: {},
-        cobraComboState: {}
+        cobraComboState: {},
+        cabalState: {}
     };
 }
 
@@ -95,7 +97,8 @@ function saveState() {
                     speshMemory,
                     kookyComboState,
                     speshComboState,
-                    cobraComboState
+                    cobraComboState,
+                    cabalState
                 },
                 null,
                 2
@@ -1859,48 +1862,125 @@ function processSpesh(symbol, group, ts) {
 }
 
 // ==========================================================
-//  CABAL (BTCUSDT ↔ TOTAL same-group within 5 minutes)
-//  Any group allowed
-//  Bot 7
+//  CABAL (PERSISTENT — 29/30 family subgroup pair detector)
+//  Condition:
+//    - Main ecosystem only
+//    - Same symbol
+//    - Only families 29 and 30
+//    - Same family only: 29A + 29C OR 30J + 30F
+//    - Different exact subgroups
+//    - Pair within 20 seconds
+//  Bot 5
 // ==========================================================
 
-const CABAL_WINDOW_MS = 5 * 60 * 1000;
+const CABAL_WINDOW_MS = 20 * 1000; // 20 seconds
 
-const CABAL_SYMBOLS = new Set(["BTCUSDT", "TOTAL"]);
+// cabalState[symbol][family] = [{ group, time }]
+let cabalState = persisted.cabalState || {};
 
-const cabalLast = {
-    BTCUSDT: {},
-    TOTAL: {}
-};
+function getCabalFamily(group) {
+    if (/^29[A-Z]$/.test(group)) return "29";
+    if (/^30[A-Z]$/.test(group)) return "30";
+    return "";
+}
 
 function processCabal(symbol, group, ts) {
 
-    if (!CABAL_SYMBOLS.has(symbol)) return;
-    if (!group) return;
+    if (!symbol || !group) return;
 
-    const otherSymbol = symbol === "BTCUSDT" ? "TOTAL" : "BTCUSDT";
-    const otherTs = cabalLast[otherSymbol][group];
+    const family = getCabalFamily(group);
+    if (!family) return;
 
-    if (otherTs && Math.abs(ts - otherTs) <= CABAL_WINDOW_MS) {
-
-        const diffMs = Math.abs(ts - otherTs);
-        const diffMin = Math.floor(diffMs / 60000);
-        const diffSec = Math.floor((diffMs % 60000) / 1000);
-
-        sendToTelegram7(
-            `🔵 CABAL\n` +
-            `Group: ${group}\n` +
-            `BTCUSDT: ${new Date(
-                symbol === "BTCUSDT" ? ts : otherTs
-            ).toLocaleTimeString()}\n` +
-            `TOTAL: ${new Date(
-                symbol === "TOTAL" ? ts : otherTs
-            ).toLocaleTimeString()}\n` +
-            `Gap: ${diffMin}m ${diffSec}s`
-        );
+    if (!cabalState[symbol]) {
+        cabalState[symbol] = {};
     }
 
-    cabalLast[symbol][group] = ts;
+    if (!cabalState[symbol][family]) {
+        cabalState[symbol][family] = [];
+    }
+
+    let buf = cabalState[symbol][family];
+
+    // Keep only last 20 seconds
+    const cutoff = ts - CABAL_WINDOW_MS;
+    buf = buf.filter(e => e.time >= cutoff);
+
+    // Look for a DIFFERENT subgroup in the SAME 29/30 family
+    const match = buf.find(e => e.group !== group);
+
+    if (match) {
+
+        const firstTime = match.time <= ts ? match.time : ts;
+        const secondTime = match.time <= ts ? ts : match.time;
+
+        const firstGroup = match.time <= ts ? match.group : group;
+        const secondGroup = match.time <= ts ? group : match.group;
+
+        const diffMs = secondTime - firstTime;
+        const diffSec = Math.floor(diffMs / 1000);
+
+        sendToTelegram5(
+            `🔵 CABAL\n` +
+            `Symbol: ${symbol}\n` +
+            `Family: ${family}\n` +
+            `Condition: 2 different ${family} subgroups within 20s\n\n` +
+            `1) ${firstGroup} @ ${formatDateTime(firstTime)}\n` +
+            `2) ${secondGroup} @ ${formatDateTime(secondTime)}\n` +
+            `Gap: ${diffSec}s`
+        );
+
+        // Reset cluster but keep current subgroup as fresh seed
+        cabalState[symbol][family] = [
+            {
+                group,
+                time: ts
+            }
+        ];
+
+        saveState();
+        return;
+    }
+
+    // Avoid stacking exact same subgroup repeatedly; refresh timestamp instead
+    const sameIndex = buf.findIndex(e => e.group === group);
+
+    if (sameIndex !== -1) {
+        buf[sameIndex] = {
+            group,
+            time: ts
+        };
+    } else {
+        buf.push({
+            group,
+            time: ts
+        });
+    }
+
+    cabalState[symbol][family] = buf;
+    saveState();
+
+    // Safety cleanup
+    if (Object.keys(cabalState).length > 5000) {
+        const pruneCutoff = ts - (2 * 60 * 60 * 1000);
+
+        for (const sym of Object.keys(cabalState)) {
+            const families = cabalState[sym];
+
+            for (const fam of Object.keys(families)) {
+                families[fam] = families[fam].filter(e => e.time >= pruneCutoff);
+
+                if (!families[fam].length) {
+                    delete families[fam];
+                }
+            }
+
+            if (!Object.keys(families).length) {
+                delete cabalState[sym];
+            }
+        }
+
+        saveState();
+    }
 }
 
 // ==========================================================
@@ -3764,7 +3844,7 @@ if (!isHash) {
         processMinta(symbol, group, ts);
         processMamba(symbol, group, ts);
         processSpesh(symbol, group, ts);
-        //processCabal(symbol, group, ts);
+        processCabal(symbol, group, ts);
         processBoom(symbol, group, ts);
         processKooky(symbol, group, ts);        
         //processTesting(symbol, group, ts);
