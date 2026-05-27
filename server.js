@@ -50,7 +50,8 @@ function loadState() {
                 kookyComboState: parsed.kookyComboState || {},
                 speshComboState: parsed.speshComboState || {},
                 cobraComboState: parsed.cobraComboState || {},
-                cabalState: parsed.cabalState || {}
+                cabalState: parsed.cabalState || {},
+                mambaFirstState: parsed.mambaFirstState || {}
             };
         }
     } catch {}
@@ -72,7 +73,8 @@ function loadState() {
         kookyComboState: {},
         speshComboState: {},
         cobraComboState: {},
-        cabalState: {}
+        cabalState: {},
+        mambaFirstState: {}
     };
 }
 
@@ -98,7 +100,8 @@ function saveState() {
                     kookyComboState,
                     speshComboState,
                     cobraComboState,
-                    cabalState
+                    cabalState,
+                    mambaFirstState
                 },
                 null,
                 2
@@ -1581,7 +1584,7 @@ function processZulu(symbol, group, ts) {
         const diffMin = Math.floor(diffMs / 60000);
         const diffSec = Math.floor((diffMs % 60000) / 1000);
 
-        sendToTelegram5(
+        sendToTelegram4(
             `🟡 ZULU\n` +
             `Symbol: ${symbol}\n` +
             `Family: ${family}\n` +
@@ -1769,67 +1772,117 @@ function processSideFlip(symbol, group, ts) {
 
 
 // ==========================================================
-//  MAMBA (Batch detector — mandatory Y or Z)
-//  Condition: Same symbol must include at least one "Y" or "Z"
-//  Window: 5 minutes
-//  Batch delay: 5 minutes
-//  Bot 8
+//  MAMBA (PERSISTENT — first family cross in 2h)
+//  Condition:
+//    - Main ecosystem only
+//    - Same symbol
+//    - Same numeric family, e.g. 16A + 16B
+//    - Different exact subgroups
+//    - Pair must occur within 90 seconds
+//    - Only first valid cross per symbol+family in 2 hours
+//  Bot 6
 // ==========================================================
 
-const MAMBA_WINDOW_MS = 5 * 60 * 1000;
+const MAMBA_PAIR_WINDOW_MS = 90 * 1000; // 90 seconds
+const MAMBA_FIRST_WINDOW_MS = 2 * 60 * 60 * 1000; // 2 hours
 
-const mambaState = {};
+// mambaMemory[symbol][family] = { group, time }
+const mambaMemory = {};
 
-// mambaState[symbol] = { events: [], timer }
+// mambaFirstState[symbol][family] = lastFireTimestamp
+let mambaFirstState = persisted.mambaFirstState || {};
+
+function getMambaFamily(group) {
+    const match = String(group || "").match(/^(\d+)[A-Z]$/);
+    return match ? match[1] : "";
+}
 
 function processMamba(symbol, group, ts) {
 
     if (!symbol || !group) return;
 
-    if (!mambaState[symbol]) {
+    const family = getMambaFamily(group);
+    if (!family) return;
 
-        mambaState[symbol] = {
-            events: [],
-            timer: null
-        };
-
-        mambaState[symbol].timer = setTimeout(() => {
-
-            const state = mambaState[symbol];
-            const events = state.events;
-
-            const hasYZ = events.some(e =>
-                e.group === "Y" || e.group === "Z"
-            );
-
-            if (events.length >= 2 && hasYZ) {
-
-                const lines = events
-                    .sort((a,b)=>a.time-b.time)
-                    .map(e =>
-                        `• ${e.group} @ ${formatTime(e.time)}`
-                    )
-                    .join("\n");
-
-                sendToTelegram8(
-                    `🐍 MAMBA\n` +
-                    `Symbol: ${symbol}\n` +
-                    `Count: ${events.length}\n` +
-                    `Window: 5m\n` +
-                    `Alerts:\n${lines}`
-                );
-            }
-
-            delete mambaState[symbol];
-
-        }, MAMBA_WINDOW_MS);
+    if (!mambaMemory[symbol]) {
+        mambaMemory[symbol] = {};
     }
 
-    mambaState[symbol].events.push({
+    if (!mambaFirstState[symbol]) {
+        mambaFirstState[symbol] = {};
+    }
+
+    const lastSeen = mambaMemory[symbol][family];
+    const lastFire = mambaFirstState[symbol][family] || null;
+
+    // If already fired for this symbol+family inside 2h, only refresh memory and ignore alert.
+    const stillInsideFirstWindow =
+        lastFire && (ts - lastFire < MAMBA_FIRST_WINDOW_MS);
+
+    if (
+        lastSeen &&
+        lastSeen.group !== group &&
+        (ts - lastSeen.time <= MAMBA_PAIR_WINDOW_MS)
+    ) {
+
+        if (!stillInsideFirstWindow) {
+
+            const diffMs = ts - lastSeen.time;
+            const diffSec = Math.floor(diffMs / 1000);
+
+            sendToTelegram6(
+                `🐍 MAMBA\n` +
+                `Symbol: ${symbol}\n` +
+                `Family: ${family}\n` +
+                `Rule: First family cross in 2 hours\n` +
+                `Condition: Different same-family subgroups within 90s\n\n` +
+                `1) ${lastSeen.group} @ ${formatDateTime(lastSeen.time)}\n` +
+                `2) ${group} @ ${formatDateTime(ts)}\n` +
+                `Gap: ${diffSec}s\n` +
+                `Last MAMBA: ${lastFire ? formatDateTime(lastFire) : "none"}`
+            );
+
+            mambaFirstState[symbol][family] = ts;
+            saveState();
+        }
+
+        // Reset family memory after a valid cross attempt, but keep current subgroup as fresh seed.
+        mambaMemory[symbol][family] = {
+            group,
+            time: ts
+        };
+
+        return;
+    }
+
+    // Always update latest subgroup seen for this symbol+family.
+    mambaMemory[symbol][family] = {
         group,
         time: ts
-    });
+    };
+
+    // Safety cleanup for persisted first-fire state.
+    if (Object.keys(mambaFirstState).length > 5000) {
+        const pruneCutoff = ts - (4 * 60 * 60 * 1000);
+
+        for (const sym of Object.keys(mambaFirstState)) {
+            const families = mambaFirstState[sym];
+
+            for (const fam of Object.keys(families)) {
+                if (families[fam] < pruneCutoff) {
+                    delete families[fam];
+                }
+            }
+
+            if (!Object.keys(families).length) {
+                delete mambaFirstState[sym];
+            }
+        }
+
+        saveState();
+    }
 }
+
 // ==========================================================
 //  SPESH (PERSISTENT — number-letter subgroup combo repeat)
 //  Condition:
