@@ -51,7 +51,43 @@ function loadState() {
                 speshComboState: parsed.speshComboState || {},
                 cobraComboState: parsed.cobraComboState || {},
                 cabalState: parsed.cabalState || {},
-                mambaFirstState: parsed.mambaFirstState || {}
+                mambaFirstState: parsed.mambaFirstState || {},
+                events: parsed.events || {},
+                blackPantherMemory: parsed.blackPantherMemory || {},
+                gammaMemory: parsed.gammaMemory || {},
+                mamamiaHashMemory: parsed.mamamiaHashMemory || {},
+                salsaMemory: parsed.salsaMemory || {},
+                neptuneMemory: parsed.neptuneMemory || {},
+                zuluState: parsed.zuluState || {},
+                sideFlipMemory: parsed.sideFlipMemory || {},
+                mambaMemory: parsed.mambaMemory || {},
+                boomMemory: parsed.boomMemory || {},
+                jupiterState: parsed.jupiterState || {},
+                yabaMemory: parsed.yabaMemory || {},
+                zoneforgeMemory: parsed.zoneforgeMemory || {},
+                zoneforgeLastFire: parsed.zoneforgeLastFire || {},
+                anchorforgeMemory: parsed.anchorforgeMemory || {},
+                anchorforgeLastFire: parsed.anchorforgeLastFire || {},
+                peterforgeMemory: parsed.peterforgeMemory || {},
+                peterforgeLastFire: parsed.peterforgeLastFire || {}
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
             };
         }
     } catch {}
@@ -74,7 +110,43 @@ function loadState() {
         speshComboState: {},
         cobraComboState: {},
         cabalState: {},
-        mambaFirstState: {}
+        mambaFirstState: {},
+        events: {},
+        blackPantherMemory: {},
+        gammaMemory: {},
+        mamamiaHashMemory: {},
+        salsaMemory: {},
+        neptuneMemory: {},
+        zuluState: {},
+        sideFlipMemory: {},
+        mambaMemory: {},
+        boomMemory: {},
+        jupiterState: {},
+        yabaMemory: {},
+        zoneforgeMemory: {},
+        zoneforgeLastFire: {},
+        anchorforgeMemory: {},
+        anchorforgeLastFire: {},
+        peterforgeMemory: {},
+        peterforgeLastFire: {}
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
     };
 }
 
@@ -101,7 +173,43 @@ function saveState() {
                     speshComboState,
                     cobraComboState,
                     cabalState,
-                    mambaFirstState
+                    mambaFirstState,
+                    events,
+                    blackPantherMemory,
+                    gammaMemory,
+                    mamamiaHashMemory,
+                    salsaMemory,
+                    neptuneMemory,
+                    zuluState,
+                    sideFlipMemory,
+                    mambaMemory,
+                    boomMemory,
+                    jupiterState,
+                    yabaMemory,
+                    zoneforgeMemory,
+                    zoneforgeLastFire,
+                    anchorforgeMemory,
+                    anchorforgeLastFire,
+                    peterforgeMemory,
+                    peterforgeLastFire
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
                 },
                 null,
                 2
@@ -120,6 +228,10 @@ let scoreState = persisted.scoreState || {};
 let lastSeenState = persisted.lastSeenState || {};
 
 
+
+
+let speshMemory = persisted.speshMemory || {};
+let kookyMemory = persisted.kookyMemory || {};
 // ==========================================================
 // 🔒 GLOBAL LAST-SEEN ENGINE (PERSISTENT)
 // ==========================================================
@@ -426,7 +538,7 @@ function mirrorToBot8IfSpecial(symbol, text) {
 // STORAGE FOR BOT1 AGGREGATION
 // -----------------------------
 
-const events = {};
+let events = persisted.events || {};
 const cooldownUntil = persisted.cooldownUntil || {};
 
 const recentHashes = new Set();
@@ -945,7 +1057,7 @@ function processWakanda(symbol, group, ts) {
 const BLACK_PANTHER_WINDOW_MS = 60 * 1000; // 1 minute
 
 // blackPantherMemory[symbol][family] = [{ group, time }]
-const blackPantherMemory = {};
+let blackPantherMemory = persisted.blackPantherMemory || {};
 
 function processBlackPanther(symbol, group, ts) {
 
@@ -1041,7 +1153,7 @@ const GAMMA_WINDOW_MS = 30 * 60 * 1000; // 30 minutes
 const GAMMA_MIN_HITS = 3;
 
 // gammaMemory[symbol][group] = [timestamps]
-const gammaMemory = {};
+let gammaMemory = persisted.gammaMemory || {};
 
 function processGamma(symbol, group, ts) {
 
@@ -1206,7 +1318,7 @@ function processBababia(symbol, group, ts) {
 const MAMAMIA_HASH_WINDOW_MS = 20 * 1000; // 20 seconds
 
 // mamamiaHashMemory[symbol] = [{ group, time }]
-const mamamiaHashMemory = {};
+let mamamiaHashMemory = persisted.mamamiaHashMemory || {};
 
 function processMAMAMIA(symbol, group, ts) {
 
@@ -1323,7 +1435,7 @@ const SALSA_WINDOW_MS = 20 * 60 * 1000; // 20 minutes
 const SALSA_MIN_HITS = 3;
 
 // salsaMemory[symbol][group] = [timestamps]
-const salsaMemory = {};
+let salsaMemory = persisted.salsaMemory || {};
 
 function processSalsa(symbol, group, ts) {
 
@@ -1477,7 +1589,7 @@ function processTango(symbol, group, ts) {
 const NEPTUNE_WINDOW_MS = 60 * 60 * 1000; // 1 hour
 
 // neptuneMemory[symbol][group] = [timestamps]
-const neptuneMemory = {};
+let neptuneMemory = persisted.neptuneMemory || {};
 
 function processNeptune(symbol, group, ts) {
 
@@ -1569,7 +1681,7 @@ const ZULU_PAIR_WINDOW_MS  = 10 * 60 * 1000;      // 10 minutes
 //   first: { group, time }
 // }
 
-const zuluState = {};
+let zuluState = persisted.zuluState || {};
 
 function processZulu(symbol, group, ts) {
 
@@ -1749,7 +1861,7 @@ const SUPPORT_SIDE = new Set(["A","C","W","S","U","Y"]);
 const RESIST_SIDE  = new Set(["B","D","X","T","V","Z"]);
 
 // sideFlipMemory[symbol] = [{ side, group, time }]
-const sideFlipMemory = {};
+let sideFlipMemory = persisted.sideFlipMemory || {};
 
 function processSideFlip(symbol, group, ts) {
 
@@ -1816,7 +1928,7 @@ const MAMBA_PAIR_WINDOW_MS = 90 * 1000; // 90 seconds
 const MAMBA_FIRST_WINDOW_MS = 2 * 60 * 60 * 1000; // 2 hours
 
 // mambaMemory[symbol][family] = { group, time }
-const mambaMemory = {};
+let mambaMemory = persisted.mambaMemory || {};
 
 // mambaFirstState[symbol][family] = lastFireTimestamp
 let mambaFirstState = persisted.mambaFirstState || {};
@@ -2081,7 +2193,7 @@ const BOOM_PAIR_LIMIT_WINDOW_MS = 2 * 60 * 60 * 1000; // 2 hours
 const BOOM_PAIR_MAX_ALERTS = 2;
 
 // boomMemory[symbol] = [{ group, time }]
-const boomMemory = {};
+let boomMemory = persisted.boomMemory || {};
 
 // boomPairState[symbol][pairKey] = [fireTimestamps]
 let boomPairState = persisted.boomPairState || {};
@@ -2341,7 +2453,7 @@ const JUPITER_MN = new Set(["M", "N"]);
 //   mnTime: timestamp
 // }
 
-const jupiterState = {};
+let jupiterState = persisted.jupiterState || {};
 
 function processJupiter(symbol, group, ts) {
 
@@ -2508,7 +2620,7 @@ const YABA_WINDOW_MS = 90 * 1000; // 90 seconds
 const YABA_MIN_DISTINCT = 3;
 
 // yabaMemory[symbol][family] = [{ group, time }]
-const yabaMemory = {};
+let yabaMemory = persisted.yabaMemory || {};
 
 function processYaba(symbol, group, ts) {
 
@@ -3074,10 +3186,10 @@ const ZONEFORGE_SINGLE_ENGINE_MAP = {
 };
 
 // zoneforgeMemory[symbol][bias] = [{ group, family, engine, groupClass, time }]
-const zoneforgeMemory = {};
+let zoneforgeMemory = persisted.zoneforgeMemory || {};
 
 // zoneforgeLastFire[symbol][bias] = { tier, time }
-const zoneforgeLastFire = {};
+let zoneforgeLastFire = persisted.zoneforgeLastFire || {};
 
 function cleanLabel(value, fallback) {
     const s = String(value || "").trim();
@@ -3400,10 +3512,10 @@ const ANCHORFORGE_TIER_RANK = {
 };
 
 // anchorforgeMemory[symbol][bias] = [{ group, family, className, time }]
-const anchorforgeMemory = {};
+let anchorforgeMemory = persisted.anchorforgeMemory || {};
 
 // anchorforgeLastFire[symbol][bias] = { tier, time }
-const anchorforgeLastFire = {};
+let anchorforgeLastFire = persisted.anchorforgeLastFire || {};
 
 function isDoubleLetterGroup(group) {
     return /^[A-Z]{2}$/.test(group || "");
@@ -3621,8 +3733,8 @@ const PETERFORGE_WINDOW_MS = 30 * 60 * 1000;
 const PETERFORGE_COOLDOWN_MS = 10 * 60 * 1000;
 
 // peterforgeMemory[symbol] = [{ direction, combo, price, time }]
-const peterforgeMemory = {};
-const peterforgeLastFire = {};
+let peterforgeMemory = persisted.peterforgeMemory || {};
+let peterforgeLastFire = persisted.peterforgeLastFire || {};
 
 function textFromBody(body) {
     return [
@@ -3997,6 +4109,10 @@ if (!isHash) {
                 );
             }
         } catch {}
+
+        // GLOBAL PERSISTENCE SWEEP
+        // Persist JSON-safe live detector memories after every accepted alert.
+        saveState();
 
         res.sendStatus(200);
 
