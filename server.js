@@ -1029,18 +1029,18 @@ function processBlackPanther(symbol, group, ts) {
 }
 
 // ==========================================================
-//  GAMMA (EXACT GROUP REPEAT — ANY GROUP)
+//  GAMMA (EXACT GROUP REPEAT — 3 HITS)
 //  Condition:
-//    - Same symbol + SAME group repeats
-//    - ≤10 min → REAL ALERT
-//    - 10–15 min → NEAR MISS
+//    - Same symbol
+//    - EXACT same group
+//    - 3 hits within 30 minutes
 //  Bot 4
 // ==========================================================
 
-const GAMMA_WINDOW_MS = 10 * 60 * 1000;        // 10 minutes
-const GAMMA_NEAR_BUFFER_MS = 5 * 60 * 1000;   // extra 5 minutes (10–15 range)
+const GAMMA_WINDOW_MS = 30 * 60 * 1000; // 30 minutes
+const GAMMA_MIN_HITS = 3;
 
-// gammaMemory[symbol][group] = lastTimestamp
+// gammaMemory[symbol][group] = [timestamps]
 const gammaMemory = {};
 
 function processGamma(symbol, group, ts) {
@@ -1051,72 +1051,69 @@ function processGamma(symbol, group, ts) {
         gammaMemory[symbol] = {};
     }
 
-    const last = gammaMemory[symbol][group];
+    if (!gammaMemory[symbol][group]) {
+        gammaMemory[symbol][group] = [];
+    }
 
-    if (last) {
+    const buf = gammaMemory[symbol][group];
 
-        const diffMs = ts - last;
+    // Add current hit
+    buf.push(ts);
+
+    // Keep only last 30 minutes
+    const cutoff = ts - GAMMA_WINDOW_MS;
+    while (buf.length && buf[0] < cutoff) {
+        buf.shift();
+    }
+
+    // Fire on 3rd hit inside 30 minutes
+    if (buf.length >= GAMMA_MIN_HITS) {
+
+        const first = buf[0];
+        const last = buf[buf.length - 1];
+
+        const diffMs = last - first;
         const diffMin = Math.floor(diffMs / 60000);
         const diffSec = Math.floor((diffMs % 60000) / 1000);
 
-   // ======================================================
-// 🟣 REAL ALERT (≤10 min)
-// ======================================================
-if (diffMs <= GAMMA_WINDOW_MS) {
+        const lines = buf
+            .map((t, i) =>
+                `${i + 1}) ${formatDateTime(t)}`
+            )
+            .join("\n");
 
-    sendToTelegram4(
-        `🟣 GAMMA\n` +
-        `Symbol: ${symbol}\n` +
-        `Group: ${group}\n\n` +
-        `First hit: ${formatDateTime(last)}\n` +
-        `Second hit: ${formatDateTime(ts)}\n` +
-        `Gap: ${diffMin}m ${diffSec}s`
-    );
+        sendToTelegram4(
+            `🟣 GAMMA\n` +
+            `Symbol: ${symbol}\n` +
+            `Group: ${group}\n` +
+            `Hits: ${buf.length}\n` +
+            `Window: 30m\n` +
+            `Span: ${diffMin}m ${diffSec}s\n\n` +
+            `Times:\n${lines}`
+        );
 
+        activateWakanda(symbol, "GAMMA", ts, group);
 
-    
-
-    activateWakanda(symbol, "GAMMA", ts, group);
-// existing (leave this)
-
-
-    // 🔥 ADD THIS LINE (for BAZOOKA)
-
-}
-        // ======================================================
-        // 🟡 NEAR MISS (10–15 min)
-        // ======================================================
-        else if (diffMs <= GAMMA_WINDOW_MS + GAMMA_NEAR_BUFFER_MS) {
-
-            sendToTelegram4(
-                `🟡 GAMMA NEAR MISS\n` +
-                `Symbol: ${symbol}\n` +
-                `Group: ${group}\n\n` +
-                `First hit: ${formatDateTime(last)}\n` +
-                `Second hit: ${formatDateTime(ts)}\n` +
-                `Gap: ${diffMin}m ${diffSec}s\n\n` +
-                `Threshold: 10m\n` +
-                `Range: 10–15m`
-            );
-        }
+        // Reset after firing to avoid spam on 4th/5th hit
+        delete gammaMemory[symbol][group];
+        return;
     }
 
-    // ======================================================
-    // Always update latest hit
-    // ======================================================
-    gammaMemory[symbol][group] = ts;
-
-    // ======================================================
     // Safety cleanup
-    // ======================================================
     if (Object.keys(gammaMemory).length > 5000) {
-        const cutoff = ts - (2 * 60 * 60 * 1000);
+        const pruneCutoff = ts - (2 * 60 * 60 * 1000);
 
         for (const sym of Object.keys(gammaMemory)) {
             const groups = gammaMemory[sym];
 
             for (const g of Object.keys(groups)) {
-                if (groups[g] < cutoff) {
+                const arr = groups[g];
+
+                while (arr.length && arr[0] < pruneCutoff) {
+                    arr.shift();
+                }
+
+                if (!arr.length) {
                     delete groups[g];
                 }
             }
@@ -1317,14 +1314,15 @@ function processCheck(symbol, group, ts, body) {
 //  SALSA (Exact subgroup repeat detector)
 //  Condition:
 //    - Same symbol
-//    - EXACT same group repeats
-//    - Within 90 seconds
+//    - EXACT same group
+//    - 3 hits within 20 minutes
 //  Bot 9
 // ==========================================================
 
-const SALSA_WINDOW_MS = 90 * 1000; // 90 seconds
+const SALSA_WINDOW_MS = 20 * 60 * 1000; // 20 minutes
+const SALSA_MIN_HITS = 3;
 
-// salsaMemory[symbol][group] = lastTimestamp
+// salsaMemory[symbol][group] = [timestamps]
 const salsaMemory = {};
 
 function processSalsa(symbol, group, ts) {
@@ -1335,37 +1333,67 @@ function processSalsa(symbol, group, ts) {
         salsaMemory[symbol] = {};
     }
 
-    const last = salsaMemory[symbol][group];
+    if (!salsaMemory[symbol][group]) {
+        salsaMemory[symbol][group] = [];
+    }
 
-    // 🔥 FIRE if repeat within 90 seconds
-    if (last && (ts - last <= SALSA_WINDOW_MS)) {
+    const buf = salsaMemory[symbol][group];
 
-        const diffMs = ts - last;
-        const diffSec = Math.floor(diffMs / 1000);
+    // Add current hit
+    buf.push(ts);
+
+    // Keep only last 20 minutes
+    const cutoff = ts - SALSA_WINDOW_MS;
+    while (buf.length && buf[0] < cutoff) {
+        buf.shift();
+    }
+
+    // Fire on 3rd hit inside 20 minutes
+    if (buf.length >= SALSA_MIN_HITS) {
+
+        const first = buf[0];
+        const last = buf[buf.length - 1];
+
+        const diffMs = last - first;
+        const diffMin = Math.floor(diffMs / 60000);
+        const diffSec = Math.floor((diffMs % 60000) / 1000);
+
+        const lines = buf
+            .map((t, i) =>
+                `${i + 1}) ${formatDateTime(t)}`
+            )
+            .join("\n");
 
         sendToTelegram9(
             `💃 SALSA\n` +
             `Symbol: ${symbol}\n` +
-            `Group: ${group}\n\n` +
-            `First hit: ${formatDateTime(last)}\n` +
-            `Second hit: ${formatDateTime(ts)}\n` +
-            `Gap: ${diffSec}s\n` +
-            `Window: 90s`
+            `Group: ${group}\n` +
+            `Hits: ${buf.length}\n` +
+            `Window: 20m\n` +
+            `Span: ${diffMin}m ${diffSec}s\n\n` +
+            `Times:\n${lines}`
         );
-    }
 
-    // Always update latest hit
-    salsaMemory[symbol][group] = ts;
+        // Reset after firing to avoid spam on 4th/5th hit
+        delete salsaMemory[symbol][group];
+        return;
+    }
 
     // Safety cleanup
     if (Object.keys(salsaMemory).length > 5000) {
-        const cutoff = ts - (2 * 60 * 60 * 1000);
+        const pruneCutoff = ts - (2 * 60 * 60 * 1000);
 
         for (const sym of Object.keys(salsaMemory)) {
             const groups = salsaMemory[sym];
 
             for (const g of Object.keys(groups)) {
-                if (groups[g] < cutoff) {
+                const arr = groups[g];
+
+                while (arr.length && arr[0] < pruneCutoff) {
+                    arr.shift();
+                }
+
+                if (!arr.length) {
                     delete groups[g];
                 }
             }
@@ -1376,6 +1404,7 @@ function processSalsa(symbol, group, ts) {
         }
     }
 }
+
 // ==========================================================
 //  TANGO (FIRST per SYMBOL + GROUP FAMILY)
 //  Family = prefix (26A → 26, 43X → 43, C → C)
@@ -2466,18 +2495,19 @@ function registerTrinity(symbol, type) {
 }
 
 // ==========================================================
-//  YABA (Family cross detector — DIFFERENT subgroups)
+//  YABA (Family cross detector — 3 distinct subgroups)
 //  Condition:
 //    - Same symbol
-//    - SAME family (e.g. 16A, 16B → family 16)
-//    - DIFFERENT subgroup
+//    - SAME family, e.g. 16A/16B/16C => family 16
+//    - 3 DISTINCT subgroups
 //    - Within 90 seconds
 //  Bot 9
 // ==========================================================
 
 const YABA_WINDOW_MS = 90 * 1000; // 90 seconds
+const YABA_MIN_DISTINCT = 3;
 
-// yabaMemory[symbol][family] = { group, time }
+// yabaMemory[symbol][family] = [{ group, time }]
 const yabaMemory = {};
 
 function processYaba(symbol, group, ts) {
@@ -2491,55 +2521,81 @@ function processYaba(symbol, group, ts) {
         yabaMemory[symbol] = {};
     }
 
-    const last = yabaMemory[symbol][family];
+    if (!yabaMemory[symbol][family]) {
+        yabaMemory[symbol][family] = [];
+    }
 
-    // ======================================================
-    // 🔥 FIRE: same family, DIFFERENT subgroup within 90s
-    // ======================================================
-    if (last && last.group !== group && (ts - last.time <= YABA_WINDOW_MS)) {
+    let buf = yabaMemory[symbol][family];
 
-        const diffMs = ts - last.time;
+    // Keep only last 90 seconds
+    const cutoff = ts - YABA_WINDOW_MS;
+    buf = buf.filter(e => e.time >= cutoff);
+
+    // Keep distinct subgroups. If same subgroup repeats, refresh timestamp.
+    const existingIndex = buf.findIndex(e => e.group === group);
+
+    if (existingIndex !== -1) {
+        buf[existingIndex] = {
+            group,
+            time: ts
+        };
+    } else {
+        buf.push({
+            group,
+            time: ts
+        });
+    }
+
+    buf.sort((a, b) => a.time - b.time);
+    yabaMemory[symbol][family] = buf;
+
+    // Need 3 distinct subgroups inside 90 seconds
+    if (buf.length >= YABA_MIN_DISTINCT) {
+
+        const picked = buf.slice(-YABA_MIN_DISTINCT);
+
+        const firstTime = picked[0].time;
+        const lastTime = picked[picked.length - 1].time;
+
+        const diffMs = lastTime - firstTime;
         const diffSec = Math.floor(diffMs / 1000);
+
+        const groupSequence = picked.map(e => e.group).join(" → ");
+
+        const lines = picked
+            .map((e, i) =>
+                `${i + 1}) ${e.group} @ ${formatDateTime(e.time)}`
+            )
+            .join("\n");
 
         sendToTelegram9(
             `🟢 YABA\n` +
             `Symbol: ${symbol}\n` +
-            `Family: ${family}\n\n` +
-            `1) ${last.group} @ ${formatDateTime(last.time)}\n` +
-            `2) ${group} @ ${formatDateTime(ts)}\n` +
-            `Gap: ${diffSec}s\n` +
-            `Window: 90s`
+            `Family: ${family}\n` +
+            `Subgroups: ${groupSequence}\n` +
+            `Window: ${diffSec}s / 90s\n\n` +
+            `Times:\n${lines}`
         );
 
+        activateBazooka(symbol, "YABA", ts, groupSequence);
 
-        
-        activateBazooka(symbol, "YABA", ts, `${last.group} → ${group}`);
-// 🔥 Reset after fire (one clean cycle)
-
+        // Reset after firing to avoid spam from 4th/5th subgroup
         delete yabaMemory[symbol][family];
         return;
     }
 
-    // ======================================================
-    // Always update latest hit
-    // ======================================================
-    yabaMemory[symbol][family] = {
-        group,
-        time: ts
-    };
-
-    // ======================================================
     // Safety cleanup
-    // ======================================================
     if (Object.keys(yabaMemory).length > 5000) {
-        const cutoff = ts - (2 * 60 * 60 * 1000);
+        const pruneCutoff = ts - (2 * 60 * 60 * 1000);
 
         for (const sym of Object.keys(yabaMemory)) {
             const families = yabaMemory[sym];
 
-            for (const f of Object.keys(families)) {
-                if (families[f].time < cutoff) {
-                    delete families[f];
+            for (const fam of Object.keys(families)) {
+                families[fam] = families[fam].filter(e => e.time >= pruneCutoff);
+
+                if (!families[fam].length) {
+                    delete families[fam];
                 }
             }
 
@@ -2549,7 +2605,6 @@ function processYaba(symbol, group, ts) {
         }
     }
 }
-
 
 // ==========================================================
 //  BUNDLE (ACSWU / BDXTV burst collector)
@@ -3890,7 +3945,7 @@ if (!isHash) {
         processGamma(symbol, group, ts);
         processYaba(symbol, group, ts);
         processSalsa(symbol, group, ts);
-        processTango(symbol, group, ts);
+        // processTango(symbol, group, ts); // disabled temporarily
         processCobra(symbol, group, ts);
         processNeptune(symbol, group, ts);
         processZulu(symbol, group, ts);
