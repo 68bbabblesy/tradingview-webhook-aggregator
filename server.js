@@ -69,7 +69,9 @@ function loadState() {
                 anchorforgeMemory: parsed.anchorforgeMemory || {},
                 anchorforgeLastFire: parsed.anchorforgeLastFire || {},
                 peterforgeMemory: parsed.peterforgeMemory || {},
-                peterforgeLastFire: parsed.peterforgeLastFire || {}
+                peterforgeLastFire: parsed.peterforgeLastFire || {},
+                telegramOutbox: parsed.telegramOutbox || []
+
 
 
 
@@ -128,7 +130,9 @@ function loadState() {
         anchorforgeMemory: {},
         anchorforgeLastFire: {},
         peterforgeMemory: {},
-        peterforgeLastFire: {}
+        peterforgeLastFire: {},
+        telegramOutbox: []
+
 
 
 
@@ -191,7 +195,9 @@ function saveState() {
                     anchorforgeMemory,
                     anchorforgeLastFire,
                     peterforgeMemory,
-                    peterforgeLastFire
+                    peterforgeLastFire,
+                    telegramOutbox
+
 
 
 
@@ -358,168 +364,270 @@ function parseNumbers(group) {
 
 
 // -----------------------------
-// TELEGRAM SENDERS
+// TELEGRAM SENDERS — OUTBOX + RETRY QUEUE
 // -----------------------------
-async function sendToTelegram1(text) {
-    if (!TELEGRAM_BOT_TOKEN_1 || !TELEGRAM_CHAT_ID_1) return;
+// Why:
+// - /incoming must return 200 to TradingView quickly.
+// - Telegram/network stalls should not hold webhook processing hostage.
+// - Failed sends are kept in telegramOutbox and retried.
+//
+// Notes:
+// - Bot tokens are NEVER printed in logs.
+// - Set TELEGRAM_SEND_TIMEOUT_MS / TELEGRAM_MAX_ATTEMPTS / TELEGRAM_OUTBOX_MAX in Render if needed.
+
+let telegramOutbox = Array.isArray(persisted.telegramOutbox)
+    ? persisted.telegramOutbox
+    : [];
+
+let telegramOutboxRunning = false;
+let telegramOutboxTimer = null;
+let telegramOutboxSaveTimer = null;
+
+const TELEGRAM_SEND_TIMEOUT_MS = Number((process.env.TELEGRAM_SEND_TIMEOUT_MS || "6000").trim());
+const TELEGRAM_MAX_ATTEMPTS = Number((process.env.TELEGRAM_MAX_ATTEMPTS || "8").trim());
+const TELEGRAM_OUTBOX_MAX = Number((process.env.TELEGRAM_OUTBOX_MAX || "2000").trim());
+const TELEGRAM_RETRY_BASE_MS = Number((process.env.TELEGRAM_RETRY_BASE_MS || "15000").trim());
+
+function requestTelegramOutboxSave() {
+    if (telegramOutboxSaveTimer) return;
+
+    telegramOutboxSaveTimer = setTimeout(() => {
+        telegramOutboxSaveTimer = null;
+        saveState();
+    }, 250);
+}
+
+function getTelegramCreds(botNo) {
+    if (botNo === 1) {
+        return {
+            token: TELEGRAM_BOT_TOKEN_1,
+            chat: TELEGRAM_CHAT_ID_1
+        };
+    }
+
+    if (botNo === 2) {
+        return {
+            token: TELEGRAM_BOT_TOKEN_2,
+            chat: TELEGRAM_CHAT_ID_2
+        };
+    }
+
+    const token = (process.env[`TELEGRAM_BOT_TOKEN_${botNo}`] || "").trim();
+    const chat = (process.env[`TELEGRAM_CHAT_ID_${botNo}`] || "").trim();
+
+    return { token, chat };
+}
+
+function telegramErrorSummary(err) {
+    if (!err) return "unknown error";
+
+    const parts = [];
+
+    if (err.name) parts.push(`name=${err.name}`);
+    if (err.code) parts.push(`code=${err.code}`);
+    if (err.type) parts.push(`type=${err.type}`);
+    if (err.status) parts.push(`status=${err.status}`);
+    if (err.retryAfterMs) parts.push(`retryAfterMs=${err.retryAfterMs}`);
+    if (err.message) parts.push(`message=${err.message}`);
+
+    return parts.length ? parts.join(" | ") : String(err);
+}
+
+function telegramBackoffMs(attempts, err) {
+    if (err?.retryAfterMs) {
+        return Math.max(err.retryAfterMs, TELEGRAM_RETRY_BASE_MS);
+    }
+
+    const exp = Math.min(attempts, 6);
+    const jitter = Math.floor(Math.random() * 1000);
+
+    return (TELEGRAM_RETRY_BASE_MS * Math.pow(2, exp - 1)) + jitter;
+}
+
+function scheduleTelegramOutbox(delayMs = 0) {
+    if (telegramOutboxTimer) {
+        clearTimeout(telegramOutboxTimer);
+        telegramOutboxTimer = null;
+    }
+
+    telegramOutboxTimer = setTimeout(() => {
+        telegramOutboxTimer = null;
+        processTelegramOutbox().catch(err => {
+            console.error("⚠️ Telegram outbox worker crashed:", telegramErrorSummary(err));
+        });
+    }, Math.max(0, delayMs));
+}
+
+function enqueueTelegram(botNo, text) {
+    const { token, chat } = getTelegramCreds(botNo);
+
+    if (!token || !chat) {
+        console.error(`⚠️ Bot${botNo} send skipped: missing token/chat env`);
+        return;
+    }
+
+    const now = Date.now();
+
+    telegramOutbox.push({
+        id: `${now}-${botNo}-${Math.random().toString(36).slice(2)}`,
+        botNo,
+        text: String(text ?? ""),
+        attempts: 0,
+        createdAt: now,
+        nextAttemptAt: now,
+        lastError: null
+    });
+
+    // Hard cap so a long Telegram outage cannot grow /data/state.json forever.
+    if (telegramOutbox.length > TELEGRAM_OUTBOX_MAX) {
+        const removed = telegramOutbox.splice(0, telegramOutbox.length - TELEGRAM_OUTBOX_MAX);
+        console.error(`⚠️ Telegram outbox trimmed: dropped ${removed.length} oldest queued messages`);
+    }
+
+    requestTelegramOutboxSave();
+    scheduleTelegramOutbox(0);
+}
+
+async function rawTelegramSend(botNo, text) {
+    const { token, chat } = getTelegramCreds(botNo);
+
+    if (!token || !chat) {
+        const err = new Error(`missing token/chat env for Bot${botNo}`);
+        err.code = "MISSING_TELEGRAM_ENV";
+        throw err;
+    }
+
+    const controller = new AbortController();
+    const timer = setTimeout(() => controller.abort(), TELEGRAM_SEND_TIMEOUT_MS);
 
     try {
-        await fetch(`https://api.telegram.org/bot${TELEGRAM_BOT_TOKEN_1}/sendMessage`, {
+        const res = await fetch(`https://api.telegram.org/bot${token}/sendMessage`, {
             method: "POST",
-            headers: { "Content-Type": "application/json" },
-            body: JSON.stringify({ chat_id: TELEGRAM_CHAT_ID_1, text }),
-            timeout: 10000
+            headers: {
+                "Content-Type": "application/json"
+            },
+            body: JSON.stringify({
+                chat_id: chat,
+                text
+            }),
+            signal: controller.signal
         });
-    } catch (err) {
-        console.error("⚠️ Bot1 send failed:", err.message);
+
+        if (!res.ok) {
+            let detail = "";
+
+            try {
+                detail = await res.text();
+            } catch {}
+
+            const err = new Error(`Telegram HTTP ${res.status} ${res.statusText} ${detail}`.trim());
+            err.status = res.status;
+
+            if (res.status === 429) {
+                try {
+                    const parsed = JSON.parse(detail);
+                    const retryAfter = Number(parsed?.parameters?.retry_after || 0);
+                    if (retryAfter > 0) {
+                        err.retryAfterMs = retryAfter * 1000;
+                    }
+                } catch {}
+            }
+
+            throw err;
+        }
+
+        return true;
+
+    } finally {
+        clearTimeout(timer);
     }
 }
 
-async function sendToTelegram2(text) {
-    if (!TELEGRAM_BOT_TOKEN_2 || !TELEGRAM_CHAT_ID_2) return;
+async function processTelegramOutbox() {
+    if (telegramOutboxRunning) return;
+    telegramOutboxRunning = true;
 
     try {
-        await fetch(`https://api.telegram.org/bot${TELEGRAM_BOT_TOKEN_2}/sendMessage`, {
-            method: "POST",
-            headers: { "Content-Type": "application/json" },
-            body: JSON.stringify({ chat_id: TELEGRAM_CHAT_ID_2, text }),
-            timeout: 10000
-        });
-    } catch (err) {
-        console.error("⚠️ Bot2 send failed:", err.message);
+        while (true) {
+            const now = Date.now();
+
+            let idx = telegramOutbox.findIndex(item =>
+                item &&
+                Number(item.nextAttemptAt || 0) <= now
+            );
+
+            if (idx === -1) {
+                const nextDue = telegramOutbox
+                    .map(item => Number(item.nextAttemptAt || 0))
+                    .filter(Boolean)
+                    .sort((a, b) => a - b)[0];
+
+                if (nextDue) {
+                    scheduleTelegramOutbox(Math.max(1000, nextDue - Date.now()));
+                }
+
+                break;
+            }
+
+            const item = telegramOutbox[idx];
+
+            try {
+                await rawTelegramSend(item.botNo, item.text);
+
+                telegramOutbox.splice(idx, 1);
+                requestTelegramOutboxSave();
+
+                console.log(`✅ Telegram outbox sent: Bot${item.botNo} | remaining=${telegramOutbox.length}`);
+
+            } catch (err) {
+                item.attempts = Number(item.attempts || 0) + 1;
+                item.lastError = telegramErrorSummary(err);
+
+                console.error(
+                    `⚠️ Telegram send failed: Bot${item.botNo} | attempt=${item.attempts}/${TELEGRAM_MAX_ATTEMPTS} | ${item.lastError}`
+                );
+
+                if (item.attempts >= TELEGRAM_MAX_ATTEMPTS) {
+                    console.error(
+                        `❌ Telegram outbox giving up: Bot${item.botNo} | createdAt=${formatDateTime(item.createdAt)} | error=${item.lastError}`
+                    );
+
+                    telegramOutbox.splice(idx, 1);
+                } else {
+                    item.nextAttemptAt = Date.now() + telegramBackoffMs(item.attempts, err);
+                }
+
+                requestTelegramOutboxSave();
+
+                // If Telegram/network is sick, do not hammer it. Pause until next due item.
+                const nextDelay = item?.nextAttemptAt
+                    ? Math.max(1000, item.nextAttemptAt - Date.now())
+                    : TELEGRAM_RETRY_BASE_MS;
+
+                scheduleTelegramOutbox(nextDelay);
+                break;
+            }
+        }
+    } finally {
+        telegramOutboxRunning = false;
     }
 }
 
-// ==========================================================
-//  BOT3 — TRACKING 4 (H level switching tracking)
-// ==========================================================
-
-// Telegram sender for Bot 3
-async function sendToTelegram3(text) {
-    const token = (process.env.TELEGRAM_BOT_TOKEN_3 || "").trim();
-    const chat  = (process.env.TELEGRAM_CHAT_ID_3 || "").trim();
-    if (!token || !chat) return;
-
-    try {
-        await fetch(`https://api.telegram.org/bot${token}/sendMessage`, {
-            method: "POST",
-            headers: { "Content-Type": "application/json" },
-            body: JSON.stringify({ chat_id: chat, text }),
-            timeout: 10000
-        });
-    } catch (err) {
-        console.error("⚠️ Bot3 send failed:", err.message);
-    }
+// Resume unsent messages after deploy/restart.
+if (telegramOutbox.length) {
+    console.log(`📮 Telegram outbox restored: ${telegramOutbox.length} queued messages`);
+    scheduleTelegramOutbox(1000);
 }
 
-// Telegram sender for Bot 4
-async function sendToTelegram4(text) {
-    const token = (process.env.TELEGRAM_BOT_TOKEN_4 || "").trim();
-    const chat  = (process.env.TELEGRAM_CHAT_ID_4 || "").trim();
-    if (!token || !chat) return;
-
-    try {
-        await fetch(`https://api.telegram.org/bot${token}/sendMessage`, {
-            method: "POST",
-            headers: { "Content-Type": "application/json" },
-            body: JSON.stringify({ chat_id: chat, text }),
-            timeout: 10000
-        });
-    } catch (err) {
-        console.error("⚠️ Bot4 send failed:", err.message);
-    }
-}
-
-// Telegram sender for Bot 5
-async function sendToTelegram5(text) {
-    const token = (process.env.TELEGRAM_BOT_TOKEN_5 || "").trim();
-    const chat  = (process.env.TELEGRAM_CHAT_ID_5 || "").trim();
-    if (!token || !chat) return;
-
-    try {
-        await fetch(`https://api.telegram.org/bot${token}/sendMessage`, {
-            method: "POST",
-            headers: { "Content-Type": "application/json" },
-            body: JSON.stringify({ chat_id: chat, text }),
-            timeout: 10000
-        });
-    } catch (err) {
-        console.error("⚠️ Bot5 send failed:", err.message);
-    }
-}
-
-// Telegram sender for Bot 6
-async function sendToTelegram6(text) {
-    const token = (process.env.TELEGRAM_BOT_TOKEN_6 || "").trim();
-    const chat  = (process.env.TELEGRAM_CHAT_ID_6 || "").trim();
-    if (!token || !chat) return;
-
-    try {
-        await fetch(`https://api.telegram.org/bot${token}/sendMessage`, {
-            method: "POST",
-            headers: { "Content-Type": "application/json" },
-            body: JSON.stringify({ chat_id: chat, text }),
-            timeout: 10000
-        });
-    } catch (err) {
-        console.error("⚠️ Bot6 send failed:", err.message);
-    }
-}
-
-// Telegram sender for Bot 7
-async function sendToTelegram7(text) {
-    const token = (process.env.TELEGRAM_BOT_TOKEN_7 || "").trim();
-    const chat  = (process.env.TELEGRAM_CHAT_ID_7 || "").trim();
-    if (!token || !chat) return;
-
-    try {
-        await fetch(`https://api.telegram.org/bot${token}/sendMessage`, {
-            method: "POST",
-            headers: { "Content-Type": "application/json" },
-            body: JSON.stringify({ chat_id: chat, text }),
-            timeout: 10000
-        });
-    } catch (err) {
-        console.error("⚠️ Bot7 send failed:", err.message);
-    }
-}
-
-// Telegram sender for Bot 8
-async function sendToTelegram8(text) {
-    const token = (process.env.TELEGRAM_BOT_TOKEN_8 || "").trim();
-    const chat  = (process.env.TELEGRAM_CHAT_ID_8 || "").trim();
-    if (!token || !chat) return;
-
-    try {
-        await fetch(`https://api.telegram.org/bot${token}/sendMessage`, {
-            method: "POST",
-            headers: { "Content-Type": "application/json" },
-            body: JSON.stringify({ chat_id: chat, text }),
-            timeout: 10000
-        });
-    } catch (err) {
-        console.error("⚠️ Bot8 send failed:", err.message);
-    }
-}
-
-// Telegram sender for Bot 9
-async function sendToTelegram9(text) {
-    const token = (process.env.TELEGRAM_BOT_TOKEN_9 || "").trim();
-    const chat  = (process.env.TELEGRAM_CHAT_ID_9 || "").trim();
-    if (!token || !chat) return;
-
-    try {
-        await fetch(`https://api.telegram.org/bot${token}/sendMessage`, {
-            method: "POST",
-            headers: { "Content-Type": "application/json" },
-            body: JSON.stringify({ chat_id: chat, text }),
-            timeout: 10000
-        });
-    } catch (err) {
-        console.error("⚠️ Bot9 send failed:", err.message);
-    }
-}
-
+function sendToTelegram1(text) { enqueueTelegram(1, text); }
+function sendToTelegram2(text) { enqueueTelegram(2, text); }
+function sendToTelegram3(text) { enqueueTelegram(3, text); }
+function sendToTelegram4(text) { enqueueTelegram(4, text); }
+function sendToTelegram5(text) { enqueueTelegram(5, text); }
+function sendToTelegram6(text) { enqueueTelegram(6, text); }
+function sendToTelegram7(text) { enqueueTelegram(7, text); }
+function sendToTelegram8(text) { enqueueTelegram(8, text); }
+function sendToTelegram9(text) { enqueueTelegram(9, text); }
 
 // -----------------------------
 // BOT 8 MIRROR HELPER (SPECIAL SYMBOLS)
@@ -4111,7 +4219,7 @@ if (!isHash) {
         } catch {}
 
         // GLOBAL PERSISTENCE SWEEP
-        // Persist JSON-safe live detector memories after every accepted alert.
+        // Persist JSON-safe live detector memories + Telegram outbox after every accepted alert.
         saveState();
 
         res.sendStatus(200);
