@@ -154,81 +154,177 @@ function loadState() {
     };
 }
 
-function saveState() {
+let saveStateTimer = null;
+let saveStateInProgress = false;
+let saveStatePending = false;
+
+const STATE_SAVE_DELAY_MS = Number((process.env.STATE_SAVE_DELAY_MS || "1000").trim());
+
+function buildStateSnapshot() {
+    return {
+        lastAlert,
+        cooldownUntil,
+        tangoState,
+        scoreState,
+        lastSeenState,
+        godzillaState,
+        bazookaState,
+        hashMemory,
+        wakandaState,
+        boomPairState,
+        inauguralState,
+        kookyMemory,
+        speshMemory,
+        kookyComboState,
+        speshComboState,
+        cobraComboState,
+        cabalState,
+        mambaFirstState,
+        events,
+        blackPantherMemory,
+        gammaMemory,
+        mamamiaHashMemory,
+        salsaMemory,
+        neptuneMemory,
+        zuluState,
+        sideFlipMemory,
+        mambaMemory,
+        boomMemory,
+        jupiterState,
+        yabaMemory,
+        zoneforgeMemory,
+        zoneforgeLastFire,
+        anchorforgeMemory,
+        anchorforgeLastFire,
+        peterforgeMemory,
+        peterforgeLastFire,
+        telegramOutbox
+    };
+}
+
+function writeStateNow() {
+    if (saveStateInProgress) {
+        saveStatePending = true;
+        return;
+    }
+
+    saveStateInProgress = true;
+
     try {
+        pruneStateBeforeSave();
+
+        // Compact JSON. This is much smaller/faster than JSON.stringify(..., null, 2).
         fs.writeFileSync(
             STATE_FILE,
-            JSON.stringify(
-                {
-                    lastAlert,
-                    cooldownUntil,
-                    tangoState,
-                    scoreState,
-                    lastSeenState,
-                    godzillaState,
-                    bazookaState,
-                    hashMemory,
-                    wakandaState,
-                    boomPairState,
-                    inauguralState,
-                    kookyMemory,
-                    speshMemory,
-                    kookyComboState,
-                    speshComboState,
-                    cobraComboState,
-                    cabalState,
-                    mambaFirstState,
-                    events,
-                    blackPantherMemory,
-                    gammaMemory,
-                    mamamiaHashMemory,
-                    salsaMemory,
-                    neptuneMemory,
-                    zuluState,
-                    sideFlipMemory,
-                    mambaMemory,
-                    boomMemory,
-                    jupiterState,
-                    yabaMemory,
-                    zoneforgeMemory,
-                    zoneforgeLastFire,
-                    anchorforgeMemory,
-                    anchorforgeLastFire,
-                    peterforgeMemory,
-                    peterforgeLastFire,
-                    telegramOutbox
-
-
-
-
-
-
-
-
-
-
-
-
-
-
-
-
-
-
-
-                },
-                null,
-                2
-            ),
+            JSON.stringify(buildStateSnapshot()),
             "utf8"
         );
+
     } catch (err) {
         console.error("❌ Failed to save state:", err);
+    } finally {
+        saveStateInProgress = false;
+
+        if (saveStatePending) {
+            saveStatePending = false;
+            saveState();
+        }
+    }
+}
+
+function saveState(immediate = false) {
+    if (immediate) {
+        if (saveStateTimer) {
+            clearTimeout(saveStateTimer);
+            saveStateTimer = null;
+        }
+
+        writeStateNow();
+        return;
+    }
+
+    if (saveStateTimer) return;
+
+    saveStateTimer = setTimeout(() => {
+        saveStateTimer = null;
+        writeStateNow();
+    }, STATE_SAVE_DELAY_MS);
+}
+
+function pruneStateBeforeSave() {
+    const ts = Date.now();
+
+    // Keep Bot1 aggregation memory small.
+    try {
+        const maxMs = maxWindowMs();
+        for (const g of Object.keys(events || {})) {
+            if (!Array.isArray(events[g])) {
+                delete events[g];
+                continue;
+            }
+
+            pruneOld(events[g], maxMs);
+
+            // Hard safety cap per group.
+            if (events[g].length > 200) {
+                events[g] = events[g].slice(-200);
+            }
+        }
+    } catch {}
+
+    // Hard prune combo repeat states to 2h + small buffer.
+    pruneCompactComboState(kookyComboState, ts, 2 * 60 * 60 * 1000);
+    pruneCompactComboState(speshComboState, ts, 2 * 60 * 60 * 1000);
+    pruneCompactComboState(cobraComboState, ts, 2 * 60 * 60 * 1000);
+
+    // Telegram outbox cap.
+    if (Array.isArray(telegramOutbox) && telegramOutbox.length > TELEGRAM_OUTBOX_MAX) {
+        telegramOutbox.splice(0, telegramOutbox.length - TELEGRAM_OUTBOX_MAX);
+    }
+}
+
+function pruneCompactComboState(state, ts, windowMs) {
+    if (!state || typeof state !== "object") return;
+
+    const cutoff = ts - windowMs - (5 * 60 * 1000);
+
+    for (const sym of Object.keys(state)) {
+        const combos = state[sym];
+
+        if (!combos || typeof combos !== "object") {
+            delete state[sym];
+            continue;
+        }
+
+        for (const key of Object.keys(combos)) {
+            const value = combos[key];
+            const time = typeof value === "number" ? value : value?.time;
+
+            if (!time || time < cutoff) {
+                delete combos[key];
+            }
+        }
+
+        if (!Object.keys(combos).length) {
+            delete state[sym];
+        }
     }
 }
 
 // Load previous state
 const persisted = loadState();
+
+
+
+process.on("SIGTERM", () => {
+    try { saveState(true); } catch {}
+    process.exit(0);
+});
+
+process.on("SIGINT", () => {
+    try { saveState(true); } catch {}
+    process.exit(0);
+});
 
 let scoreState = persisted.scoreState || {};
 let lastSeenState = persisted.lastSeenState || {};
@@ -2967,6 +3063,8 @@ function processMinta(symbol, group, ts) {
 const COMBO_BUILD_WINDOW_MS  = 20 * 1000;             // 20 seconds
 const COMBO_REPEAT_WINDOW_MS = 2 * 60 * 60 * 1000;    // 2 hours
 
+
+const COMBO_MAX_SUBSET_SIZE = Number((process.env.COMBO_MAX_SUBSET_SIZE || "4").trim()); // store 2-4 group combos
 function isComboSingleLetter(group) {
     return /^[A-Z]$/.test(group);
 }
@@ -2992,6 +3090,10 @@ function comboGroupSubsets(groups) {
             result.push([...picked]);
         }
 
+        if (picked.length >= COMBO_MAX_SUBSET_SIZE) {
+            return;
+        }
+
         for (let i = start; i < unique.length; i++) {
             picked.push(unique[i]);
             walk(i + 1, picked);
@@ -3008,7 +3110,10 @@ function pruneComboState(state, ts) {
 
     for (const sym of Object.keys(state)) {
         for (const key of Object.keys(state[sym])) {
-            if (!state[sym][key] || state[sym][key].time < cutoff) {
+            const value = state[sym][key];
+            const time = typeof value === "number" ? value : value?.time;
+
+            if (!time || time < cutoff) {
                 delete state[sym][key];
             }
         }
@@ -3073,7 +3178,8 @@ function processComboRepeatEngine(cfg, symbol, group, ts) {
 
         if (!previous) continue;
 
-        const gapMs = ts - previous.time;
+        const previousTime = typeof previous === "number" ? previous : previous.time;
+        const gapMs = ts - previousTime;
 
         const isNotSameLiveCluster = gapMs > COMBO_BUILD_WINDOW_MS;
         const isWithinRepeatWindow = gapMs <= COMBO_REPEAT_WINDOW_MS;
@@ -3083,7 +3189,7 @@ function processComboRepeatEngine(cfg, symbol, group, ts) {
             repeated.push({
                 key,
                 groups: subset,
-                previousTime: previous.time,
+                previousTime,
                 gapMs
             });
 
@@ -3123,10 +3229,7 @@ function processComboRepeatEngine(cfg, symbol, group, ts) {
     for (const subset of liveSubsets) {
         const key = comboKeyFromGroups(subset);
 
-        cfg.state[symbol][key] = {
-            time: ts,
-            groups: [...subset].sort()
-        };
+        cfg.state[symbol][key] = ts;
     }
 
     pruneComboState(cfg.state, ts);
@@ -3953,7 +4056,8 @@ function processPeterforge(symbol, group, ts, body) {
             ? "Same-direction Peter_o stack — price zone has repeated"
             : "Opposite-direction Peter_o flip — possible failed zone / trap / deviation";
 
-        const gapMs = ts - previous.time;
+        const previousTime = typeof previous === "number" ? previous : previous.time;
+        const gapMs = ts - previousTime;
         const gapMin = Math.floor(gapMs / 60000);
         const gapSec = Math.floor((gapMs % 60000) / 1000);
 
@@ -4219,7 +4323,7 @@ if (!isHash) {
         } catch {}
 
         // GLOBAL PERSISTENCE SWEEP
-        // Persist JSON-safe live detector memories + Telegram outbox after every accepted alert.
+        // Schedule compact persistence of JSON-safe detector memories + Telegram outbox.
         saveState();
 
         res.sendStatus(200);
