@@ -3928,15 +3928,16 @@ function processPeterforge(symbol, group, ts, body) {
 
 
 // ==========================================================
-//  INAUGURAL RANGE FILTERS (PERSISTENT)
+//  SOURCE RANGE ENGINES + INAUGURAL FILTER (PERSISTENT)
 //  Source engines:
 //    - SALSA   = 3m to 9m 59s
 //    - GAMMA   = 10m to 14m 59s
 //    - NEPTUNE = 15m to 1h
 //
-//  Output:
-//    - Source engine alert goes to Bot 5 as SALSA/GAMMA/NEPTUNE
-//    - INAUGURAL 2-slot filter stays on Bot 1
+//  Critical behaviour:
+//    - SALSA / GAMMA / NEPTUNE fire to Bot 5 PER EXACT GROUP.
+//    - Example: UNIUSDT 26E and UNIUSDT 26Y can both fire.
+//    - INAUGURAL is only a separate Bot 1 filter layer.
 // ==========================================================
 
 let inauguralState = persisted.inauguralState || {};
@@ -3963,6 +3964,8 @@ function processRangeRepeatEngine(cfg, symbol, group, ts) {
         memory[symbol][group] = [];
     }
 
+    // Add current hit to THIS source engine memory.
+    // SALSA, GAMMA, and NEPTUNE each have separate memory objects.
     memory[symbol][group].push(ts);
 
     const cutoff = ts - cfg.maxSpanMs - (60 * 1000);
@@ -3986,7 +3989,8 @@ function processRangeRepeatEngine(cfg, symbol, group, ts) {
     const lastTime = picked[picked.length - 1];
     const spanMs = lastTime - firstTime;
 
-    // 1) Always send the raw source engine alert to Bot 5.
+    // 1) ALWAYS send the raw source engine alert to Bot 5.
+    // This is the old NEPTUNE-style behaviour: per symbol + exact group.
     sendRangeSourceAlert(
         cfg,
         symbol,
@@ -3995,7 +3999,7 @@ function processRangeRepeatEngine(cfg, symbol, group, ts) {
         spanMs
     );
 
-    // 2) Then run INAUGURAL 2-slot filter separately on Bot 1.
+    // 2) Run INAUGURAL separately on Bot 1.
     const result = recordInauguralRangeAlert(
         cfg,
         symbol,
@@ -4015,7 +4019,13 @@ function processRangeRepeatEngine(cfg, symbol, group, ts) {
         );
     }
 
-    // Do not delete memory. The same exact group can mature through later ranges.
+    // IMPORTANT:
+    // Reset only this exact group for THIS source engine after source alert.
+    // This preserves old NEPTUNE behaviour and prevents 4th/5th-hit spam.
+    // It does NOT affect other groups like 26E vs 26Y.
+    // It also does NOT affect other source engines because their memories are separate.
+    delete memory[symbol][group];
+
     saveState();
 }
 
@@ -4028,6 +4038,7 @@ function findRangeTripletEndingAtCurrent(buf, minSpanMs, maxSpanMs) {
     const lastIndex = buf.length - 1;
     const lastTime = buf[lastIndex];
 
+    // The newest/current hit must complete the 3-hit pattern.
     for (let i = 0; i <= lastIndex - 2; i++) {
 
         const firstTime = buf[i];
@@ -4041,6 +4052,7 @@ function findRangeTripletEndingAtCurrent(buf, minSpanMs, maxSpanMs) {
             break;
         }
 
+        // Any middle hit between first and current is enough.
         const middleTime = buf
             .slice(i + 1, lastIndex)
             .find(t => t > firstTime && t < lastTime);
@@ -4070,7 +4082,8 @@ function sendRangeSourceAlert(cfg, symbol, group, hitTimes, spanMs) {
         "Family: " + family + "\n" +
         "Hits: 3\n" +
         "Range: " + cfg.rangeLabel + "\n" +
-        "Span: " + spanMin + "m " + spanSec + "s\n\n" +
+        "Span: " + spanMin + "m " + spanSec + "s\n" +
+        "Window: " + cfg.rangeLabel + "\n\n" +
         "Times:\n" + hitLines
     );
 }
