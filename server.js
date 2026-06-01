@@ -3962,26 +3962,26 @@ function processRangeRepeatEngine(cfg, symbol, group, ts) {
 
     const buf = memory[symbol][group];
 
+    // Add current hit.
     buf.push(ts);
 
-    // Keep only the max span for this engine plus a small buffer.
+    // Keep only useful history for this engine.
+    // This is persistence-based, not timer-based.
     const cutoff = ts - cfg.maxSpanMs - (60 * 1000);
-    while (buf.length && buf[0] < cutoff) {
-        buf.shift();
-    }
 
-    let picked = null;
+    let clean = buf
+        .filter(t => typeof t === "number" && t >= cutoff)
+        .sort((a, b) => a - b);
 
-    // Find any 3-hit exact-group sequence whose first to third span is inside this engine's range.
-    for (let i = 0; i <= buf.length - RANGE_REPEAT_MIN_HITS; i++) {
-        const candidate = buf.slice(i, i + RANGE_REPEAT_MIN_HITS);
-        const spanMs = candidate[candidate.length - 1] - candidate[0];
+    // De-dupe identical timestamps.
+    clean = [...new Set(clean)];
+    memory[symbol][group] = clean;
 
-        if (spanMs >= cfg.minSpanMs && spanMs <= cfg.maxSpanMs) {
-            picked = candidate;
-            break;
-        }
-    }
+    const picked = findRangeTripletEndingAtCurrent(
+        clean,
+        cfg.minSpanMs,
+        cfg.maxSpanMs
+    );
 
     if (!picked) return;
 
@@ -3989,11 +3989,66 @@ function processRangeRepeatEngine(cfg, symbol, group, ts) {
     const lastTime = picked[picked.length - 1];
     const spanMs = lastTime - firstTime;
 
-    recordInauguralRangeAlert(cfg, symbol, group, ts, picked, spanMs);
+    const result = recordInauguralRangeAlert(
+        cfg,
+        symbol,
+        group,
+        ts,
+        picked,
+        spanMs
+    );
 
-    // Reset this exact group after a valid range attempt to avoid repeat spam.
-    delete memory[symbol][group];
+    if (!result || !result.fired) {
+        console.log(
+            "INAUGURAL range matched but blocked:",
+            cfg.alertName,
+            "symbol:", symbol,
+            "group:", group,
+            "reason:", result?.reason || "unknown"
+        );
+    }
+
+    // IMPORTANT:
+    // Do NOT delete memory[symbol][group].
+    // One exact group can mature from SALSA range into GAMMA/NEPTUNE range later.
     saveState();
+}
+
+function findRangeTripletEndingAtCurrent(buf, minSpanMs, maxSpanMs) {
+
+    if (!Array.isArray(buf) || buf.length < RANGE_REPEAT_MIN_HITS) {
+        return null;
+    }
+
+    const lastIndex = buf.length - 1;
+    const lastTime = buf[lastIndex];
+
+    // Only trigger when the newest/current hit completes the 3-hit pattern.
+    // This prevents old historical triplets from firing repeatedly on every new alert.
+    for (let i = 0; i <= lastIndex - 2; i++) {
+        const firstTime = buf[i];
+        const spanMs = lastTime - firstTime;
+
+        if (spanMs > maxSpanMs) {
+            continue;
+        }
+
+        // Later firstTime values only make the span smaller, so we can stop.
+        if (spanMs < minSpanMs) {
+            break;
+        }
+
+        // Pick the latest available middle hit before the current hit.
+        const middleTime = buf[lastIndex - 1];
+
+        if (middleTime <= firstTime || middleTime >= lastTime) {
+            continue;
+        }
+
+        return [firstTime, middleTime, lastTime];
+    }
+
+    return null;
 }
 
 function recordInauguralRangeAlert(cfg, symbol, group, ts, hitTimes, spanMs) {
@@ -4029,13 +4084,20 @@ function recordInauguralRangeAlert(cfg, symbol, group, ts, hitTimes, spanMs) {
 
     const state = inauguralState[cfg.alertName][symbol];
 
-    // Slot 2 must be a different family. Same-family repeats inside the 2h window are ignored.
+    // Slot 2 must be a different family.
+    // Same-family repeats inside the 2h window are ignored.
     if (state.slots.some(e => e.family === family)) {
-        return;
+        return {
+            fired: false,
+            reason: "same family already used in this 2h window"
+        };
     }
 
     if (state.slots.length >= INAUGURAL_RANGE_MAX_SLOTS) {
-        return;
+        return {
+            fired: false,
+            reason: "2 slots already used in this 2h window"
+        };
     }
 
     state.slots.push({
@@ -4054,7 +4116,12 @@ function recordInauguralRangeAlert(cfg, symbol, group, ts, hitTimes, spanMs) {
         .join("\n");
 
     const priorSlots = state.slots
-        .map((e, i) => (i + 1) + ") Family " + e.family + " | Group " + e.group + " | " + formatDateTime(e.time))
+        .map((e, i) =>
+            (i + 1) +
+            ") Family " + e.family +
+            " | Group " + e.group +
+            " | " + formatDateTime(e.time)
+        )
         .join("\n");
 
     sendToTelegram5(
@@ -4073,6 +4140,12 @@ function recordInauguralRangeAlert(cfg, symbol, group, ts, hitTimes, spanMs) {
     );
 
     saveState();
+
+    return {
+        fired: true,
+        reason: "sent",
+        slot
+    };
 }
 
 // ==========================================================
