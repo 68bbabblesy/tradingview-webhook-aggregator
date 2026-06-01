@@ -1365,6 +1365,7 @@ function processGamma(symbol, group, ts) {
     processRangeRepeatEngine(
         {
             source: "GAMMA",
+            emoji: "🟣",
             alertName: "INAUGURAL_10_TO_14",
             rangeLabel: "10m to 14m 59s",
             minSpanMs: GAMMA_MIN_SPAN_MS,
@@ -1583,6 +1584,7 @@ function processSalsa(symbol, group, ts) {
     processRangeRepeatEngine(
         {
             source: "SALSA",
+            emoji: "💃",
             alertName: "INAUGURAL_03_TO_09",
             rangeLabel: "3m to 9m 59s",
             minSpanMs: SALSA_MIN_SPAN_MS,
@@ -1679,6 +1681,7 @@ function processNeptune(symbol, group, ts) {
     processRangeRepeatEngine(
         {
             source: "NEPTUNE",
+            emoji: "🌊",
             alertName: "INAUGURAL_15_TO_60",
             rangeLabel: "15m to 1h",
             minSpanMs: NEPTUNE_MIN_SPAN_MS,
@@ -3926,16 +3929,14 @@ function processPeterforge(symbol, group, ts, body) {
 
 // ==========================================================
 //  INAUGURAL RANGE FILTERS (PERSISTENT)
-//  Names:
-//    - INAUGURAL_03_TO_09  = SALSA range, 3m to 9m 59s
-//    - INAUGURAL_10_TO_14  = GAMMA range, 10m to 14m 59s
-//    - INAUGURAL_15_TO_60  = NEPTUNE range, 15m to 1h
-//  Rule:
-//    - Underlying engine detects 3 exact same-group hits in its range
-//    - Same symbol
-//    - First 2 slots only within 2 hours
-//    - Slot 2 must be a DIFFERENT family from Slot 1
-//  Bot 5
+//  Source engines:
+//    - SALSA   = 3m to 9m 59s
+//    - GAMMA   = 10m to 14m 59s
+//    - NEPTUNE = 15m to 1h
+//
+//  Output:
+//    - Source engine alert goes to Bot 5 as SALSA/GAMMA/NEPTUNE
+//    - INAUGURAL 2-slot filter stays on Bot 1
 // ==========================================================
 
 let inauguralState = persisted.inauguralState || {};
@@ -3962,18 +3963,14 @@ function processRangeRepeatEngine(cfg, symbol, group, ts) {
         memory[symbol][group] = [];
     }
 
-    // Add current hit.
     memory[symbol][group].push(ts);
 
-    // Keep only useful history for this engine.
-    // This is persistence-based, not timer-based.
     const cutoff = ts - cfg.maxSpanMs - (60 * 1000);
 
     let clean = memory[symbol][group]
         .filter(t => typeof t === "number" && t >= cutoff)
         .sort((a, b) => a - b);
 
-    // De-dupe identical timestamps.
     clean = [...new Set(clean)];
     memory[symbol][group] = clean;
 
@@ -3989,6 +3986,16 @@ function processRangeRepeatEngine(cfg, symbol, group, ts) {
     const lastTime = picked[picked.length - 1];
     const spanMs = lastTime - firstTime;
 
+    // 1) Always send the raw source engine alert to Bot 5.
+    sendRangeSourceAlert(
+        cfg,
+        symbol,
+        group,
+        picked,
+        spanMs
+    );
+
+    // 2) Then run INAUGURAL 2-slot filter separately on Bot 1.
     const result = recordInauguralRangeAlert(
         cfg,
         symbol,
@@ -4008,8 +4015,7 @@ function processRangeRepeatEngine(cfg, symbol, group, ts) {
         );
     }
 
-    // DO NOT delete memory[symbol][group].
-    // Same exact group can mature across SALSA -> GAMMA -> NEPTUNE ranges later.
+    // Do not delete memory. The same exact group can mature through later ranges.
     saveState();
 }
 
@@ -4022,7 +4028,6 @@ function findRangeTripletEndingAtCurrent(buf, minSpanMs, maxSpanMs) {
     const lastIndex = buf.length - 1;
     const lastTime = buf[lastIndex];
 
-    // The newest/current hit must complete the 3-hit pattern.
     for (let i = 0; i <= lastIndex - 2; i++) {
 
         const firstTime = buf[i];
@@ -4036,7 +4041,6 @@ function findRangeTripletEndingAtCurrent(buf, minSpanMs, maxSpanMs) {
             break;
         }
 
-        // Any middle hit between first and current is enough.
         const middleTime = buf
             .slice(i + 1, lastIndex)
             .find(t => t > firstTime && t < lastTime);
@@ -4047,6 +4051,28 @@ function findRangeTripletEndingAtCurrent(buf, minSpanMs, maxSpanMs) {
     }
 
     return null;
+}
+
+function sendRangeSourceAlert(cfg, symbol, group, hitTimes, spanMs) {
+
+    const family = rangeFamilyFromGroup(group);
+    const spanMin = Math.floor(spanMs / 60000);
+    const spanSec = Math.floor((spanMs % 60000) / 1000);
+
+    const hitLines = hitTimes
+        .map((t, i) => (i + 1) + ") " + formatDateTime(t))
+        .join("\n");
+
+    sendToTelegram5(
+        cfg.emoji + " " + cfg.source + "\n" +
+        "Symbol: " + symbol + "\n" +
+        "Group: " + group + "\n" +
+        "Family: " + family + "\n" +
+        "Hits: 3\n" +
+        "Range: " + cfg.rangeLabel + "\n" +
+        "Span: " + spanMin + "m " + spanSec + "s\n\n" +
+        "Times:\n" + hitLines
+    );
 }
 
 function recordInauguralRangeAlert(cfg, symbol, group, ts, hitTimes, spanMs) {
@@ -4120,7 +4146,7 @@ function recordInauguralRangeAlert(cfg, symbol, group, ts, hitTimes, spanMs) {
         )
         .join("\n");
 
-    sendToTelegram5(
+    sendToTelegram1(
         "🎖 " + cfg.alertName + "\n" +
         "Source: " + cfg.source + "\n" +
         "Symbol: " + symbol + "\n" +
