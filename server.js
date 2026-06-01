@@ -3931,12 +3931,14 @@ function processPeterforge(symbol, group, ts, body) {
 //    - INAUGURAL_10_TO_14  = GAMMA range, 10m to 14m 59s
 //    - INAUGURAL_15_TO_60  = NEPTUNE range, 15m to 1h
 //  Rule:
-//    - Underlying engine must detect 3 exact same-group hits in its range
+//    - Underlying engine detects 3 exact same-group hits in its range
 //    - Same symbol
 //    - First 2 slots only within 2 hours
 //    - Slot 2 must be a DIFFERENT family from Slot 1
 //  Bot 5
 // ==========================================================
+
+let inauguralState = persisted.inauguralState || {};
 
 const INAUGURAL_RANGE_WINDOW_MS = 2 * 60 * 60 * 1000; // 2 hours
 const INAUGURAL_RANGE_MAX_SLOTS = 2;
@@ -3960,16 +3962,14 @@ function processRangeRepeatEngine(cfg, symbol, group, ts) {
         memory[symbol][group] = [];
     }
 
-    const buf = memory[symbol][group];
-
     // Add current hit.
-    buf.push(ts);
+    memory[symbol][group].push(ts);
 
     // Keep only useful history for this engine.
     // This is persistence-based, not timer-based.
     const cutoff = ts - cfg.maxSpanMs - (60 * 1000);
 
-    let clean = buf
+    let clean = memory[symbol][group]
         .filter(t => typeof t === "number" && t >= cutoff)
         .sort((a, b) => a - b);
 
@@ -4008,9 +4008,8 @@ function processRangeRepeatEngine(cfg, symbol, group, ts) {
         );
     }
 
-    // IMPORTANT:
-    // Do NOT delete memory[symbol][group].
-    // One exact group can mature from SALSA range into GAMMA/NEPTUNE range later.
+    // DO NOT delete memory[symbol][group].
+    // Same exact group can mature across SALSA -> GAMMA -> NEPTUNE ranges later.
     saveState();
 }
 
@@ -4023,9 +4022,9 @@ function findRangeTripletEndingAtCurrent(buf, minSpanMs, maxSpanMs) {
     const lastIndex = buf.length - 1;
     const lastTime = buf[lastIndex];
 
-    // Only trigger when the newest/current hit completes the 3-hit pattern.
-    // This prevents old historical triplets from firing repeatedly on every new alert.
+    // The newest/current hit must complete the 3-hit pattern.
     for (let i = 0; i <= lastIndex - 2; i++) {
+
         const firstTime = buf[i];
         const spanMs = lastTime - firstTime;
 
@@ -4033,17 +4032,16 @@ function findRangeTripletEndingAtCurrent(buf, minSpanMs, maxSpanMs) {
             continue;
         }
 
-        // Later firstTime values only make the span smaller, so we can stop.
         if (spanMs < minSpanMs) {
             break;
         }
 
-        // Pick the latest available middle hit before the current hit.
-        const middleTime = buf[lastIndex - 1];
+        // Any middle hit between first and current is enough.
+        const middleTime = buf
+            .slice(i + 1, lastIndex)
+            .find(t => t > firstTime && t < lastTime);
 
-        if (middleTime <= firstTime || middleTime >= lastTime) {
-            continue;
-        }
+        if (!middleTime) continue;
 
         return [firstTime, middleTime, lastTime];
     }
@@ -4084,8 +4082,6 @@ function recordInauguralRangeAlert(cfg, symbol, group, ts, hitTimes, spanMs) {
 
     const state = inauguralState[cfg.alertName][symbol];
 
-    // Slot 2 must be a different family.
-    // Same-family repeats inside the 2h window are ignored.
     if (state.slots.some(e => e.family === family)) {
         return {
             fired: false,
