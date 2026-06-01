@@ -1345,100 +1345,36 @@ function processBlackPanther(symbol, group, ts) {
 }
 
 // ==========================================================
-//  GAMMA (EXACT GROUP REPEAT — 3 HITS)
+//  GAMMA RANGE ENGINE
 //  Condition:
 //    - Same symbol
-//    - EXACT same group
-//    - 3 hits within 30 minutes
-//  Bot 4
+//    - Exact same group/subgroup
+//    - 3 hits with span >=10m and <15m
+//    - Family independent: all families/groups are watched
+//    - Output controlled by INAUGURAL_10_TO_14 two-slot filter
+//  Bot 5
 // ==========================================================
 
-const GAMMA_WINDOW_MS = 30 * 60 * 1000; // 30 minutes
-const GAMMA_MIN_HITS = 3;
+const GAMMA_MIN_SPAN_MS = 10 * 60 * 1000;
+const GAMMA_MAX_SPAN_MS = (15 * 60 * 1000) - 1;
 
 // gammaMemory[symbol][group] = [timestamps]
 let gammaMemory = persisted.gammaMemory || {};
 
 function processGamma(symbol, group, ts) {
-
-    if (!symbol || !group) return;
-
-    if (!gammaMemory[symbol]) {
-        gammaMemory[symbol] = {};
-    }
-
-    if (!gammaMemory[symbol][group]) {
-        gammaMemory[symbol][group] = [];
-    }
-
-    const buf = gammaMemory[symbol][group];
-
-    // Add current hit
-    buf.push(ts);
-
-    // Keep only last 30 minutes
-    const cutoff = ts - GAMMA_WINDOW_MS;
-    while (buf.length && buf[0] < cutoff) {
-        buf.shift();
-    }
-
-    // Fire on 3rd hit inside 30 minutes
-    if (buf.length >= GAMMA_MIN_HITS) {
-
-        const first = buf[0];
-        const last = buf[buf.length - 1];
-
-        const diffMs = last - first;
-        const diffMin = Math.floor(diffMs / 60000);
-        const diffSec = Math.floor((diffMs % 60000) / 1000);
-
-        const lines = buf
-            .map((t, i) =>
-                `${i + 1}) ${formatDateTime(t)}`
-            )
-            .join("\n");
-
-        sendToTelegram4(
-            `🟣 GAMMA\n` +
-            `Symbol: ${symbol}\n` +
-            `Group: ${group}\n` +
-            `Hits: ${buf.length}\n` +
-            `Window: 30m\n` +
-            `Span: ${diffMin}m ${diffSec}s\n\n` +
-            `Times:\n${lines}`
-        );
-
-        activateWakanda(symbol, "GAMMA", ts, group);
-
-        // Reset after firing to avoid spam on 4th/5th hit
-        delete gammaMemory[symbol][group];
-        return;
-    }
-
-    // Safety cleanup
-    if (Object.keys(gammaMemory).length > 5000) {
-        const pruneCutoff = ts - (2 * 60 * 60 * 1000);
-
-        for (const sym of Object.keys(gammaMemory)) {
-            const groups = gammaMemory[sym];
-
-            for (const g of Object.keys(groups)) {
-                const arr = groups[g];
-
-                while (arr.length && arr[0] < pruneCutoff) {
-                    arr.shift();
-                }
-
-                if (!arr.length) {
-                    delete groups[g];
-                }
-            }
-
-            if (!Object.keys(groups).length) {
-                delete gammaMemory[sym];
-            }
-        }
-    }
+    processRangeRepeatEngine(
+        {
+            source: "GAMMA",
+            alertName: "INAUGURAL_10_TO_14",
+            rangeLabel: "10m to 14m 59s",
+            minSpanMs: GAMMA_MIN_SPAN_MS,
+            maxSpanMs: GAMMA_MAX_SPAN_MS,
+            memory: gammaMemory
+        },
+        symbol,
+        group,
+        ts
+    );
 }
 
 // ==========================================================
@@ -1627,98 +1563,36 @@ function processCheck(symbol, group, ts, body) {
 }
 
 // ==========================================================
-//  SALSA (Exact subgroup repeat detector)
+//  SALSA RANGE ENGINE
 //  Condition:
 //    - Same symbol
-//    - EXACT same group
-//    - 3 hits within 20 minutes
-//  Bot 9
+//    - Exact same group/subgroup
+//    - 3 hits with span >=3m and <10m
+//    - Family independent: all families/groups are watched
+//    - Output controlled by INAUGURAL_03_TO_09 two-slot filter
+//  Bot 5
 // ==========================================================
 
-const SALSA_WINDOW_MS = 20 * 60 * 1000; // 20 minutes
-const SALSA_MIN_HITS = 3;
+const SALSA_MIN_SPAN_MS = 3 * 60 * 1000;
+const SALSA_MAX_SPAN_MS = (10 * 60 * 1000) - 1;
 
 // salsaMemory[symbol][group] = [timestamps]
 let salsaMemory = persisted.salsaMemory || {};
 
 function processSalsa(symbol, group, ts) {
-
-    if (!symbol || !group) return;
-
-    if (!salsaMemory[symbol]) {
-        salsaMemory[symbol] = {};
-    }
-
-    if (!salsaMemory[symbol][group]) {
-        salsaMemory[symbol][group] = [];
-    }
-
-    const buf = salsaMemory[symbol][group];
-
-    // Add current hit
-    buf.push(ts);
-
-    // Keep only last 20 minutes
-    const cutoff = ts - SALSA_WINDOW_MS;
-    while (buf.length && buf[0] < cutoff) {
-        buf.shift();
-    }
-
-    // Fire on 3rd hit inside 20 minutes
-    if (buf.length >= SALSA_MIN_HITS) {
-
-        const first = buf[0];
-        const last = buf[buf.length - 1];
-
-        const diffMs = last - first;
-        const diffMin = Math.floor(diffMs / 60000);
-        const diffSec = Math.floor((diffMs % 60000) / 1000);
-
-        const lines = buf
-            .map((t, i) =>
-                `${i + 1}) ${formatDateTime(t)}`
-            )
-            .join("\n");
-
-        sendToTelegram9(
-            `💃 SALSA\n` +
-            `Symbol: ${symbol}\n` +
-            `Group: ${group}\n` +
-            `Hits: ${buf.length}\n` +
-            `Window: 20m\n` +
-            `Span: ${diffMin}m ${diffSec}s\n\n` +
-            `Times:\n${lines}`
-        );
-
-        // Reset after firing to avoid spam on 4th/5th hit
-        delete salsaMemory[symbol][group];
-        return;
-    }
-
-    // Safety cleanup
-    if (Object.keys(salsaMemory).length > 5000) {
-        const pruneCutoff = ts - (2 * 60 * 60 * 1000);
-
-        for (const sym of Object.keys(salsaMemory)) {
-            const groups = salsaMemory[sym];
-
-            for (const g of Object.keys(groups)) {
-                const arr = groups[g];
-
-                while (arr.length && arr[0] < pruneCutoff) {
-                    arr.shift();
-                }
-
-                if (!arr.length) {
-                    delete groups[g];
-                }
-            }
-
-            if (!Object.keys(groups).length) {
-                delete salsaMemory[sym];
-            }
-        }
-    }
+    processRangeRepeatEngine(
+        {
+            source: "SALSA",
+            alertName: "INAUGURAL_03_TO_09",
+            rangeLabel: "3m to 9m 59s",
+            minSpanMs: SALSA_MIN_SPAN_MS,
+            maxSpanMs: SALSA_MAX_SPAN_MS,
+            memory: salsaMemory
+        },
+        symbol,
+        group,
+        ts
+    );
 }
 
 // ==========================================================
@@ -1785,85 +1659,36 @@ function processTango(symbol, group, ts) {
 
 
 // ==========================================================
-//  NEPTUNE (Same-group repeat detector — ANY group)
-//  Condition: Same symbol + SAME group, 3+ hits within 1 hour
-//  Bot 9
+//  NEPTUNE RANGE ENGINE
+//  Condition:
+//    - Same symbol
+//    - Exact same group/subgroup
+//    - 3 hits with span >=15m and <=1h
+//    - Family independent: all families/groups are watched
+//    - Output controlled by INAUGURAL_15_TO_60 two-slot filter
+//  Bot 5
 // ==========================================================
 
-const NEPTUNE_WINDOW_MS = 60 * 60 * 1000; // 1 hour
+const NEPTUNE_MIN_SPAN_MS = 15 * 60 * 1000;
+const NEPTUNE_MAX_SPAN_MS = 60 * 60 * 1000;
 
 // neptuneMemory[symbol][group] = [timestamps]
 let neptuneMemory = persisted.neptuneMemory || {};
 
 function processNeptune(symbol, group, ts) {
-
-    if (!symbol || !group) return;
-
-    if (!neptuneMemory[symbol]) {
-        neptuneMemory[symbol] = {};
-    }
-
-    if (!neptuneMemory[symbol][group]) {
-        neptuneMemory[symbol][group] = [];
-    }
-
-    const buf = neptuneMemory[symbol][group];
-
-    // Add current hit
-    buf.push(ts);
-
-    // Prune old hits
-    const cutoff = ts - NEPTUNE_WINDOW_MS;
-    while (buf.length && buf[0] < cutoff) {
-        buf.shift();
-    }
-
-    // Trigger on 3rd hit
-    if (buf.length >= 3) {
-
-        const first = buf[0];
-        const last  = buf[buf.length - 1];
-
-        const diffMs = last - first;
-        const diffMin = Math.floor(diffMs / 60000);
-        const diffSec = Math.floor((diffMs % 60000) / 1000);
-
-        const lines = buf
-            .map((t, i) =>
-                `${i + 1}) ${formatDateTime(t)}`
-            )
-            .join("\n");
-
-        sendToTelegram5(
-            `🌊 NEPTUNE\n` +
-            `Symbol: ${symbol}\n` +
-            `Group: ${group}\n` +
-            `Hits: ${buf.length}\n` +
-            `Window: 1h\n` +
-            `Span: ${diffMin}m ${diffSec}s\n` +
-            `Times:\n${lines}`
-        );
-
-        // Reset after firing (per group only)
-        delete neptuneMemory[symbol][group];
-    }
-
-    // Optional memory cleanup
-    if (Object.keys(neptuneMemory).length > 5000) {
-        const pruneCutoff = ts - (2 * 60 * 60 * 1000);
-        for (const sym of Object.keys(neptuneMemory)) {
-            const groups = neptuneMemory[sym];
-            for (const g of Object.keys(groups)) {
-                const arr = groups[g];
-                if (!arr.length || arr[arr.length - 1] < pruneCutoff) {
-                    delete groups[g];
-                }
-            }
-            if (!Object.keys(groups).length) {
-                delete neptuneMemory[sym];
-            }
-        }
-    }
+    processRangeRepeatEngine(
+        {
+            source: "NEPTUNE",
+            alertName: "INAUGURAL_15_TO_60",
+            rangeLabel: "15m to 1h",
+            minSpanMs: NEPTUNE_MIN_SPAN_MS,
+            maxSpanMs: NEPTUNE_MAX_SPAN_MS,
+            memory: neptuneMemory
+        },
+        symbol,
+        group,
+        ts
+    );
 }
 
 // ==========================================================
@@ -2892,8 +2717,7 @@ function processYaba(symbol, group, ts) {
             `Window: ${diffSec}s / 90s\n\n` +
             `Times:\n${lines}`
         );
-
-        activateBazooka(symbol, "YABA", ts, groupSequence);
+        // activateBazooka(symbol, "YABA", ts, groupSequence); // BAZOOKA disabled temporarily
 
         // Reset after firing to avoid spam from 4th/5th subgroup
         delete yabaMemory[symbol][family];
@@ -4101,88 +3925,151 @@ function processPeterforge(symbol, group, ts, body) {
 
 
 // ==========================================================
-//  INAUGURAL (PERSISTENT — first 2 single-letter groups in 2h)
-//  Condition:
-//    - Main ecosystem only
+//  INAUGURAL RANGE FILTERS (PERSISTENT)
+//  Names:
+//    - INAUGURAL_03_TO_09  = SALSA range, 3m to 9m 59s
+//    - INAUGURAL_10_TO_14  = GAMMA range, 10m to 14m 59s
+//    - INAUGURAL_15_TO_60  = NEPTUNE range, 15m to 1h
+//  Rule:
+//    - Underlying engine must detect 3 exact same-group hits in its range
 //    - Same symbol
-//    - Single-letter alphabet group only: A-Z
-//    - Alert only first 2 DIFFERENT single-letter groups per symbol within 2h
-//  Bot 1
+//    - First 2 slots only within 2 hours
+//    - Slot 2 must be a DIFFERENT family from Slot 1
+//  Bot 5
 // ==========================================================
 
-const INAUGURAL_WINDOW_MS = 2 * 60 * 60 * 1000; // 2 hours
-const INAUGURAL_MAX_ALERTS_PER_WINDOW = 2;
+const INAUGURAL_RANGE_WINDOW_MS = 2 * 60 * 60 * 1000; // 2 hours
+const INAUGURAL_RANGE_MAX_SLOTS = 2;
+const RANGE_REPEAT_MIN_HITS = 3;
 
-// inauguralState[symbol] = {
-//   windowStart: timestamp,
-//   alerts: [{ group, time }]
-// }
-let inauguralState = persisted.inauguralState || {};
-
-function isInauguralSingleLetterGroup(group) {
-    return /^[A-Z]$/.test(group);
+function rangeFamilyFromGroup(group) {
+    return getFamily(group);
 }
 
-function processInaugural(symbol, group, ts) {
+function processRangeRepeatEngine(cfg, symbol, group, ts) {
 
     if (!symbol || !group) return;
 
-    // Main ecosystem only — ignore # groups and subgroup families like 16A
-    if (!isInauguralSingleLetterGroup(group)) return;
+    const memory = cfg.memory;
 
-    const current = inauguralState[symbol];
+    if (!memory[symbol]) {
+        memory[symbol] = {};
+    }
 
-    // Handle old persisted format safely.
-    // Old version stored: inauguralState[symbol][group] = timestamp
+    if (!memory[symbol][group]) {
+        memory[symbol][group] = [];
+    }
+
+    const buf = memory[symbol][group];
+
+    buf.push(ts);
+
+    // Keep only the max span for this engine plus a small buffer.
+    const cutoff = ts - cfg.maxSpanMs - (60 * 1000);
+    while (buf.length && buf[0] < cutoff) {
+        buf.shift();
+    }
+
+    let picked = null;
+
+    // Find any 3-hit exact-group sequence whose first to third span is inside this engine's range.
+    for (let i = 0; i <= buf.length - RANGE_REPEAT_MIN_HITS; i++) {
+        const candidate = buf.slice(i, i + RANGE_REPEAT_MIN_HITS);
+        const spanMs = candidate[candidate.length - 1] - candidate[0];
+
+        if (spanMs >= cfg.minSpanMs && spanMs <= cfg.maxSpanMs) {
+            picked = candidate;
+            break;
+        }
+    }
+
+    if (!picked) return;
+
+    const firstTime = picked[0];
+    const lastTime = picked[picked.length - 1];
+    const spanMs = lastTime - firstTime;
+
+    recordInauguralRangeAlert(cfg, symbol, group, ts, picked, spanMs);
+
+    // Reset this exact group after a valid range attempt to avoid repeat spam.
+    delete memory[symbol][group];
+    saveState();
+}
+
+function recordInauguralRangeAlert(cfg, symbol, group, ts, hitTimes, spanMs) {
+
+    if (!inauguralState || typeof inauguralState !== "object") {
+        inauguralState = {};
+    }
+
+    if (!inauguralState[cfg.alertName] || typeof inauguralState[cfg.alertName] !== "object") {
+        inauguralState[cfg.alertName] = {};
+    }
+
+    const family = rangeFamilyFromGroup(group);
+    const current = inauguralState[cfg.alertName][symbol];
+
     const invalidOldFormat =
         current &&
         (
             typeof current.windowStart !== "number" ||
-            !Array.isArray(current.alerts)
+            !Array.isArray(current.slots)
         );
 
-    // Start fresh if:
-    // - no state
-    // - old incompatible state
-    // - 2h window has expired
     if (
         !current ||
         invalidOldFormat ||
-        (ts - current.windowStart >= INAUGURAL_WINDOW_MS)
+        (ts - current.windowStart >= INAUGURAL_RANGE_WINDOW_MS)
     ) {
-        inauguralState[symbol] = {
+        inauguralState[cfg.alertName][symbol] = {
             windowStart: ts,
-            alerts: []
+            slots: []
         };
     }
 
-    const state = inauguralState[symbol];
+    const state = inauguralState[cfg.alertName][symbol];
 
-    // If this exact group already alerted in this 2h window, ignore it.
-    if (state.alerts.some(e => e.group === group)) {
+    // Slot 2 must be a different family. Same-family repeats inside the 2h window are ignored.
+    if (state.slots.some(e => e.family === family)) {
         return;
     }
 
-    // Only allow first 2 different single-letter groups in the 2h window.
-    if (state.alerts.length >= INAUGURAL_MAX_ALERTS_PER_WINDOW) {
+    if (state.slots.length >= INAUGURAL_RANGE_MAX_SLOTS) {
         return;
     }
 
-    state.alerts.push({
+    state.slots.push({
+        source: cfg.source,
+        family,
         group,
         time: ts
     });
 
-    const slot = state.alerts.length;
+    const slot = state.slots.length;
+    const spanMin = Math.floor(spanMs / 60000);
+    const spanSec = Math.floor((spanMs % 60000) / 1000);
 
-    sendToTelegram1(
-        `🎖 INAUGURAL\n` +
-        `Symbol: ${symbol}\n` +
-        `Group: ${group}\n` +
-        `Slot: ${slot}/${INAUGURAL_MAX_ALERTS_PER_WINDOW}\n` +
-        `Rule: First 2 single-letter groups in 2 hours\n` +
-        `Window Start: ${formatDateTime(state.windowStart)}\n` +
-        `Now: ${formatDateTime(ts)}`
+    const hitLines = hitTimes
+        .map((t, i) => (i + 1) + ") " + formatDateTime(t))
+        .join("\n");
+
+    const priorSlots = state.slots
+        .map((e, i) => (i + 1) + ") Family " + e.family + " | Group " + e.group + " | " + formatDateTime(e.time))
+        .join("\n");
+
+    sendToTelegram5(
+        "🎖 " + cfg.alertName + "\n" +
+        "Source: " + cfg.source + "\n" +
+        "Symbol: " + symbol + "\n" +
+        "Group: " + group + "\n" +
+        "Family: " + family + "\n" +
+        "Slot: " + slot + "/" + INAUGURAL_RANGE_MAX_SLOTS + "\n" +
+        "Rule: First 2 different families in 2 hours\n" +
+        "Range: " + cfg.rangeLabel + "\n" +
+        "Span: " + spanMin + "m " + spanSec + "s\n" +
+        "Window Start: " + formatDateTime(state.windowStart) + "\n\n" +
+        "3 Hits:\n" + hitLines + "\n\n" +
+        "Slots Used:\n" + priorSlots
     );
 
     saveState();
@@ -4248,7 +4135,7 @@ app.post("/incoming", (req, res) => {
         // ✅ FIX: FIRST must IGNORE # groups and group-less Peter_o payloads
         if (group && !isHash) {
             processFirst(symbol, group, ts);
-            processInaugural(symbol, group, ts);
+            // processInaugural(symbol, group, ts); // disabled: now range-engine driven
         }
 
 // ==========================================
@@ -4276,7 +4163,7 @@ if (!isHash) {
         processMinta(symbol, group, ts);
         processMamba(symbol, group, ts);
         processSpesh(symbol, group, ts);
-        processCabal(symbol, group, ts);
+        // processCabal(symbol, group, ts); // disabled temporarily
         processBoom(symbol, group, ts);
         processKooky(symbol, group, ts);        
         //processTesting(symbol, group, ts);
@@ -4297,12 +4184,10 @@ if (!isHash) {
     recordHashEvent(symbol, group, ts);
 
     processGodzilla(symbol, group, ts);
-
-    if (typeof processBazooka === "function") {
-        processBazooka(symbol, group, ts);
-    }
-
-    processWakanda(symbol, group, ts);
+    // if (typeof processBazooka === "function") {
+    //     processBazooka(symbol, group, ts);
+    // } // disabled temporarily
+    // processWakanda(symbol, group, ts); // disabled temporarily
 
     // MAMAMIA may be active if you patched the hash-pair test bot.
     if (typeof processMAMAMIA === "function") {
