@@ -554,6 +554,57 @@ function scheduleTelegramOutbox(delayMs = 0) {
     }, Math.max(0, delayMs));
 }
 
+const TELEGRAM_SAFE_MESSAGE_LEN = Number((process.env.TELEGRAM_SAFE_MESSAGE_LEN || "3500").trim());
+
+function splitTelegramMessage(text, maxLen = TELEGRAM_SAFE_MESSAGE_LEN) {
+    const raw = String(text ?? "");
+
+    if (raw.length <= maxLen) {
+        return [raw];
+    }
+
+    const lines = raw.split("\n");
+    const chunks = [];
+    let current = "";
+
+    for (const line of lines) {
+        const candidate = current
+            ? current + "\n" + line
+            : line;
+
+        if (candidate.length <= maxLen) {
+            current = candidate;
+            continue;
+        }
+
+        if (current) {
+            chunks.push(current);
+            current = "";
+        }
+
+        // If a single line is too long, hard-split it.
+        let rest = line;
+        while (rest.length > maxLen) {
+            chunks.push(rest.slice(0, maxLen));
+            rest = rest.slice(maxLen);
+        }
+
+        current = rest;
+    }
+
+    if (current) {
+        chunks.push(current);
+    }
+
+    const total = chunks.length;
+
+    return chunks.map((chunk, i) =>
+        total > 1
+            ? `Part ${i + 1}/${total}\n${chunk}`
+            : chunk
+    );
+}
+
 function enqueueTelegram(botNo, text) {
     const { token, chat } = getTelegramCreds(botNo);
 
@@ -563,16 +614,23 @@ function enqueueTelegram(botNo, text) {
     }
 
     const now = Date.now();
+    const parts = splitTelegramMessage(text);
 
-    telegramOutbox.push({
-        id: `${now}-${botNo}-${Math.random().toString(36).slice(2)}`,
-        botNo,
-        text: String(text ?? ""),
-        attempts: 0,
-        createdAt: now,
-        nextAttemptAt: now,
-        lastError: null
-    });
+    for (const part of parts) {
+        telegramOutbox.push({
+            id: `${now}-${botNo}-${Math.random().toString(36).slice(2)}`,
+            botNo,
+            text: String(part ?? ""),
+            attempts: 0,
+            createdAt: now,
+            nextAttemptAt: now,
+            lastError: null
+        });
+    }
+
+    if (parts.length > 1) {
+        console.log(`✂️ Telegram message split: Bot${botNo} | parts=${parts.length}`);
+    }
 
     // Hard cap so a long Telegram outage cannot grow /data/state.json forever.
     if (telegramOutbox.length > TELEGRAM_OUTBOX_MAX) {
@@ -683,7 +741,14 @@ async function processTelegramOutbox() {
                     `⚠️ Telegram send failed: Bot${item.botNo} | attempt=${item.attempts}/${TELEGRAM_MAX_ATTEMPTS} | ${item.lastError}`
                 );
 
-                if (item.attempts >= TELEGRAM_MAX_ATTEMPTS) {
+                if (err.status === 400) {
+                    console.error(
+                        `❌ Telegram outbox dropping permanent 400: Bot${item.botNo} | createdAt=${formatDateTime(item.createdAt)} | error=${item.lastError}`
+                    );
+
+                    telegramOutbox.splice(idx, 1);
+
+                } else if (item.attempts >= TELEGRAM_MAX_ATTEMPTS) {
                     console.error(
                         `❌ Telegram outbox giving up: Bot${item.botNo} | createdAt=${formatDateTime(item.createdAt)} | error=${item.lastError}`
                     );
