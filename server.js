@@ -1730,14 +1730,14 @@ function processTango(symbol, group, ts) {
 //  Condition:
 //    - Same symbol
 //    - Exact same group/subgroup
-//    - 3 hits with span >=15m and <=1h
+//    - 3 hits with span >=15m and <=35m
 //    - Family independent: all families/groups are watched
 //    - Output controlled by INAUGURAL_15_TO_60 two-slot filter
 //  Bot 5
 // ==========================================================
 
 const NEPTUNE_MIN_SPAN_MS = 15 * 60 * 1000;
-const NEPTUNE_MAX_SPAN_MS = 60 * 60 * 1000;
+const NEPTUNE_MAX_SPAN_MS = 35 * 60 * 1000;
 
 // neptuneMemory[symbol][group] = [timestamps]
 let neptuneMemory = persisted.neptuneMemory || {};
@@ -1748,7 +1748,7 @@ function processNeptune(symbol, group, ts) {
             source: "NEPTUNE",
             emoji: "🌊",
             alertName: "INAUGURAL_15_TO_60",
-            rangeLabel: "15m to 1h",
+            rangeLabel: "15m to 35m",
             minSpanMs: NEPTUNE_MIN_SPAN_MS,
             maxSpanMs: NEPTUNE_MAX_SPAN_MS,
             memory: neptuneMemory
@@ -4006,7 +4006,7 @@ function processPeterforge(symbol, group, ts, body) {
 //  Source engines:
 //    - SALSA   = 3m to 9m 59s
 //    - GAMMA   = 10m to 14m 59s
-//    - NEPTUNE = 15m to 1h
+//    - NEPTUNE = 15m to 35m
 //
 //  Critical behaviour:
 //    - SALSA / GAMMA / NEPTUNE fire to Bot 5 PER EXACT GROUP.
