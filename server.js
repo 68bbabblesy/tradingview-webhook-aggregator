@@ -2155,126 +2155,215 @@ function processSpesh(symbol, group, ts) {
 }
 
 // ==========================================================
-//  CABAL (PERSISTENT — 29/30 family subgroup pair detector)
-//  Condition:
-//    - Main ecosystem only
+//  CABAL (PERSISTENT — first 2 SPESH/COBRA combo-repeat events)
+//  Source:
+//    - SPESH repeat events
+//    - COBRA repeat events
+//
+//  Rule:
 //    - Same symbol
-//    - Only families 29 and 30
-//    - Same family only: 29A + 29C OR 30J + 30F
-//    - Different exact subgroups
-//    - Pair within 20 seconds
-//  Bot 5
+//    - First 2 accepted SPESH/COBRA events within 2 hours
+//    - Can be SPESH+SPESH, COBRA+COBRA, or SPESH+COBRA
+//    - Avoid duplicate/encompassed events from same live cluster
+//    - If duplicate/encompassed, keep the stronger event:
+//        1) more matched combos
+//        2) bigger best combo size
+//  Bot 3
 // ==========================================================
 
-const CABAL_WINDOW_MS = 20 * 1000; // 20 seconds
+const CABAL_SLOT_WINDOW_MS = 2 * 60 * 60 * 1000; // 2 hours
+const CABAL_MAX_SLOTS = 2;
+const CABAL_DUPLICATE_CLUSTER_MS = 60 * 1000; // collapse SPESH/COBRA duplicates around same cluster
 
-// cabalState[symbol][family] = [{ group, time }]
+// cabalState[symbol] = {
+//   windowStart: ts,
+//   slots: [{ source, time, liveGroups, bestCombo, comboCount, bestComboSize, score }]
+// }
 let cabalState = persisted.cabalState || {};
 
-function getCabalFamily(group) {
-    if (/^29[A-Z]$/.test(group)) return "29";
-    if (/^30[A-Z]$/.test(group)) return "30";
-    return "";
+function processCabal(symbol, group, ts) {
+    // CABAL is now driven by SPESH/COBRA repeat events inside processComboRepeatEngine.
+    // This route hook is intentionally kept as a no-op so CABAL can remain enabled safely.
+    return;
 }
 
-function processCabal(symbol, group, ts) {
+function cabalGroupSet(groups) {
+    return new Set([...(groups || [])].map(String).filter(Boolean));
+}
 
-    if (!symbol || !group) return;
+function cabalIsSubset(aGroups, bGroups) {
+    const a = cabalGroupSet(aGroups);
+    const b = cabalGroupSet(bGroups);
 
-    const family = getCabalFamily(group);
-    if (!family) return;
+    if (!a.size || !b.size) return false;
 
-    if (!cabalState[symbol]) {
-        cabalState[symbol] = {};
+    for (const x of a) {
+        if (!b.has(x)) return false;
     }
 
-    if (!cabalState[symbol][family]) {
-        cabalState[symbol][family] = [];
+    return true;
+}
+
+function cabalIsSameOrEncompassed(a, b) {
+    if (!a || !b) return false;
+
+    const closeInTime = Math.abs(Number(a.time || 0) - Number(b.time || 0)) <= CABAL_DUPLICATE_CLUSTER_MS;
+    if (!closeInTime) return false;
+
+    const liveA = a.liveGroups || [];
+    const liveB = b.liveGroups || [];
+
+    const bestA = a.bestCombo || [];
+    const bestB = b.bestCombo || [];
+
+    return (
+        cabalIsSubset(liveA, liveB) ||
+        cabalIsSubset(liveB, liveA) ||
+        cabalIsSubset(bestA, bestB) ||
+        cabalIsSubset(bestB, bestA)
+    );
+}
+
+function cabalCandidateScore(candidate) {
+    return (Number(candidate.comboCount || 0) * 1000) + Number(candidate.bestComboSize || 0);
+}
+
+function cabalBuildCandidate(cfg, symbol, ts, liveGroups, repeated) {
+
+    const sortedRepeated = [...(repeated || [])].sort((a, b) => {
+        const comboDiff = (b.groups?.length || 0) - (a.groups?.length || 0);
+        if (comboDiff !== 0) return comboDiff;
+
+        const gapDiff = Number(a.gapMs || 0) - Number(b.gapMs || 0);
+        if (gapDiff !== 0) return gapDiff;
+
+        return String(a.key || "").localeCompare(String(b.key || ""));
+    });
+
+    const best = sortedRepeated[0] || {
+        groups: [],
+        previousTime: ts,
+        gapMs: 0,
+        key: "n/a"
+    };
+
+    const candidate = {
+        source: cfg.name,
+        symbol,
+        time: ts,
+        liveGroups: [...new Set(liveGroups || [])].sort(),
+        bestCombo: [...new Set(best.groups || [])].sort(),
+        bestComboKey: comboKeyFromGroups(best.groups || []),
+        previousTime: best.previousTime || ts,
+        gapMs: Number(best.gapMs || 0),
+        comboCount: repeated.length,
+        bestComboSize: (best.groups || []).length
+    };
+
+    candidate.score = cabalCandidateScore(candidate);
+
+    return candidate;
+}
+
+function registerCabalFromComboRepeat(cfg, symbol, ts, liveGroups, repeated) {
+
+    if (!cfg || !["SPESH", "COBRA"].includes(cfg.name)) return;
+    if (!symbol || !Array.isArray(repeated) || !repeated.length) return;
+
+    const candidate = cabalBuildCandidate(cfg, symbol, ts, liveGroups, repeated);
+
+    if (
+        !cabalState[symbol] ||
+        typeof cabalState[symbol].windowStart !== "number" ||
+        !Array.isArray(cabalState[symbol].slots) ||
+        (ts - cabalState[symbol].windowStart >= CABAL_SLOT_WINDOW_MS)
+    ) {
+        cabalState[symbol] = {
+            windowStart: ts,
+            slots: []
+        };
     }
 
-    let buf = cabalState[symbol][family];
+    const state = cabalState[symbol];
 
-    // Keep only last 20 seconds
-    const cutoff = ts - CABAL_WINDOW_MS;
-    buf = buf.filter(e => e.time >= cutoff);
+    // Collapse duplicate/encompassed SPESH/COBRA events from the same cluster.
+    for (let i = 0; i < state.slots.length; i++) {
+        const slot = state.slots[i];
 
-    // Look for a DIFFERENT subgroup in the SAME 29/30 family
-    const match = buf.find(e => e.group !== group);
+        if (cabalIsSameOrEncompassed(candidate, slot)) {
 
-    if (match) {
+            if (candidate.score > Number(slot.score || 0)) {
+                state.slots[i] = candidate;
 
-        const firstTime = match.time <= ts ? match.time : ts;
-        const secondTime = match.time <= ts ? ts : match.time;
+                console.log(
+                    "CABAL replaced duplicate/encompassed slot with stronger event:",
+                    symbol,
+                    "source:", candidate.source,
+                    "bestCombo:", comboFormatGroups(candidate.bestCombo),
+                    "comboCount:", candidate.comboCount
+                );
 
-        const firstGroup = match.time <= ts ? match.group : group;
-        const secondGroup = match.time <= ts ? group : match.group;
-
-        const diffMs = secondTime - firstTime;
-        const diffSec = Math.floor(diffMs / 1000);
-
-        sendToTelegram5(
-            `🔵 CABAL\n` +
-            `Symbol: ${symbol}\n` +
-            `Family: ${family}\n` +
-            `Condition: 2 different ${family} subgroups within 20s\n\n` +
-            `1) ${firstGroup} @ ${formatDateTime(firstTime)}\n` +
-            `2) ${secondGroup} @ ${formatDateTime(secondTime)}\n` +
-            `Gap: ${diffSec}s`
-        );
-
-        // Reset cluster but keep current subgroup as fresh seed
-        cabalState[symbol][family] = [
-            {
-                group,
-                time: ts
+                saveState();
             }
-        ];
 
-        saveState();
+            return;
+        }
+    }
+
+    // Only first 2 accepted events inside the 2h window.
+    if (state.slots.length >= CABAL_MAX_SLOTS) {
+        console.log(
+            "CABAL blocked:",
+            symbol,
+            "source:", candidate.source,
+            "reason: 2 slots already used in this 2h window"
+        );
         return;
     }
 
-    // Avoid stacking exact same subgroup repeatedly; refresh timestamp instead
-    const sameIndex = buf.findIndex(e => e.group === group);
+    state.slots.push(candidate);
 
-    if (sameIndex !== -1) {
-        buf[sameIndex] = {
-            group,
-            time: ts
-        };
-    } else {
-        buf.push({
-            group,
-            time: ts
-        });
-    }
+    const slotNo = state.slots.length;
 
-    cabalState[symbol][family] = buf;
+    sendCabalSlotAlert(symbol, state, candidate, slotNo);
     saveState();
-
-    // Safety cleanup
-    if (Object.keys(cabalState).length > 5000) {
-        const pruneCutoff = ts - (2 * 60 * 60 * 1000);
-
-        for (const sym of Object.keys(cabalState)) {
-            const families = cabalState[sym];
-
-            for (const fam of Object.keys(families)) {
-                families[fam] = families[fam].filter(e => e.time >= pruneCutoff);
-
-                if (!families[fam].length) {
-                    delete families[fam];
-                }
-            }
-
-            if (!Object.keys(families).length) {
-                delete cabalState[sym];
-            }
-        }
-
-        saveState();
-    }
 }
+
+function sendCabalSlotAlert(symbol, state, candidate, slotNo) {
+
+    const gapMin = Math.floor(candidate.gapMs / 60000);
+    const gapSec = Math.floor((candidate.gapMs % 60000) / 1000);
+
+    const slotsUsed = state.slots
+        .map((s, i) =>
+            (i + 1) +
+            ") " + s.source +
+            " | " + comboFormatGroups(s.bestCombo) +
+            " | Combos: " + s.comboCount +
+            " | " + formatDateTime(s.time)
+        )
+        .join("\n");
+
+    sendToTelegram3(
+        "🧿 CABAL\n" +
+        "Symbol: " + symbol + "\n" +
+        "Source: " + candidate.source + "\n" +
+        "Slot: " + slotNo + "/" + CABAL_MAX_SLOTS + "\n" +
+        "Rule: First 2 SPESH/COBRA in 2 hours\n" +
+        "Duplicate rule: same/encompassed cluster ignored\n\n" +
+
+        "Live Cluster: " + comboFormatGroups(candidate.liveGroups) + "\n" +
+        "Matched Combos: " + candidate.comboCount + "\n" +
+        "Best Combo: " + comboFormatGroups(candidate.bestCombo) + "\n" +
+        "Previous: " + formatDateTime(candidate.previousTime) + "\n" +
+        "Current: " + formatDateTime(candidate.time) + "\n" +
+        "Gap: " + gapMin + "m " + gapSec + "s\n" +
+        "Window Start: " + formatDateTime(state.windowStart) + "\n\n" +
+
+        "Slots Used:\n" + slotsUsed
+    );
+}
+
 
 // ==========================================================
 //  BOOM (Single-letter group pair detector)
@@ -3122,6 +3211,7 @@ function processComboRepeatEngine(cfg, symbol, group, ts) {
             `Window: repeat within ${repeatLabel} after 20s cluster\n\n` +
             lines
         );
+        registerCabalFromComboRepeat(cfg, symbol, ts, liveGroups, repeated);
     }
 
     // Store/refresh ALL subset combos from this live cluster.
@@ -4345,7 +4435,7 @@ if (!isHash) {
         processMinta(symbol, group, ts);
         processMamba(symbol, group, ts);
         processSpesh(symbol, group, ts);
-        // processCabal(symbol, group, ts); // disabled temporarily
+        processCabal(symbol, group, ts);
         processBoom(symbol, group, ts);
         processKooky(symbol, group, ts);        
         //processTesting(symbol, group, ts);
@@ -4353,7 +4443,7 @@ if (!isHash) {
         processBababia(symbol, group, ts);
         // processMAMAMIA(symbol, group, ts); // moved to hash ecosystem
         processZoneforge(symbol, group, ts, body);
-        processAnchorforge(symbol, group, ts, body);
+        // processAnchorforge(symbol, group, ts, body); // disabled temporarily for CABAL Bot3
         //processWakanda(symbol, group, ts, body);
         processJupiter(symbol, group, ts);
     }
