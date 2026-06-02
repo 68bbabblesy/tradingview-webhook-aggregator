@@ -2144,7 +2144,9 @@ function processSpesh(symbol, group, ts) {
             description: "Number-letter subgroup combo repeat",
             state: speshComboState,
             runtime: speshComboRuntime,
-            isValidGroup: isComboNumberLetter
+            
+            repeatWindowMs: COMBO_REPEAT_WINDOW_SPESH_COBRA_MS,
+            repeatLabel: "16m",isValidGroup: isComboNumberLetter
         },
         symbol,
         group,
@@ -2956,6 +2958,8 @@ const COMBO_BUILD_WINDOW_MS  = 20 * 1000;             // 20 seconds
 const COMBO_REPEAT_WINDOW_MS = 2 * 60 * 60 * 1000;    // 2 hours
 
 
+
+const COMBO_REPEAT_WINDOW_SPESH_COBRA_MS = 16 * 60 * 1000; // 16 minutes for SPESH + COBRA
 const COMBO_MAX_SUBSET_SIZE = Number((process.env.COMBO_MAX_SUBSET_SIZE || "4").trim()); // store 2-4 group combos
 function isComboSingleLetter(group) {
     return /^[A-Z]$/.test(group);
@@ -2997,8 +3001,8 @@ function comboGroupSubsets(groups) {
     return result;
 }
 
-function pruneComboState(state, ts) {
-    const cutoff = ts - COMBO_REPEAT_WINDOW_MS;
+function pruneComboState(state, ts, windowMs = COMBO_REPEAT_WINDOW_MS) {
+    const cutoff = ts - windowMs;
 
     for (const sym of Object.keys(state)) {
         for (const key of Object.keys(state[sym])) {
@@ -3062,6 +3066,9 @@ function processComboRepeatEngine(cfg, symbol, group, ts) {
         cfg.state[symbol] = {};
     }
 
+    const repeatWindowMs = Number(cfg.repeatWindowMs || COMBO_REPEAT_WINDOW_MS);
+    const repeatLabel = cfg.repeatLabel || "2h";
+
     const repeated = [];
 
     for (const subset of liveSubsets) {
@@ -3074,7 +3081,7 @@ function processComboRepeatEngine(cfg, symbol, group, ts) {
         const gapMs = ts - previousTime;
 
         const isNotSameLiveCluster = gapMs > COMBO_BUILD_WINDOW_MS;
-        const isWithinRepeatWindow = gapMs <= COMBO_REPEAT_WINDOW_MS;
+        const isWithinRepeatWindow = gapMs <= repeatWindowMs;
         const notAlreadyFiredInCluster = !rt.firedCombos[key];
 
         if (isNotSameLiveCluster && isWithinRepeatWindow && notAlreadyFiredInCluster) {
@@ -3112,7 +3119,7 @@ function processComboRepeatEngine(cfg, symbol, group, ts) {
             `Type: ${cfg.description}\n` +
             `Live Cluster: ${comboFormatGroups(liveGroups)}\n` +
             `Matched Combos: ${repeated.length}\n` +
-            `Window: repeat within 2h after 20s cluster\n\n` +
+            `Window: repeat within ${repeatLabel} after 20s cluster\n\n` +
             lines
         );
     }
@@ -3124,7 +3131,7 @@ function processComboRepeatEngine(cfg, symbol, group, ts) {
         cfg.state[symbol][key] = ts;
     }
 
-    pruneComboState(cfg.state, ts);
+    pruneComboState(cfg.state, ts, repeatWindowMs);
     saveState();
 }
 
@@ -3151,7 +3158,9 @@ function processCobra(symbol, group, ts) {
             description: "Single-letter + number-letter combo repeat",
             state: cobraComboState,
             runtime: cobraComboRuntime,
-            isValidGroup: g => isComboSingleLetter(g) || isComboNumberLetter(g)
+            
+            repeatWindowMs: COMBO_REPEAT_WINDOW_SPESH_COBRA_MS,
+            repeatLabel: "16m",isValidGroup: g => isComboSingleLetter(g) || isComboNumberLetter(g)
         },
         symbol,
         group,
