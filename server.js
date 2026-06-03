@@ -1461,7 +1461,7 @@ function getMainGroupNumber(group) {
 function getPotInfo(group) {
     if (!group) return null;
 
-    // Keep this in normal ecosystem only.
+    // Normal ecosystem only
     if (String(group).startsWith("#")) return null;
 
     const main = getMainGroupNumber(group);
@@ -1485,7 +1485,10 @@ function getPotInfo(group) {
 }
 
 function potFormatEvent(e) {
-    return `${e.rawGroup} → main ${e.main} / ${e.pot} @ ${formatDateTime(e.time)}`;
+    return String(e.rawGroup) +
+        " → main " + e.main +
+        " / " + e.pot +
+        " @ " + formatDateTime(e.time);
 }
 
 function prunePotEvents(arr, ts) {
@@ -1500,6 +1503,14 @@ function upsertPotMain(arr, event) {
     return next;
 }
 
+function getPotDetectorStore(key) {
+    if (!mamamiaHashMemory[key] || typeof mamamiaHashMemory[key] !== "object") {
+        mamamiaHashMemory[key] = {};
+    }
+
+    return mamamiaHashMemory[key];
+}
+
 // ==========================================================
 //  BABABIA (POT SAME-POT DETECTOR)
 //  Condition:
@@ -1508,20 +1519,10 @@ function upsertPotMain(arr, event) {
 //    - Main group only, subgroup ignored
 //    - Any 2 DIFFERENT main groups from SAME pot
 //    - Within 5 minutes
-//  Bot 8
+//  Bot 2
 // ==========================================================
 
-// Shared persisted container.
-// mamamiaHashMemory is already part of loadState/buildStateSnapshot.
 let mamamiaHashMemory = persisted.mamamiaHashMemory || {};
-
-function getPotDetectorStore(key) {
-    if (!mamamiaHashMemory[key] || typeof mamamiaHashMemory[key] !== "object") {
-        mamamiaHashMemory[key] = {};
-    }
-
-    return mamamiaHashMemory[key];
-}
 
 function processBababia(symbol, group, ts) {
 
@@ -1561,15 +1562,15 @@ function processBababia(symbol, group, ts) {
         const gapMin = Math.floor(gapMs / 60000);
         const gapSec = Math.floor((gapMs % 60000) / 1000);
 
-        sendToTelegram8(
-            `🎉 BABABIA\n` +
-            `Type: Same-pot main-group match\n` +
-            `Symbol: ${symbol}\n` +
-            `Pot: ${info.pot}\n` +
-            `Window: 5 minutes\n\n` +
-            `1) ${potFormatEvent(first)}\n` +
-            `2) ${potFormatEvent(second)}\n` +
-            `Gap: ${gapMin}m ${gapSec}s`
+        sendToTelegram2(
+            "🎉 BABABIA\n" +
+            "Type: Same-pot main-group match\n" +
+            "Symbol: " + symbol + "\n" +
+            "Pot: " + info.pot + "\n" +
+            "Window: 5 minutes\n\n" +
+            "1) " + potFormatEvent(first) + "\n" +
+            "2) " + potFormatEvent(second) + "\n" +
+            "Gap: " + gapMin + "m " + gapSec + "s"
         );
 
         // Reset this symbol+pot cluster, keep current event as new seed.
@@ -1606,7 +1607,7 @@ function processBababia(symbol, group, ts) {
 //    - Main group only, subgroup ignored
 //    - One main group from POT 1 and one main group from POT 2
 //    - Within 5 minutes
-//  Bot 8
+//  Bot 2
 // ==========================================================
 
 function processMAMAMIA(symbol, group, ts) {
@@ -1648,14 +1649,14 @@ function processMAMAMIA(symbol, group, ts) {
         const gapMin = Math.floor(gapMs / 60000);
         const gapSec = Math.floor((gapMs % 60000) / 1000);
 
-        sendToTelegram8(
-            `🎶 MAMAMIA\n` +
-            `Type: Cross-pot main-group match\n` +
-            `Symbol: ${symbol}\n` +
-            `Condition: POT 1 + POT 2 within 5 minutes\n\n` +
-            `1) ${potFormatEvent(first)}\n` +
-            `2) ${potFormatEvent(second)}\n` +
-            `Gap: ${gapMin}m ${gapSec}s`
+        sendToTelegram2(
+            "🎶 MAMAMIA\n" +
+            "Type: Cross-pot main-group match\n" +
+            "Symbol: " + symbol + "\n" +
+            "Condition: POT 1 + POT 2 within 5 minutes\n\n" +
+            "1) " + potFormatEvent(first) + "\n" +
+            "2) " + potFormatEvent(second) + "\n" +
+            "Gap: " + gapMin + "m " + gapSec + "s"
         );
 
         // Reset this symbol cluster, keep current event as new seed only.
@@ -1690,6 +1691,9 @@ function processMAMAMIA(symbol, group, ts) {
     saveState();
 }
 
+
+// ==========================================================
+//  CHECK
 
 // ==========================================================
 //  CHECK
@@ -4490,7 +4494,7 @@ app.post("/incoming", (req, res) => {
 		
         // ✅ FIX: FIRST must IGNORE # groups and group-less Peter_o payloads
         if (group && !isHash) {
-            processFirst(symbol, group, ts);
+            // processFirst(symbol, group, ts); // disabled temporarily
             // processInaugural(symbol, group, ts); // disabled: now range-engine driven
         }
 
@@ -4526,7 +4530,7 @@ if (!isHash) {
         //processAudit(symbol, group, ts, body);
         processBababia(symbol, group, ts);
         processMAMAMIA(symbol, group, ts);
-        // processZoneforge(symbol, group, ts, body); // disabled temporarily
+        processZoneforge(symbol, group, ts, body);
         // processAnchorforge(symbol, group, ts, body); // disabled temporarily for CABAL Bot3
         //processWakanda(symbol, group, ts, body);
         processJupiter(symbol, group, ts);
