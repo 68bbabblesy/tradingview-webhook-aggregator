@@ -1444,171 +1444,255 @@ function processGamma(symbol, group, ts) {
 }
 
 // ==========================================================
-//  BABABIA (Buffered Burst Engine)
-//  Logical Window: 50 seconds
-//  Delivery Buffer: 60 seconds
+//  POT HELPERS
+//  POT 1 = main groups 27–34
+//  POT 2 = main groups 37–45
+//  Groups 35/36 and anything outside both pots are ignored.
+//  Subgroups are ignored: 31A, 31W, 31Z all count as main group 31.
 // ==========================================================
 
-const BABABIA_WINDOW_MS = 50 * 1000;
-const BABABIA_BUFFER_MS = 60 * 1000;
-const BABABIA_MIN_COUNT = 10;
+const POT_WINDOW_MS = 5 * 60 * 1000; // 5 minutes
 
-const bababiaState = {
-    O: { active: false, symbols: new Map(), startTime: null, timer: null },
-    P: { active: false, symbols: new Map(), startTime: null, timer: null }
-};
+function getMainGroupNumber(group) {
+    const m = String(group || "").match(/^(\d+)/);
+    return m ? Number(m[1]) : null;
+}
+
+function getPotInfo(group) {
+    if (!group) return null;
+
+    // Keep this in normal ecosystem only.
+    if (String(group).startsWith("#")) return null;
+
+    const main = getMainGroupNumber(group);
+    if (!main) return null;
+
+    if (main >= 27 && main <= 34) {
+        return {
+            pot: "POT 1",
+            main
+        };
+    }
+
+    if (main >= 37 && main <= 45) {
+        return {
+            pot: "POT 2",
+            main
+        };
+    }
+
+    return null;
+}
+
+function potFormatEvent(e) {
+    return `${e.rawGroup} → main ${e.main} / ${e.pot} @ ${formatDateTime(e.time)}`;
+}
+
+function prunePotEvents(arr, ts) {
+    const cutoff = ts - POT_WINDOW_MS;
+    return (arr || []).filter(e => e && e.time >= cutoff);
+}
+
+function upsertPotMain(arr, event) {
+    const next = (arr || []).filter(e => e.main !== event.main);
+    next.push(event);
+    next.sort((a, b) => a.time - b.time);
+    return next;
+}
+
+// ==========================================================
+//  BABABIA (POT SAME-POT DETECTOR)
+//  Condition:
+//    - Normal ecosystem only
+//    - Same symbol
+//    - Main group only, subgroup ignored
+//    - Any 2 DIFFERENT main groups from SAME pot
+//    - Within 5 minutes
+//  Bot 8
+// ==========================================================
+
+// Shared persisted container.
+// mamamiaHashMemory is already part of loadState/buildStateSnapshot.
+let mamamiaHashMemory = persisted.mamamiaHashMemory || {};
+
+function getPotDetectorStore(key) {
+    if (!mamamiaHashMemory[key] || typeof mamamiaHashMemory[key] !== "object") {
+        mamamiaHashMemory[key] = {};
+    }
+
+    return mamamiaHashMemory[key];
+}
 
 function processBababia(symbol, group, ts) {
 
-    if (!bababiaState[group]) return;
+    if (!symbol || !group) return;
 
-    const state = bababiaState[group];
+    const info = getPotInfo(group);
+    if (!info) return;
 
-    // Start burst on first hit
-    if (!state.active) {
-        state.active = true;
-        state.startTime = ts;
-        state.symbols.clear();
+    const store = getPotDetectorStore("__BABABIA_POT_STATE__");
 
-        state.timer = setTimeout(() => {
-
-            // Only count hits within logical 50s window
-            const cutoff = state.startTime + BABABIA_WINDOW_MS;
-
-            const entries = [...state.symbols.entries()]
-                .filter(([_, time]) => time <= cutoff);
-
-            if (entries.length >= BABABIA_MIN_COUNT) {
-
-                const lines = entries
-                    .sort((a, b) => a[1] - b[1])
-                    .map(([sym, time]) =>
-                        `• ${sym} @ ${new Date(time).toLocaleTimeString()}`
-                    )
-                    .join("\n");
-
-                sendToTelegram9(
-                    `🎉 BABABIA\n` +
-                    `Group: ${group}\n` +
-                    `Unique Symbols: ${entries.length}\n` +
-                    `Window: 50s\n` +
-                    `Symbols:\n${lines}`
-                );
-            }
-
-            // Reset
-            state.active = false;
-            state.symbols.clear();
-            state.startTime = null;
-            clearTimeout(state.timer);
-            state.timer = null;
-
-        }, BABABIA_WINDOW_MS + BABABIA_BUFFER_MS);
+    if (!store[symbol]) {
+        store[symbol] = {
+            "POT 1": [],
+            "POT 2": []
+        };
     }
 
-    // Always collect (we filter later)
-    state.symbols.set(symbol, ts);
+    const event = {
+        rawGroup: group,
+        main: info.main,
+        pot: info.pot,
+        time: ts
+    };
+
+    let buf = prunePotEvents(store[symbol][info.pot] || [], ts);
+
+    // Need a DIFFERENT main group from the SAME pot inside 5 minutes.
+    const match = [...buf]
+        .filter(e => e.main !== event.main)
+        .sort((a, b) => b.time - a.time)[0];
+
+    if (match) {
+        const first = match.time <= event.time ? match : event;
+        const second = match.time <= event.time ? event : match;
+
+        const gapMs = second.time - first.time;
+        const gapMin = Math.floor(gapMs / 60000);
+        const gapSec = Math.floor((gapMs % 60000) / 1000);
+
+        sendToTelegram8(
+            `🎉 BABABIA\n` +
+            `Type: Same-pot main-group match\n` +
+            `Symbol: ${symbol}\n` +
+            `Pot: ${info.pot}\n` +
+            `Window: 5 minutes\n\n` +
+            `1) ${potFormatEvent(first)}\n` +
+            `2) ${potFormatEvent(second)}\n` +
+            `Gap: ${gapMin}m ${gapSec}s`
+        );
+
+        // Reset this symbol+pot cluster, keep current event as new seed.
+        store[symbol][info.pot] = [event];
+        saveState();
+        return;
+    }
+
+    store[symbol][info.pot] = upsertPotMain(buf, event);
+
+    // Safety cleanup.
+    if (Object.keys(store).length > 5000) {
+        const pruneCutoff = ts - (2 * 60 * 60 * 1000);
+
+        for (const sym of Object.keys(store)) {
+            for (const pot of ["POT 1", "POT 2"]) {
+                store[sym][pot] = (store[sym][pot] || []).filter(e => e.time >= pruneCutoff);
+            }
+
+            if (!store[sym]["POT 1"].length && !store[sym]["POT 2"].length) {
+                delete store[sym];
+            }
+        }
+    }
+
+    saveState();
 }
 
-
 // ==========================================================
-//  MAMAMIA (HASH ECOSYSTEM — same symbol, different # groups)
+//  MAMAMIA (POT CROSS-POT DETECTOR)
 //  Condition:
-//    - # ecosystem only
+//    - Normal ecosystem only
 //    - Same symbol
-//    - Different # groups
-//    - Within 20 seconds
-//  Bot 1
+//    - Main group only, subgroup ignored
+//    - One main group from POT 1 and one main group from POT 2
+//    - Within 5 minutes
+//  Bot 8
 // ==========================================================
-
-const MAMAMIA_HASH_WINDOW_MS = 20 * 1000; // 20 seconds
-
-// mamamiaHashMemory[symbol] = [{ group, time }]
-let mamamiaHashMemory = persisted.mamamiaHashMemory || {};
 
 function processMAMAMIA(symbol, group, ts) {
 
     if (!symbol || !group) return;
 
-    // MAMAMIA is only for # ecosystem
-    if (!group.startsWith("#")) return;
+    const info = getPotInfo(group);
+    if (!info) return;
 
-    if (!mamamiaHashMemory[symbol]) {
-        mamamiaHashMemory[symbol] = [];
+    const store = getPotDetectorStore("__MAMAMIA_POT_STATE__");
+
+    if (!store[symbol]) {
+        store[symbol] = {
+            "POT 1": [],
+            "POT 2": []
+        };
     }
 
-    let buf = mamamiaHashMemory[symbol];
+    const event = {
+        rawGroup: group,
+        main: info.main,
+        pot: info.pot,
+        time: ts
+    };
 
-    // Keep only last 20 seconds
-    const cutoff = ts - MAMAMIA_HASH_WINDOW_MS;
-    buf = buf.filter(e => e.time >= cutoff);
-    mamamiaHashMemory[symbol] = buf;
+    const otherPot = info.pot === "POT 1" ? "POT 2" : "POT 1";
 
-    // Find a DIFFERENT # group inside the 20s window
-    const match = buf.find(e => e.group !== group);
+    store[symbol]["POT 1"] = prunePotEvents(store[symbol]["POT 1"] || [], ts);
+    store[symbol]["POT 2"] = prunePotEvents(store[symbol]["POT 2"] || [], ts);
+
+    const match = [...store[symbol][otherPot]]
+        .sort((a, b) => b.time - a.time)[0];
 
     if (match) {
+        const first = match.time <= event.time ? match : event;
+        const second = match.time <= event.time ? event : match;
 
-        const firstTime = match.time <= ts ? match.time : ts;
-        const secondTime = match.time <= ts ? ts : match.time;
+        const gapMs = second.time - first.time;
+        const gapMin = Math.floor(gapMs / 60000);
+        const gapSec = Math.floor((gapMs % 60000) / 1000);
 
-        const firstGroup = match.time <= ts ? match.group : group;
-        const secondGroup = match.time <= ts ? group : match.group;
-
-        const diffMs = secondTime - firstTime;
-        const diffSec = Math.floor(diffMs / 1000);
-
-        sendToTelegram1(
+        sendToTelegram8(
             `🎶 MAMAMIA\n` +
+            `Type: Cross-pot main-group match\n` +
             `Symbol: ${symbol}\n` +
-            `Condition: Different # groups within 20s\n\n` +
-            `1) ${firstGroup} @ ${formatDateTime(firstTime)}\n` +
-            `2) ${secondGroup} @ ${formatDateTime(secondTime)}\n` +
-            `Gap: ${diffSec}s`
+            `Condition: POT 1 + POT 2 within 5 minutes\n\n` +
+            `1) ${potFormatEvent(first)}\n` +
+            `2) ${potFormatEvent(second)}\n` +
+            `Gap: ${gapMin}m ${gapSec}s`
         );
 
-        // Reset cluster, but keep current # as fresh seed for future pairs
-        mamamiaHashMemory[symbol] = [
-            {
-                group,
-                time: ts
-            }
-        ];
+        // Reset this symbol cluster, keep current event as new seed only.
+        store[symbol] = {
+            "POT 1": [],
+            "POT 2": []
+        };
 
+        store[symbol][info.pot] = [event];
+
+        saveState();
         return;
     }
 
-    // Avoid stacking exact same # repeatedly; refresh timestamp instead
-    const sameIndex = buf.findIndex(e => e.group === group);
+    store[symbol][info.pot] = upsertPotMain(store[symbol][info.pot], event);
 
-    if (sameIndex !== -1) {
-        buf[sameIndex] = {
-            group,
-            time: ts
-        };
-    } else {
-        buf.push({
-            group,
-            time: ts
-        });
-    }
-
-    mamamiaHashMemory[symbol] = buf;
-
-    // Safety cleanup
-    if (Object.keys(mamamiaHashMemory).length > 5000) {
+    // Safety cleanup.
+    if (Object.keys(store).length > 5000) {
         const pruneCutoff = ts - (2 * 60 * 60 * 1000);
 
-        for (const sym of Object.keys(mamamiaHashMemory)) {
-            mamamiaHashMemory[sym] = mamamiaHashMemory[sym]
-                .filter(e => e.time >= pruneCutoff);
+        for (const sym of Object.keys(store)) {
+            for (const pot of ["POT 1", "POT 2"]) {
+                store[sym][pot] = (store[sym][pot] || []).filter(e => e.time >= pruneCutoff);
+            }
 
-            if (!mamamiaHashMemory[sym].length) {
-                delete mamamiaHashMemory[sym];
+            if (!store[sym]["POT 1"].length && !store[sym]["POT 2"].length) {
+                delete store[sym];
             }
         }
     }
+
+    saveState();
 }
+
+
+// ==========================================================
+//  CHECK
 
 // ==========================================================
 //  CHECK (RAW ALL ALERTS — DEBUG)
@@ -4441,8 +4525,8 @@ if (!isHash) {
         //processTesting(symbol, group, ts);
         //processAudit(symbol, group, ts, body);
         processBababia(symbol, group, ts);
-        // processMAMAMIA(symbol, group, ts); // moved to hash ecosystem
-        processZoneforge(symbol, group, ts, body);
+        processMAMAMIA(symbol, group, ts);
+        // processZoneforge(symbol, group, ts, body); // disabled temporarily
         // processAnchorforge(symbol, group, ts, body); // disabled temporarily for CABAL Bot3
         //processWakanda(symbol, group, ts, body);
         processJupiter(symbol, group, ts);
