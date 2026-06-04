@@ -1315,6 +1315,83 @@ function processWakanda(symbol, group, ts) {
 }
 
 // ==========================================================
+//  STRUCTURED GROUP FILTER HELPER
+//  Passes if at least ONE condition is met:
+//    1) Same main number + alternate letters
+//       Example: 26C + 26E, 28W + 28Y
+//    2) Sequential main numbers
+//       Example: 29A + 30B, 40Y + 41Z
+//
+//  No third rule yet:
+//    40Y + 40Z does NOT qualify unless another rule is added later.
+// ==========================================================
+
+function parseStructuredGroup(group) {
+    const raw = String(group || "").trim().toUpperCase();
+
+    // Accept 29A, 40Y, 31W. Also accepts plain numeric groups for number sequencing.
+    const m = raw.match(/^(\d+)([A-Z])?$/);
+    if (!m) return null;
+
+    const num = Number(m[1]);
+    const letter = m[2] || "";
+
+    return {
+        raw,
+        num,
+        letter,
+        letterIndex: letter ? letter.charCodeAt(0) - 65 : null
+    };
+}
+
+function findStructuredGroupMatch(groups) {
+    const parsed = [...new Set((groups || []).map(g => String(g || "").trim().toUpperCase()))]
+        .map(parseStructuredGroup)
+        .filter(Boolean);
+
+    if (parsed.length < 2) return null;
+
+    for (let i = 0; i < parsed.length; i++) {
+        for (let j = i + 1; j < parsed.length; j++) {
+            const a = parsed[i];
+            const b = parsed[j];
+
+            const sameNumberAlternateLetters =
+                a.num === b.num &&
+                a.letter &&
+                b.letter &&
+                Math.abs(a.letterIndex - b.letterIndex) === 2;
+
+            if (sameNumberAlternateLetters) {
+                return {
+                    type: "same-number alternate letters",
+                    groups: [a.raw, b.raw],
+                    label: a.raw + " + " + b.raw + " | same number, alternate letters"
+                };
+            }
+
+            const sequentialNumbers =
+                Math.abs(a.num - b.num) === 1;
+
+            if (sequentialNumbers) {
+                return {
+                    type: "sequential numbers",
+                    groups: [a.raw, b.raw],
+                    label: a.raw + " + " + b.raw + " | sequential numbers"
+                };
+            }
+        }
+    }
+
+    return null;
+}
+
+function passesStructuredGroupFilter(groups) {
+    return !!findStructuredGroupMatch(groups);
+}
+
+
+// ==========================================================
 //  BLACK_PANTHER (Family subgroup burst detector)
 //  Condition:
 //    - Same symbol
@@ -1373,11 +1450,20 @@ function processBlackPanther(symbol, group, ts) {
     const gapMs  = lastTime - firstTime;
     const gapSec = Math.floor(gapMs / 1000);
 
+    const blackPantherStructuredMatch = findStructuredGroupMatch(
+        picked.map(e => e.group)
+    );
+
+    if (!blackPantherStructuredMatch) {
+        return;
+    }
+
     sendToTelegram4(
         `🖤 BLACK_PANTHER\n` +
         `Symbol: ${symbol}\n` +
         `Family: ${family}\n` +
         `Subgroups: ${picked.map(e => e.group).join(" → ")}\n` +
+        `Structure: ${blackPantherStructuredMatch.label}\n` +
         `Window: ${gapSec}s\n\n` +
         `Times:\n` +
         picked.map((e, i) =>
@@ -1907,6 +1993,12 @@ function processZulu(symbol, group, ts) {
 
     if (diffMs <= ZULU_PAIR_WINDOW_MS) {
 
+        const zuluStructuredMatch = findStructuredGroupMatch([first.group, group]);
+
+        if (!zuluStructuredMatch) {
+            return;
+        }
+
         const diffMin = Math.floor(diffMs / 60000);
         const diffSec = Math.floor((diffMs % 60000) / 1000);
 
@@ -1917,6 +2009,7 @@ function processZulu(symbol, group, ts) {
             `1) ${first.group} @ ${formatDateTime(first.time)}\n` +
             `2) ${group} @ ${formatDateTime(ts)}\n` +
             `Gap: ${diffMin}m ${diffSec}s\n` +
+            `Structure: ${zuluStructuredMatch.label}\n` +
             `Condition: First-in-4h + Pair ≤10m`
         );
 
@@ -3091,7 +3184,11 @@ function processMinta(symbol, group, ts) {
             const state = mintaState[symbol];
             const events = state.events;
 
-            if (events.length >= MINTA_MIN_COUNT) {
+            const mintaStructuredMatch = findStructuredGroupMatch(
+                    events.map(e => e.group)
+                );
+
+            if (events.length >= MINTA_MIN_COUNT && mintaStructuredMatch) {
 
                 const lines = events
                     .sort((a,b)=>a.time-b.time)
@@ -3105,6 +3202,7 @@ function processMinta(symbol, group, ts) {
                     `Symbol: ${symbol}\n` +
                     `Count: ${events.length}\n` +
                     `Window: 5m\n` +
+                    `Structure: ${mintaStructuredMatch.label}\n` +
                     `Alerts:\n${lines}`
                 );
 				registerTrinity(symbol, "MINTA");
