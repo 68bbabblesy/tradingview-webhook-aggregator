@@ -1641,6 +1641,15 @@ function processBababia(symbol, group, ts) {
         .sort((a, b) => b.time - a.time)[0];
 
     if (match) {
+
+        const bababiaStructuredMatch = findStructuredGroupMatch([match.rawGroup, event.rawGroup]);
+
+        if (!bababiaStructuredMatch) {
+            store[symbol][info.pot] = upsertPotMain(buf, event);
+            saveState();
+            return;
+        }
+
         const first = match.time <= event.time ? match : event;
         const second = match.time <= event.time ? event : match;
 
@@ -1653,7 +1662,8 @@ function processBababia(symbol, group, ts) {
             "Type: Same-pot main-group match\n" +
             "Symbol: " + symbol + "\n" +
             "Pot: " + info.pot + "\n" +
-            "Window: 5 minutes\n\n" +
+            "Window: 5 minutes\n" +
+            "Structure: " + bababiaStructuredMatch.label + "\n\n" +
             "1) " + potFormatEvent(first) + "\n" +
             "2) " + potFormatEvent(second) + "\n" +
             "Gap: " + gapMin + "m " + gapSec + "s"
@@ -2244,6 +2254,16 @@ function processMamba(symbol, group, ts) {
         (ts - lastSeen.time <= MAMBA_PAIR_WINDOW_MS)
     ) {
 
+        const mambaStructuredMatch = findStructuredGroupMatch([lastSeen.group, group]);
+
+        if (!mambaStructuredMatch) {
+            mambaMemory[symbol][family] = {
+                group,
+                time: ts
+            };
+            return;
+        }
+
         if (!stillInsideFirstWindow) {
 
             const diffMs = ts - lastSeen.time;
@@ -2258,6 +2278,7 @@ function processMamba(symbol, group, ts) {
                 `1) ${lastSeen.group} @ ${formatDateTime(lastSeen.time)}\n` +
                 `2) ${group} @ ${formatDateTime(ts)}\n` +
                 `Gap: ${diffSec}s\n` +
+                `Structure: ${mambaStructuredMatch.label}\n` +
                 `Last MAMBA: ${lastFire ? formatDateTime(lastFire) : "none"}`
             );
 
@@ -3371,7 +3392,15 @@ function processComboRepeatEngine(cfg, symbol, group, ts) {
         }
     }
 
-    if (repeated.length) {
+    const needsStructuredComboFilter =
+        cfg.name === "SPESH" ||
+        cfg.name === "COBRA";
+
+    const comboStructuredMatch = needsStructuredComboFilter
+        ? findStructuredGroupMatch(liveGroups)
+        : null;
+
+    if (repeated.length && (!needsStructuredComboFilter || comboStructuredMatch)) {
 
         const lines = repeated
             .sort((a, b) => a.groups.length - b.groups.length || a.key.localeCompare(b.key))
@@ -3393,6 +3422,7 @@ function processComboRepeatEngine(cfg, symbol, group, ts) {
             `Symbol: ${symbol}\n` +
             `Type: ${cfg.description}\n` +
             `Live Cluster: ${comboFormatGroups(liveGroups)}\n` +
+            `Structure: ${comboStructuredMatch ? comboStructuredMatch.label : "n/a"}\n` +
             `Matched Combos: ${repeated.length}\n` +
             `Window: repeat within ${repeatLabel} after 20s cluster\n\n` +
             lines
