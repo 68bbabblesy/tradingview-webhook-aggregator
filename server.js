@@ -64,12 +64,10 @@ function loadState() {
                 boomMemory: parsed.boomMemory || {},
                 jupiterState: parsed.jupiterState || {},
                 yabaMemory: parsed.yabaMemory || {},
-                zoneforgeMemory: parsed.zoneforgeMemory || {},
-                zoneforgeLastFire: parsed.zoneforgeLastFire || {},
-                anchorforgeMemory: parsed.anchorforgeMemory || {},
-                anchorforgeLastFire: parsed.anchorforgeLastFire || {},
-                peterforgeMemory: parsed.peterforgeMemory || {},
-                peterforgeLastFire: parsed.peterforgeLastFire || {},
+                bowlbridgeMemory: parsed.bowlbridgeMemory || {},
+                bowlbridgeLastFire: parsed.bowlbridgeLastFire || {},
+                ledgeforgeMemory: parsed.ledgeforgeMemory || {},
+                ledgeforgeLastFire: parsed.ledgeforgeLastFire || {},
                 telegramOutbox: parsed.telegramOutbox || []
 
 
@@ -125,12 +123,10 @@ function loadState() {
         boomMemory: {},
         jupiterState: {},
         yabaMemory: {},
-        zoneforgeMemory: {},
-        zoneforgeLastFire: {},
-        anchorforgeMemory: {},
-        anchorforgeLastFire: {},
-        peterforgeMemory: {},
-        peterforgeLastFire: {},
+        bowlbridgeMemory: {},
+        bowlbridgeLastFire: {},
+        ledgeforgeMemory: {},
+        ledgeforgeLastFire: {},
         telegramOutbox: []
 
 
@@ -192,12 +188,10 @@ function buildStateSnapshot() {
         boomMemory,
         jupiterState,
         yabaMemory,
-        zoneforgeMemory,
-        zoneforgeLastFire,
-        anchorforgeMemory,
-        anchorforgeLastFire,
-        peterforgeMemory,
-        peterforgeLastFire,
+        bowlbridgeMemory,
+        bowlbridgeLastFire,
+        ledgeforgeMemory,
+        ledgeforgeLastFire,
         telegramOutbox
     };
 }
@@ -3512,649 +3506,52 @@ function processFirst(symbol, group, ts) {
 
 
 // ==========================================================
-//  ZONEFORGE V2 (Intraday support/resistance pressure zones)
+//  BOWLBRIDGE + LEDGEFORGE (price-aware pot-2 pattern engines)
 //  Bot 8
 //
-//  Upgrade:
-//    - Still uses divergence direction:
-//        positive_regular_divergence  → SUPPORT pressure
-//        negative_regular_divergence  → RESISTANCE pressure
-//    - Does NOT require an engine/name field in JSON.
-//    - Infers engine class from group structure:
-//        single-letter anchors, numbered families, double-letter groups.
-//    - This allows CORE / PRIME to fire from the actual group mix.
-// ==========================================================
-
-const ZONEFORGE_MAX_WINDOW_MS = 15 * 60 * 1000;
-
-const ZONEFORGE_TIERS = [
-    {
-        name: "FAST",
-        emoji: "⚡",
-        windowMs: 5 * 60 * 1000,
-        minAlerts: 3,
-        minGroups: 2,
-        minFamilies: 1,
-        minEngines: 1,
-        cooldownMs: 25 * 60 * 1000
-    },
-    {
-        name: "CORE",
-        emoji: "🔥",
-        windowMs: 10 * 60 * 1000,
-        minAlerts: 4,
-        minGroups: 3,
-        minFamilies: 2,
-        minEngines: 2,
-        cooldownMs: 40 * 60 * 1000
-    },
-    {
-        name: "PRIME",
-        emoji: "🚨",
-        windowMs: 15 * 60 * 1000,
-        minAlerts: 6,
-        minGroups: 4,
-        minFamilies: 3,
-        minEngines: 2,
-        cooldownMs: 55 * 60 * 1000
-    }
-];
-
-const ZONEFORGE_TIER_RANK = {
-    FAST: 1,
-    CORE: 2,
-    PRIME: 3
-};
-
-// Single-letter groups are treated as inferred engine anchors.
-// This avoids needing "engine" in the TradingView JSON.
-const ZONEFORGE_SINGLE_ENGINE_MAP = {
-    A: "AB_ANCHOR",
-    B: "AB_ANCHOR",
-
-    C: "CD_62TF",
-    D: "CD_62TF",
-
-    G: "GH_52TF",
-    H: "GH_52TF",
-
-    K: "KL_76TF",
-    L: "KL_76TF",
-
-    M: "MN_TF58",
-    N: "MN_TF58",
-
-    O: "OP_82TF",
-    P: "OP_82TF",
-
-    Q: "QR_69TF",
-    R: "QR_69TF",
-
-    S: "ST_ANCHOR",
-    T: "ST_ANCHOR",
-
-    U: "UV_ANCHOR",
-    V: "UV_ANCHOR",
-
-    W: "WX_ZAGALO",
-    X: "WX_ZAGALO",
-
-    Y: "YZ_ANCHOR",
-    Z: "YZ_ANCHOR"
-};
-
-// zoneforgeMemory[symbol][bias] = [{ group, family, engine, groupClass, time }]
-let zoneforgeMemory = persisted.zoneforgeMemory || {};
-
-// zoneforgeLastFire[symbol][bias] = { tier, time }
-let zoneforgeLastFire = persisted.zoneforgeLastFire || {};
-
-function cleanLabel(value, fallback) {
-    const s = String(value || "").trim();
-    return s || fallback;
-}
-
-function getZoneforgeBias(body) {
-    const fields = [
-        body.kind,
-        body.signal,
-        body.type,
-        body.action,
-        body.direction,
-        body.name,
-        body.source,
-        body.message
-    ]
-        .filter(Boolean)
-        .map(x => String(x).toLowerCase())
-        .join(" ");
-
-    if (
-        fields.includes("positive_regular_divergence") ||
-        fields.includes("positive regular divergence") ||
-        fields.includes("positive_divergence")
-    ) {
-        return "SUPPORT";
-    }
-
-    if (
-        fields.includes("negative_regular_divergence") ||
-        fields.includes("negative regular divergence") ||
-        fields.includes("negative_divergence")
-    ) {
-        return "RESISTANCE";
-    }
-
-    return null;
-}
-
-function zoneforgeGroupClass(group) {
-    const g = String(group || "").trim().toUpperCase();
-
-    if (/^[A-Z]$/.test(g)) return "SINGLE";
-    if (/^\d+[A-Z]+$/.test(g)) return "NUMBERED";
-    if (/^[A-Z]{2}$/.test(g)) return "DOUBLE";
-    if (/^[A-Z]{3,}$/.test(g)) return "MULTI_LETTER";
-
-    return "OTHER";
-}
-
-function inferZoneforgeFamily(group) {
-    const g = String(group || "").trim().toUpperCase();
-
-    const numeric = g.match(/^(\d+)/);
-    if (numeric) return numeric[1];
-
-    if (/^[A-Z]$/.test(g)) return g;
-    if (/^[A-Z]{2,}$/.test(g)) return g;
-
-    return getFamily(g) || "OTHER";
-}
-
-function inferZoneforgeEngineClass(group, body) {
-    const g = String(group || "").trim().toUpperCase();
-
-    if (/^[A-Z]$/.test(g)) {
-        return ZONEFORGE_SINGLE_ENGINE_MAP[g] || `SINGLE_${g}`;
-    }
-
-    if (/^\d+[A-Z]+$/.test(g)) {
-        return `NUM_${getFamily(g)}`;
-    }
-
-    if (/^[A-Z]{2}$/.test(g)) {
-        return `DOUBLE_${g}`;
-    }
-
-    if (/^[A-Z]{3,}$/.test(g)) {
-        return `MULTI_${g}`;
-    }
-
-    return cleanLabel(
-        body.source ||
-        body.engine ||
-        body.name ||
-        body.alert_name ||
-        body.indicator ||
-        body.script ||
-        body.bot,
-        "RAW"
-    );
-}
-
-function zoneforgeReadLine(bias, tierName) {
-    if (bias === "SUPPORT") {
-        if (tierName === "FAST") return "EARLY SUPPORT PRESSURE";
-        if (tierName === "CORE") return "SUPPORT ZONE FORMING";
-        return "STRONG SUPPORT ZONE";
-    }
-
-    if (tierName === "FAST") return "EARLY RESISTANCE PRESSURE";
-    if (tierName === "CORE") return "RESISTANCE ZONE FORMING";
-    return "STRONG RESISTANCE ZONE";
-}
-
-function zoneforgeNextWatch(bias) {
-    if (bias === "SUPPORT") {
-        return "Retest / deviation below zone + fresh support pressure";
-    }
-    return "Retest / deviation above zone + fresh resistance pressure";
-}
-
-function processZoneforge(symbol, group, ts, body) {
-    if (!symbol || !group || !body) return;
-    if (group.startsWith("#")) return;
-
-    const bias = getZoneforgeBias(body);
-    if (!bias) return;
-
-    const family = inferZoneforgeFamily(group);
-    const engine = inferZoneforgeEngineClass(group, body);
-    const groupClass = zoneforgeGroupClass(group);
-
-    if (!zoneforgeMemory[symbol]) {
-        zoneforgeMemory[symbol] = {};
-    }
-
-    if (!zoneforgeMemory[symbol][bias]) {
-        zoneforgeMemory[symbol][bias] = [];
-    }
-
-    const buf = zoneforgeMemory[symbol][bias];
-
-    buf.push({
-        group,
-        family,
-        engine,
-        groupClass,
-        time: ts
-    });
-
-    // Keep only the maximum lookback needed by PRIME.
-    const cutoff = ts - ZONEFORGE_MAX_WINDOW_MS;
-    while (buf.length && buf[0].time < cutoff) {
-        buf.shift();
-    }
-
-    let bestTier = null;
-    let bestEvents = [];
-
-    for (const tier of ZONEFORGE_TIERS) {
-        const tierCutoff = ts - tier.windowMs;
-        const recent = buf.filter(e => e.time >= tierCutoff);
-
-        const groups = new Set(recent.map(e => e.group).filter(Boolean));
-        const families = new Set(recent.map(e => e.family).filter(Boolean));
-        const engines = new Set(recent.map(e => e.engine).filter(Boolean));
-
-        const passed =
-            recent.length >= tier.minAlerts &&
-            groups.size >= tier.minGroups &&
-            families.size >= tier.minFamilies &&
-            engines.size >= tier.minEngines;
-
-        if (passed) {
-            bestTier = tier;
-            bestEvents = recent;
-        }
-    }
-
-    if (!bestTier) return;
-
-    if (!zoneforgeLastFire[symbol]) {
-        zoneforgeLastFire[symbol] = {};
-    }
-
-    const lastFire = zoneforgeLastFire[symbol][bias];
-    const previousRank = lastFire ? ZONEFORGE_TIER_RANK[lastFire.tier] : 0;
-    const newRank = ZONEFORGE_TIER_RANK[bestTier.name];
-
-    const isUpgrade = lastFire && newRank > previousRank;
-    const cooldownExpired = !lastFire || (ts - lastFire.time >= bestTier.cooldownMs);
-
-    // Fire when this is a fresh zone or an upgrade FAST → CORE → PRIME.
-    if (!isUpgrade && !cooldownExpired) return;
-
-    const groups = [...new Set(bestEvents.map(e => e.group).filter(Boolean))];
-    const families = [...new Set(bestEvents.map(e => e.family).filter(Boolean))];
-    const engines = [...new Set(bestEvents.map(e => e.engine).filter(Boolean))];
-    const singleAnchors = [...new Set(
-        bestEvents
-            .filter(e => e.groupClass === "SINGLE")
-            .map(e => e.group)
-            .filter(Boolean)
-    )];
-
-    const firstTime = bestEvents[0].time;
-    const lastTime = bestEvents[bestEvents.length - 1].time;
-    const spanMs = lastTime - firstTime;
-    const spanMin = Math.floor(spanMs / 60000);
-    const spanSec = Math.floor((spanMs % 60000) / 1000);
-
-    const groupLines = groups.slice(0, 18).join(", ") + (groups.length > 18 ? " ..." : "");
-    const engineLines = engines.slice(0, 10).join(", ") + (engines.length > 10 ? " ..." : "");
-    const anchorLines = singleAnchors.length ? singleAnchors.join(", ") : "none";
-
-    const upgradeLine = isUpgrade ? `UPGRADE: ${lastFire.tier} → ${bestTier.name}\n` : "";
-
-    sendToTelegram8(
-        `${bestTier.emoji} ZONEFORGE ${bestTier.name} ${bias}\n` +
-        upgradeLine +
-        `Symbol: ${symbol}\n` +
-        `Bias: ${bias}\n` +
-        `Read: ${zoneforgeReadLine(bias, bestTier.name)}\n\n` +
-
-        `Window: ${Math.floor(bestTier.windowMs / 60000)}m\n` +
-        `Span: ${spanMin}m ${spanSec}s\n` +
-        `Alerts: ${bestEvents.length}\n` +
-        `Groups: ${groups.length} (${groupLines})\n` +
-        `Families/classes: ${families.length} (${families.join(", ")})\n` +
-        `Engine classes: ${engines.length} (${engineLines})\n` +
-        `Single anchors: ${singleAnchors.length} (${anchorLines})\n\n` +
-
-        `First: ${formatDateTime(firstTime)}\n` +
-        `Latest: ${formatDateTime(lastTime)}\n` +
-        `Next watch: ${zoneforgeNextWatch(bias)}`
-    );
-
-    zoneforgeLastFire[symbol][bias] = {
-        tier: bestTier.name,
-        time: ts
-    };
-
-    // Memory guard
-    if (Object.keys(zoneforgeMemory).length > 5000) {
-        const pruneCutoff = ts - (60 * 60 * 1000);
-
-        for (const sym of Object.keys(zoneforgeMemory)) {
-            for (const b of Object.keys(zoneforgeMemory[sym])) {
-                zoneforgeMemory[sym][b] = zoneforgeMemory[sym][b]
-                    .filter(e => e.time >= pruneCutoff);
-
-                if (!zoneforgeMemory[sym][b].length) {
-                    delete zoneforgeMemory[sym][b];
-                }
-            }
-
-            if (!Object.keys(zoneforgeMemory[sym]).length) {
-                delete zoneforgeMemory[sym];
-            }
-        }
-    }
-}
-
-
-// ==========================================================
-//  ANCHORFORGE (Single-letter anchor support/resistance zones)
-//  Bot 3
-//
-//  Clean version: Peter_o is NOT included in ANCHORFORGE.
-//  Concept:
-//    - Single-letter groups are treated as anchor engines.
-//    - Numbered groups and double-letter groups add pressure/context.
-//    - Same symbol + same bias + anchor involvement = intraday zone.
-//    - Ignores all # groups.
-// ==========================================================
-
-const ANCHORFORGE_ENABLED = (process.env.ANCHORFORGE_ENABLED || "true").toLowerCase() !== "false";
-const ANCHORFORGE_MAX_WINDOW_MS = 15 * 60 * 1000;
-
-const ANCHORFORGE_TIERS = [
-    {
-        name: "SPARK",
-        emoji: "✨",
-        windowMs: 4 * 60 * 1000,
-        minAlerts: 3,
-        minGroups: 2,
-        minFamilies: 1,
-        minAnchors: 1,
-        cooldownMs: 20 * 60 * 1000
-    },
-    {
-        name: "ANCHOR",
-        emoji: "⚓",
-        windowMs: 8 * 60 * 1000,
-        minAlerts: 4,
-        minGroups: 3,
-        minFamilies: 2,
-        minAnchors: 1,
-        cooldownMs: 35 * 60 * 1000
-    },
-    {
-        name: "FORGE",
-        emoji: "🛠️",
-        windowMs: 12 * 60 * 1000,
-        minAlerts: 5,
-        minGroups: 3,
-        minFamilies: 2,
-        minAnchors: 2,
-        cooldownMs: 50 * 60 * 1000
-    },
-    {
-        name: "CITADEL",
-        emoji: "🛡️",
-        windowMs: 15 * 60 * 1000,
-        minAlerts: 7,
-        minGroups: 4,
-        minFamilies: 3,
-        minAnchors: 2,
-        cooldownMs: 75 * 60 * 1000
-    }
-];
-
-const ANCHORFORGE_TIER_RANK = {
-    SPARK: 1,
-    ANCHOR: 2,
-    FORGE: 3,
-    CITADEL: 4
-};
-
-// anchorforgeMemory[symbol][bias] = [{ group, family, className, time }]
-let anchorforgeMemory = persisted.anchorforgeMemory || {};
-
-// anchorforgeLastFire[symbol][bias] = { tier, time }
-let anchorforgeLastFire = persisted.anchorforgeLastFire || {};
-
-function isDoubleLetterGroup(group) {
-    return /^[A-Z]{2}$/.test(group || "");
-}
-
-function isNumberedGroup(group) {
-    return /^\d+[A-Z]+$/.test(group || "");
-}
-
-function getAnchorforgeClass(group) {
-    if (isSingleLetterGroup(group)) return "SINGLE_ANCHOR";
-    if (isNumberedGroup(group)) return "NUMBERED_PRESSURE";
-    if (isDoubleLetterGroup(group)) return "DOUBLE_LETTER";
-    return "OTHER";
-}
-
-function anchorforgeReadLine(bias, tierName) {
-    if (bias === "SUPPORT") {
-        if (tierName === "SPARK") return "EARLY SUPPORT ANCHOR";
-        if (tierName === "ANCHOR") return "SUPPORT ZONE ANCHORING";
-        if (tierName === "FORGE") return "SUPPORT ZONE BEING FORGED";
-        return "STRONG SUPPORT CITADEL";
-    }
-
-    if (tierName === "SPARK") return "EARLY RESISTANCE ANCHOR";
-    if (tierName === "ANCHOR") return "RESISTANCE ZONE ANCHORING";
-    if (tierName === "FORGE") return "RESISTANCE ZONE BEING FORGED";
-    return "STRONG RESISTANCE CITADEL";
-}
-
-function anchorforgeNextWatch(bias) {
-    if (bias === "SUPPORT") {
-        return "Retest / deviation below zone + fresh single-letter support anchor";
-    }
-    return "Retest / deviation above zone + fresh single-letter resistance anchor";
-}
-
-function processAnchorforge(symbol, group, ts, body) {
-    if (!ANCHORFORGE_ENABLED) return;
-    if (!symbol || !group || !body) return;
-    if (group.startsWith("#")) return;
-
-    // Peter_o is deliberately kept OUT of ANCHORFORGE.
-    if (isPeterForgePayload(body, group)) return;
-
-    const bias = getZoneforgeBias(body);
-    if (!bias) return;
-
-    const className = getAnchorforgeClass(group);
-
-    // ANCHORFORGE is built around single-letter anchors.
-    // Non-anchor groups can contribute only after an anchor exists in the same symbol+bias buffer.
-    const isAnchor = className === "SINGLE_ANCHOR";
-    const family = isNumberedGroup(group) ? getFamily(group) : group;
-
-    if (!anchorforgeMemory[symbol]) {
-        anchorforgeMemory[symbol] = {};
-    }
-
-    if (!anchorforgeMemory[symbol][bias]) {
-        anchorforgeMemory[symbol][bias] = [];
-    }
-
-    const buf = anchorforgeMemory[symbol][bias];
-
-    buf.push({
-        group,
-        family,
-        className,
-        isAnchor,
-        time: ts
-    });
-
-    const cutoff = ts - ANCHORFORGE_MAX_WINDOW_MS;
-    while (buf.length && buf[0].time < cutoff) {
-        buf.shift();
-    }
-
-    let bestTier = null;
-    let bestEvents = [];
-
-    for (const tier of ANCHORFORGE_TIERS) {
-        const tierCutoff = ts - tier.windowMs;
-        const recent = buf.filter(e => e.time >= tierCutoff);
-
-        const groups = new Set(recent.map(e => e.group).filter(Boolean));
-        const families = new Set(recent.map(e => e.family).filter(Boolean));
-        const anchorGroups = new Set(
-            recent
-                .filter(e => e.isAnchor)
-                .map(e => e.group)
-                .filter(Boolean)
-        );
-
-        const passed =
-            recent.length >= tier.minAlerts &&
-            groups.size >= tier.minGroups &&
-            families.size >= tier.minFamilies &&
-            anchorGroups.size >= tier.minAnchors;
-
-        if (passed) {
-            bestTier = tier;
-            bestEvents = recent;
-        }
-    }
-
-    if (!bestTier) return;
-
-    if (!anchorforgeLastFire[symbol]) {
-        anchorforgeLastFire[symbol] = {};
-    }
-
-    const lastFire = anchorforgeLastFire[symbol][bias];
-    const previousRank = lastFire ? ANCHORFORGE_TIER_RANK[lastFire.tier] : 0;
-    const newRank = ANCHORFORGE_TIER_RANK[bestTier.name];
-
-    const isUpgrade = lastFire && newRank > previousRank;
-    const cooldownExpired = !lastFire || (ts - lastFire.time >= bestTier.cooldownMs);
-
-    if (!isUpgrade && !cooldownExpired) return;
-
-    const groups = [...new Set(bestEvents.map(e => e.group).filter(Boolean))];
-    const families = [...new Set(bestEvents.map(e => e.family).filter(Boolean))];
-    const anchorGroups = [...new Set(
-        bestEvents
-            .filter(e => e.isAnchor)
-            .map(e => e.group)
-            .filter(Boolean)
-    )];
-    const numberedFamilies = [...new Set(
-        bestEvents
-            .filter(e => e.className === "NUMBERED_PRESSURE")
-            .map(e => e.family)
-            .filter(Boolean)
-    )];
-    const doubleGroups = [...new Set(
-        bestEvents
-            .filter(e => e.className === "DOUBLE_LETTER")
-            .map(e => e.group)
-            .filter(Boolean)
-    )];
-
-    const firstTime = bestEvents[0].time;
-    const lastTime = bestEvents[bestEvents.length - 1].time;
-    const spanMs = lastTime - firstTime;
-    const spanMin = Math.floor(spanMs / 60000);
-    const spanSec = Math.floor((spanMs % 60000) / 1000);
-
-    const groupLines = groups.slice(0, 20).join(", ") + (groups.length > 20 ? " ..." : "");
-    const anchorLines = anchorGroups.slice(0, 14).join(", ") || "none";
-    const numberedLines = numberedFamilies.slice(0, 14).join(", ") || "none";
-    const doubleLines = doubleGroups.slice(0, 14).join(", ") || "none";
-    const upgradeLine = isUpgrade ? `UPGRADE: ${lastFire.tier} → ${bestTier.name}\n` : "";
-
-    sendToTelegram3(
-        `${bestTier.emoji} ANCHORFORGE ${bestTier.name} ${bias}\n` +
-        upgradeLine +
-        `Symbol: ${symbol}\n` +
-        `Bias: ${bias}\n` +
-        `Read: ${anchorforgeReadLine(bias, bestTier.name)}\n\n` +
-
-        `Window: ${Math.floor(bestTier.windowMs / 60000)}m\n` +
-        `Span: ${spanMin}m ${spanSec}s\n` +
-        `Alerts: ${bestEvents.length}\n` +
-        `Groups: ${groups.length} (${groupLines})\n` +
-        `Single-letter anchors: ${anchorGroups.length} (${anchorLines})\n` +
-        `Numbered families: ${numberedFamilies.length} (${numberedLines})\n` +
-        `Double-letter groups: ${doubleGroups.length} (${doubleLines})\n` +
-        `Families/classes: ${families.length} (${families.join(", ")})\n\n` +
-
-        `First: ${formatDateTime(firstTime)}\n` +
-        `Latest: ${formatDateTime(lastTime)}\n` +
-        `Next watch: ${anchorforgeNextWatch(bias)}`
-    );
-
-    anchorforgeLastFire[symbol][bias] = {
-        tier: bestTier.name,
-        time: ts
-    };
-
-    if (Object.keys(anchorforgeMemory).length > 5000) {
-        const pruneCutoff = ts - (60 * 60 * 1000);
-
-        for (const sym of Object.keys(anchorforgeMemory)) {
-            for (const b of Object.keys(anchorforgeMemory[sym])) {
-                anchorforgeMemory[sym][b] = anchorforgeMemory[sym][b]
-                    .filter(e => e.time >= pruneCutoff);
-
-                if (!anchorforgeMemory[sym][b].length) {
-                    delete anchorforgeMemory[sym][b];
-                }
-            }
-
-            if (!Object.keys(anchorforgeMemory[sym]).length) {
-                delete anchorforgeMemory[sym];
-            }
-        }
-    }
-}
-
-
-// ==========================================================
-//  PETERFORGE (Peter_o isolated price-anchor engine)
-//  Bot 3
-//
 //  Important:
-//    - This does NOT feed into ANCHORFORGE.
-//    - It stays silent unless Peter_o-style JSON appears.
-//    - Peter_o direction is treated as a price-zone marker,
-//      not as automatic support/resistance.
+//    - These do NOT hard-code positive = bullish or negative = bearish.
+//    - The divergence label is reported as POSITIVE / NEGATIVE / UNKNOWN only.
+//    - POT 2 here means numeric families 36–44, exact subgroup preserved.
+//    - BOWLBRIDGE = exact subgroup repeats across two waves.
+//    - LEDGEFORGE = overlapping subgroup stack repeats at near-same price,
+//      then watches for price expansion away from that ledge.
 // ==========================================================
 
-const PETERFORGE_ENABLED = (process.env.PETERFORGE_ENABLED || "true").toLowerCase() !== "false";
-const PETERFORGE_WINDOW_MS = 30 * 60 * 1000;
-const PETERFORGE_COOLDOWN_MS = 10 * 60 * 1000;
+const BOWLBRIDGE_ENABLED = (process.env.BOWLBRIDGE_ENABLED || "true").toLowerCase() !== "false";
+const LEDGEFORGE_ENABLED = (process.env.LEDGEFORGE_ENABLED || "true").toLowerCase() !== "false";
 
-// peterforgeMemory[symbol] = [{ direction, combo, price, time }]
-let peterforgeMemory = persisted.peterforgeMemory || {};
-let peterforgeLastFire = persisted.peterforgeLastFire || {};
+const POT2_MIN_MAIN = Number((process.env.POT2_MIN_MAIN || "36").trim());
+const POT2_MAX_MAIN = Number((process.env.POT2_MAX_MAIN || "44").trim());
 
-function textFromBody(body) {
+const BOWLBRIDGE_MIN_GAP_MS = Number((process.env.BOWLBRIDGE_MIN_GAP_MIN || "20").trim()) * 60 * 1000;
+const BOWLBRIDGE_MAX_GAP_MS = Number((process.env.BOWLBRIDGE_MAX_GAP_MIN || "120").trim()) * 60 * 1000;
+const BOWLBRIDGE_CONTEXT_MS = Number((process.env.BOWLBRIDGE_CONTEXT_MIN || "8").trim()) * 60 * 1000;
+const BOWLBRIDGE_PRICE_CLOSE_PCT = Number((process.env.BOWLBRIDGE_PRICE_CLOSE_PCT || "0.50").trim());
+const BOWLBRIDGE_PRIME_PRICE_PCT = Number((process.env.BOWLBRIDGE_PRIME_PRICE_PCT || "0.35").trim());
+const BOWLBRIDGE_COOLDOWN_MS = Number((process.env.BOWLBRIDGE_COOLDOWN_MIN || "30").trim()) * 60 * 1000;
+
+const LEDGEFORGE_STACK_WINDOW_MS = Number((process.env.LEDGEFORGE_STACK_WINDOW_SEC || "60").trim()) * 1000;
+const LEDGEFORGE_MIN_STACK_GROUPS = Number((process.env.LEDGEFORGE_MIN_STACK_GROUPS || "3").trim());
+const LEDGEFORGE_MIN_REPEAT_GAP_MS = Number((process.env.LEDGEFORGE_MIN_REPEAT_GAP_MIN || "8").trim()) * 60 * 1000;
+const LEDGEFORGE_MAX_REPEAT_GAP_MS = Number((process.env.LEDGEFORGE_MAX_REPEAT_GAP_MIN || "35").trim()) * 60 * 1000;
+const LEDGEFORGE_MIN_OVERLAP = Number((process.env.LEDGEFORGE_MIN_OVERLAP || "2").trim());
+const LEDGEFORGE_PRICE_CLOSE_PCT = Number((process.env.LEDGEFORGE_PRICE_CLOSE_PCT || "0.35").trim());
+const LEDGEFORGE_BREAK_PCT = Number((process.env.LEDGEFORGE_BREAK_PCT || "0.75").trim());
+const LEDGEFORGE_LOCK_COOLDOWN_MS = Number((process.env.LEDGEFORGE_LOCK_COOLDOWN_MIN || "20").trim()) * 60 * 1000;
+const LEDGEFORGE_LOCK_TTL_MS = Number((process.env.LEDGEFORGE_LOCK_TTL_MIN || "240").trim()) * 60 * 1000;
+
+// bowlbridgeMemory[symbol][side] = [{ group, main, price, time }]
+let bowlbridgeMemory = persisted.bowlbridgeMemory || {};
+let bowlbridgeLastFire = persisted.bowlbridgeLastFire || {};
+
+// ledgeforgeMemory[symbol][side] = { events: [], stacks: [], locks: [] }
+let ledgeforgeMemory = persisted.ledgeforgeMemory || {};
+let ledgeforgeLastFire = persisted.ledgeforgeLastFire || {};
+
+function getPatternText(body) {
+    if (!body) return "";
+
     return [
         body.kind,
         body.signal,
@@ -4174,138 +3571,423 @@ function textFromBody(body) {
         .join(" ");
 }
 
-function isPeterForgePayload(body, group) {
-    if (!body) return false;
+function getDivergenceLabel(body) {
+    const text = getPatternText(body).toUpperCase();
+    const direction = String(body?.direction || body?.dir || "").toUpperCase();
 
-    const text = textFromBody(body).toUpperCase();
+    if (
+        text.includes("POSITIVE_REGULAR_DIVERGENCE") ||
+        text.includes("POSITIVE REGULAR DIVERGENCE") ||
+        text.includes("POSITIVE_DIVERGENCE") ||
+        direction.includes("POS")
+    ) {
+        return "POSITIVE";
+    }
 
-    if (text.includes("PETER")) return true;
-
-    // Fallback for Peter_o JSON that may not carry the word PETER,
-    // but carries the distinctive MTF divergence fields.
-    const hasCombo = Boolean(body.matched_tfs || body.timeframes || body.tfs || body.tf_combo);
-    const hasPrice = body.price !== undefined && body.price !== null && String(body.price).trim() !== "";
-    const dir = String(body.direction || body.dir || "").toUpperCase();
-    const hasDirection = dir === "POSITIVE" || dir === "NEGATIVE" || dir === "BUY" || dir === "SELL";
-
-    return hasCombo && hasPrice && hasDirection && !group;
-}
-
-function getPeterDirection(body) {
-    const text = textFromBody(body).toUpperCase();
-    const dir = String(body.direction || body.dir || "").toUpperCase();
-
-    if (dir.includes("POS") || text.includes("POSITIVE")) return "POSITIVE";
-    if (dir.includes("NEG") || text.includes("NEGATIVE")) return "NEGATIVE";
+    if (
+        text.includes("NEGATIVE_REGULAR_DIVERGENCE") ||
+        text.includes("NEGATIVE REGULAR DIVERGENCE") ||
+        text.includes("NEGATIVE_DIVERGENCE") ||
+        direction.includes("NEG")
+    ) {
+        return "NEGATIVE";
+    }
 
     return "UNKNOWN";
 }
 
-function getPeterCombo(body) {
-    return cleanLabel(
-        body.matched_tfs ||
-        body.timeframes ||
-        body.tfs ||
-        body.tf_combo ||
-        body.combo,
-        "n/a"
-    );
-}
-
-function getPeterPrice(body) {
-    const raw = body.price || body.close || body.level;
+function parsePatternPrice(body) {
+    const raw = body?.price ?? body?.close ?? body?.level ?? body?.fib_level;
     if (raw === undefined || raw === null || String(raw).trim() === "") return null;
 
     const n = Number(String(raw).replace(/,/g, ""));
     return Number.isFinite(n) ? n : null;
 }
 
-function formatPct(n) {
-    if (!Number.isFinite(n)) return "n/a";
-    return `${n >= 0 ? "+" : ""}${n.toFixed(2)}%`;
+function pctDiff(fromPrice, toPrice) {
+    const a = Number(fromPrice);
+    const b = Number(toPrice);
+
+    if (!Number.isFinite(a) || !Number.isFinite(b) || a === 0) return null;
+
+    return ((b - a) / a) * 100;
 }
 
-function processPeterforge(symbol, group, ts, body) {
-    if (!PETERFORGE_ENABLED) return;
-    if (!symbol || !body) return;
-    if (!isPeterForgePayload(body, group)) return;
+function absPctDiff(a, b) {
+    const d = pctDiff(a, b);
+    return d === null ? null : Math.abs(d);
+}
 
-    const direction = getPeterDirection(body);
-    const combo = getPeterCombo(body);
-    const price = getPeterPrice(body);
+function fmtPrice(n) {
+    return Number.isFinite(Number(n)) ? String(Number(n)) : "n/a";
+}
 
-    if (!peterforgeMemory[symbol]) {
-        peterforgeMemory[symbol] = [];
+function fmtPctMaybe(n) {
+    if (!Number.isFinite(Number(n))) return "n/a";
+    const x = Number(n);
+    return `${x >= 0 ? "+" : ""}${x.toFixed(2)}%`;
+}
+
+function parsePot2Group(group) {
+    const g = String(group || "").trim().toUpperCase();
+    if (!g || g.startsWith("#")) return null;
+
+    const m = g.match(/^(\d+)([A-Z]+)?$/);
+    if (!m) return null;
+
+    const main = Number(m[1]);
+    if (!Number.isFinite(main)) return null;
+    if (main < POT2_MIN_MAIN || main > POT2_MAX_MAIN) return null;
+
+    return {
+        group: g,
+        main,
+        subgroup: m[2] || ""
+    };
+}
+
+function patternContextCount(events, centerTime, excludeGroup) {
+    const start = centerTime - BOWLBRIDGE_CONTEXT_MS;
+    const end = centerTime + BOWLBRIDGE_CONTEXT_MS;
+
+    const groups = new Set(
+        (events || [])
+            .filter(e => e.time >= start && e.time <= end)
+            .map(e => e.group)
+            .filter(g => g && g !== excludeGroup)
+    );
+
+    return groups.size;
+}
+
+function processBowlbridge(symbol, group, ts, body) {
+    if (!BOWLBRIDGE_ENABLED) return;
+    if (!symbol || !group || !body) return;
+
+    const pot = parsePot2Group(group);
+    if (!pot) return;
+
+    const side = getDivergenceLabel(body);
+    const price = parsePatternPrice(body);
+
+    if (!bowlbridgeMemory[symbol]) {
+        bowlbridgeMemory[symbol] = {};
     }
 
-    const buf = peterforgeMemory[symbol];
-    const cutoff = ts - PETERFORGE_WINDOW_MS;
-    while (buf.length && buf[0].time < cutoff) {
+    if (!bowlbridgeMemory[symbol][side]) {
+        bowlbridgeMemory[symbol][side] = [];
+    }
+
+    const buf = bowlbridgeMemory[symbol][side];
+
+    const pruneCutoff = ts - (BOWLBRIDGE_MAX_GAP_MS + (30 * 60 * 1000));
+    while (buf.length && buf[0].time < pruneCutoff) {
         buf.shift();
     }
 
-    const previous = buf.length ? buf[buf.length - 1] : null;
+    const priorCandidates = buf
+        .filter(e =>
+            e.group === pot.group &&
+            ts - e.time >= BOWLBRIDGE_MIN_GAP_MS &&
+            ts - e.time <= BOWLBRIDGE_MAX_GAP_MS
+        )
+        .sort((a, b) => b.time - a.time);
 
-    buf.push({ direction, combo, price, time: ts });
+    const previous = priorCandidates[0] || null;
 
-    const lastKey = `${symbol}-${direction}-${combo}`;
-    const lastSent = peterforgeLastFire[lastKey] || 0;
-    if (ts - lastSent < PETERFORGE_COOLDOWN_MS) return;
+    buf.push({
+        group: pot.group,
+        main: pot.main,
+        price,
+        time: ts
+    });
 
-    let title = "📍 PETERFORGE ANCHOR";
-    let read = "PRICE-ZONE MARKER ONLY — not automatic support/resistance";
-    let previousBlock = "Previous Peter_o: none";
+    if (!previous) return;
 
-    if (previous) {
-        const sameDirection = previous.direction === direction;
-        title = sameDirection ? "📌 PETERFORGE STACK" : "⚠️ PETERFORGE FLIP";
-        read = sameDirection
-            ? "Same-direction Peter_o stack — price zone has repeated"
-            : "Opposite-direction Peter_o flip — possible failed zone / trap / deviation";
+    const key = `${symbol}|${side}|${pot.group}`;
+    const lastSent = bowlbridgeLastFire[key] || 0;
+    if (ts - lastSent < BOWLBRIDGE_COOLDOWN_MS) return;
 
-        const previousTime = typeof previous === "number" ? previous : previous.time;
-        const gapMs = ts - previousTime;
-        const gapMin = Math.floor(gapMs / 60000);
-        const gapSec = Math.floor((gapMs % 60000) / 1000);
+    const gapMs = ts - previous.time;
+    const gapMin = Math.floor(gapMs / 60000);
+    const gapSec = Math.floor((gapMs % 60000) / 1000);
 
-        let priceMove = "n/a";
-        if (price !== null && previous.price !== null && previous.price !== 0) {
-            priceMove = formatPct(((price - previous.price) / previous.price) * 100);
-        }
+    const priceMovePct = (previous.price !== null && price !== null)
+        ? pctDiff(previous.price, price)
+        : null;
 
-        previousBlock =
-            `Previous Peter_o:\n` +
-            `Direction: ${previous.direction}\n` +
-            `Combo: ${previous.combo}\n` +
-            `Price: ${previous.price !== null ? previous.price : "n/a"}\n` +
-            `Time: ${formatDateTime(previous.time)}\n` +
-            `Gap: ${gapMin}m ${gapSec}s\n` +
-            `Price move: ${priceMove}`;
+    const priceClosePct = (previous.price !== null && price !== null)
+        ? absPctDiff(previous.price, price)
+        : null;
+
+    const leftContext = patternContextCount(buf, previous.time, pot.group);
+    const rightContext = patternContextCount(buf, ts, pot.group);
+
+    let tier = "FAST";
+    let emoji = "🌀";
+
+    if (
+        (Number.isFinite(priceClosePct) && priceClosePct <= BOWLBRIDGE_PRICE_CLOSE_PCT) ||
+        (leftContext >= 2 && rightContext >= 2)
+    ) {
+        tier = "CORE";
+        emoji = "🧲";
     }
 
-    sendToTelegram3(
-        `${title}\n` +
+    if (
+        Number.isFinite(priceClosePct) &&
+        priceClosePct <= BOWLBRIDGE_PRIME_PRICE_PCT &&
+        leftContext >= 2 &&
+        rightContext >= 2
+    ) {
+        tier = "PRIME";
+        emoji = "🏛️";
+    }
+
+    sendToTelegram8(
+        `${emoji} BOWLBRIDGE ${tier} ${side}\n` +
         `Symbol: ${symbol}\n` +
-        `Direction: ${direction}\n` +
-        `Combo: ${combo}\n` +
-        `Price: ${price !== null ? price : "n/a"}\n` +
-        `Time: ${formatDateTime(ts)}\n\n` +
-        `${previousBlock}\n\n` +
-        `Read: ${read}\n` +
-        `Note: Peter_o is isolated and does NOT count inside ANCHORFORGE.`
+        `Bridge group: ${pot.group}\n` +
+        `Main family: ${pot.main}\n` +
+        `Read: exact POT-2 subgroup repeated across two separate waves\n\n` +
+
+        `First hit: ${formatDateTime(previous.time)}\n` +
+        `Second hit: ${formatDateTime(ts)}\n` +
+        `Gap: ${gapMin}m ${gapSec}s\n\n` +
+
+        `First price: ${fmtPrice(previous.price)}\n` +
+        `Second price: ${fmtPrice(price)}\n` +
+        `Price move: ${fmtPctMaybe(priceMovePct)}\n` +
+        `Price distance: ${Number.isFinite(priceClosePct) ? priceClosePct.toFixed(2) + "%" : "n/a"}\n\n` +
+
+        `Left wave context: ${leftContext} other POT-2 groups nearby\n` +
+        `Right wave context: ${rightContext} other POT-2 groups nearby\n` +
+        `Note: ${side} is a divergence label only, not automatic bullish/bearish direction.`
     );
 
-    peterforgeLastFire[lastKey] = ts;
+    bowlbridgeLastFire[key] = ts;
 
-    if (Object.keys(peterforgeMemory).length > 5000) {
-        const pruneCutoff = ts - (2 * 60 * 60 * 1000);
-        for (const sym of Object.keys(peterforgeMemory)) {
-            peterforgeMemory[sym] = peterforgeMemory[sym].filter(e => e.time >= pruneCutoff);
-            if (!peterforgeMemory[sym].length) delete peterforgeMemory[sym];
+    if (Object.keys(bowlbridgeMemory).length > 5000) {
+        const old = ts - (4 * 60 * 60 * 1000);
+        for (const sym of Object.keys(bowlbridgeMemory)) {
+            for (const s of Object.keys(bowlbridgeMemory[sym])) {
+                bowlbridgeMemory[sym][s] = bowlbridgeMemory[sym][s].filter(e => e.time >= old);
+                if (!bowlbridgeMemory[sym][s].length) delete bowlbridgeMemory[sym][s];
+            }
+            if (!Object.keys(bowlbridgeMemory[sym]).length) delete bowlbridgeMemory[sym];
         }
     }
 }
 
+function ledgeOverlapGroups(a, b) {
+    const setA = new Set((a || []).map(String));
+    const setB = new Set((b || []).map(String));
+
+    return [...setA].filter(g => setB.has(g));
+}
+
+function ledgeAveragePrice(events) {
+    const prices = (events || [])
+        .map(e => Number(e.price))
+        .filter(Number.isFinite);
+
+    if (!prices.length) return null;
+
+    return prices.reduce((a, b) => a + b, 0) / prices.length;
+}
+
+function ledgeStackKey(groups) {
+    return [...new Set((groups || []).map(String).filter(Boolean))]
+        .sort()
+        .join("+");
+}
+
+function processLedgeforge(symbol, group, ts, body) {
+    if (!LEDGEFORGE_ENABLED) return;
+    if (!symbol || !group || !body) return;
+
+    const pot = parsePot2Group(group);
+    if (!pot) return;
+
+    const side = getDivergenceLabel(body);
+    const price = parsePatternPrice(body);
+    if (price === null) return;
+
+    if (!ledgeforgeMemory[symbol]) {
+        ledgeforgeMemory[symbol] = {};
+    }
+
+    if (!ledgeforgeMemory[symbol][side]) {
+        ledgeforgeMemory[symbol][side] = {
+            events: [],
+            stacks: [],
+            locks: []
+        };
+    }
+
+    const state = ledgeforgeMemory[symbol][side];
+
+    state.events = (state.events || []).filter(e => e.time >= ts - LEDGEFORGE_STACK_WINDOW_MS);
+    state.events.push({
+        group: pot.group,
+        main: pot.main,
+        price,
+        time: ts
+    });
+
+    const uniqueGroups = [...new Set(state.events.map(e => e.group).filter(Boolean))];
+
+    // Watch existing locks for expansion/break first.
+    state.locks = (state.locks || []).filter(lock => {
+        if (!lock || !lock.createdAt || ts - lock.createdAt > LEDGEFORGE_LOCK_TTL_MS) return false;
+        if (lock.broken) return false;
+
+        const moveFromMid = pctDiff(lock.midPrice, price);
+        const absMove = Math.abs(moveFromMid || 0);
+
+        if (absMove >= LEDGEFORGE_BREAK_PCT) {
+            const direction = moveFromMid > 0 ? "UP BREAK" : "DOWN BREAK";
+            const breakKey = `${symbol}|${side}|${lock.id}|${direction}`;
+
+            if (!ledgeforgeLastFire[breakKey]) {
+                sendToTelegram8(
+                    `📈 LEDGEFORGE ${direction} ${side}\n` +
+                    `Symbol: ${symbol}\n` +
+                    `Ledge groups: ${lock.groups.join(", ")}\n` +
+                    `Overlap: ${lock.overlapGroups.join(", ")}\n` +
+                    `Read: price expanded away from a repeated same-zone POT-2 stack\n\n` +
+
+                    `Ledge time 1: ${formatDateTime(lock.firstTime)}\n` +
+                    `Ledge time 2: ${formatDateTime(lock.secondTime)}\n` +
+                    `Ledge price: ${fmtPrice(lock.midPrice)}\n` +
+                    `Break price: ${fmtPrice(price)}\n` +
+                    `Move from ledge: ${fmtPctMaybe(moveFromMid)}\n\n` +
+
+                    `Current group: ${pot.group}\n` +
+                    `Note: ${side} is a divergence label only. Break direction is based on alert price movement.`
+                );
+
+                ledgeforgeLastFire[breakKey] = ts;
+            }
+
+            lock.broken = true;
+            return false;
+        }
+
+        return true;
+    });
+
+    if (uniqueGroups.length < LEDGEFORGE_MIN_STACK_GROUPS) return;
+
+    const stackEvents = [...state.events];
+    const stackGroups = uniqueGroups.sort();
+    const stackPrice = ledgeAveragePrice(stackEvents);
+    if (stackPrice === null) return;
+
+    const stack = {
+        groups: stackGroups,
+        key: ledgeStackKey(stackGroups),
+        price: stackPrice,
+        firstTime: stackEvents[0].time,
+        lastTime: ts,
+        time: ts
+    };
+
+    state.stacks = (state.stacks || []).filter(s =>
+        s && s.time >= ts - (LEDGEFORGE_MAX_REPEAT_GAP_MS + (10 * 60 * 1000))
+    );
+
+    const previousStacks = state.stacks
+        .filter(s => {
+            const gap = ts - s.time;
+            if (gap < LEDGEFORGE_MIN_REPEAT_GAP_MS || gap > LEDGEFORGE_MAX_REPEAT_GAP_MS) return false;
+            const overlap = ledgeOverlapGroups(s.groups, stack.groups);
+            if (overlap.length < LEDGEFORGE_MIN_OVERLAP) return false;
+
+            const priceDistance = absPctDiff(s.price, stack.price);
+            return Number.isFinite(priceDistance) && priceDistance <= LEDGEFORGE_PRICE_CLOSE_PCT;
+        })
+        .sort((a, b) => b.time - a.time);
+
+    const previous = previousStacks[0] || null;
+
+    // Save stack only once per same key/cluster minute to avoid noisy duplicates.
+    const lastStack = state.stacks[state.stacks.length - 1];
+    if (!lastStack || lastStack.key !== stack.key || ts - lastStack.time > LEDGEFORGE_STACK_WINDOW_MS) {
+        state.stacks.push(stack);
+    } else {
+        lastStack.price = stack.price;
+        lastStack.lastTime = stack.lastTime;
+        lastStack.time = stack.time;
+    }
+
+    if (!previous) return;
+
+    const overlap = ledgeOverlapGroups(previous.groups, stack.groups);
+    const priceDistance = absPctDiff(previous.price, stack.price);
+    const priceMove = pctDiff(previous.price, stack.price);
+
+    const lockKey = `${symbol}|${side}|${previous.key}|${stack.key}`;
+    const lastLock = ledgeforgeLastFire[lockKey] || 0;
+    if (ts - lastLock < LEDGEFORGE_LOCK_COOLDOWN_MS) return;
+
+    const gapMs = ts - previous.time;
+    const gapMin = Math.floor(gapMs / 60000);
+    const gapSec = Math.floor((gapMs % 60000) / 1000);
+
+    const midPrice = (previous.price + stack.price) / 2;
+
+    const lock = {
+        id: `${ts}-${Math.random().toString(36).slice(2)}`,
+        groups: stack.groups,
+        overlapGroups: overlap,
+        firstTime: previous.time,
+        secondTime: ts,
+        firstPrice: previous.price,
+        secondPrice: stack.price,
+        midPrice,
+        createdAt: ts,
+        broken: false
+    };
+
+    state.locks.push(lock);
+    ledgeforgeLastFire[lockKey] = ts;
+
+    sendToTelegram8(
+        `🔒 LEDGEFORGE LOCK ${side}\n` +
+        `Symbol: ${symbol}\n` +
+        `Read: overlapping POT-2 subgroup stack repeated at almost same price\n\n` +
+
+        `First stack: ${previous.groups.join(", ")}\n` +
+        `Second stack: ${stack.groups.join(", ")}\n` +
+        `Overlap: ${overlap.join(", ")}\n` +
+        `Gap: ${gapMin}m ${gapSec}s\n\n` +
+
+        `First stack price: ${fmtPrice(previous.price)}\n` +
+        `Second stack price: ${fmtPrice(stack.price)}\n` +
+        `Price move: ${fmtPctMaybe(priceMove)}\n` +
+        `Price distance: ${Number.isFinite(priceDistance) ? priceDistance.toFixed(2) + "%" : "n/a"}\n\n` +
+
+        `Next watch: ${LEDGEFORGE_BREAK_PCT}% expansion away from ledge\n` +
+        `Note: ${side} is a divergence label only. Break direction will come from price movement.`
+    );
+
+    if (Object.keys(ledgeforgeMemory).length > 5000) {
+        const old = ts - (4 * 60 * 60 * 1000);
+        for (const sym of Object.keys(ledgeforgeMemory)) {
+            for (const s of Object.keys(ledgeforgeMemory[sym])) {
+                const st = ledgeforgeMemory[sym][s];
+                st.events = (st.events || []).filter(e => e.time >= old);
+                st.stacks = (st.stacks || []).filter(e => e.time >= old);
+                st.locks = (st.locks || []).filter(e => e.createdAt >= old && !e.broken);
+                if (!st.events.length && !st.stacks.length && !st.locks.length) {
+                    delete ledgeforgeMemory[sym][s];
+                }
+            }
+            if (!Object.keys(ledgeforgeMemory[sym]).length) delete ledgeforgeMemory[sym];
+        }
+    }
+}
 
 // ==========================================================
 //  SOURCE RANGE ENGINES + INAUGURAL FILTER (PERSISTENT)
@@ -4585,21 +4267,15 @@ app.post("/incoming", (req, res) => {
         const group  = (body.group || "").trim();
         const symbol = normalizeSymbol(body.symbol);
         const isHash = group.startsWith("#");
-        const isPeterPayload = isPeterForgePayload(body, group);
 
         const ts = nowMs();
 
-        const effectiveHashGroup = group || (isPeterPayload
-            ? `PETER-${body.direction || ""}-${body.matched_tfs || body.timeframes || body.tfs || body.tf_combo || ""}`
-            : "");
-
-        const hash = alertHash(symbol, effectiveHashGroup, ts);
+        const hash = alertHash(symbol, group, ts);
         if (recentHashes.has(hash)) return res.sendStatus(200);
         recentHashes.add(hash);
         setTimeout(() => recentHashes.delete(hash), 300000);
 
-        if (!symbol) return res.sendStatus(200);
-        if (!group && !isPeterPayload) return res.sendStatus(200);
+        if (!symbol || !group) return res.sendStatus(200);
 
         if (group) {
             if (!events[group]) events[group] = [];
@@ -4623,8 +4299,6 @@ app.post("/incoming", (req, res) => {
 
 if (!isHash) {
     // 🔵 NORMAL ECOSYSTEM
-    // Group-less Peter_o payloads are handled by PETERFORGE only.
-
     if (group) {
         processAnyTwo(symbol, group, ts);    
         processBundle(symbol, group, ts);      
@@ -4649,13 +4323,11 @@ if (!isHash) {
         //processAudit(symbol, group, ts, body);
         processBababia(symbol, group, ts);
         processMAMAMIA(symbol, group, ts);
-        processZoneforge(symbol, group, ts, body);
-        // processAnchorforge(symbol, group, ts, body); // disabled temporarily for CABAL Bot3
+        processBowlbridge(symbol, group, ts, body);
+        processLedgeforge(symbol, group, ts, body);
         //processWakanda(symbol, group, ts, body);
         processJupiter(symbol, group, ts);
     }
-
-    processPeterforge(symbol, group, ts, body);
 
 } else {
     // 🔴 HASH ECOSYSTEM (isolated)
