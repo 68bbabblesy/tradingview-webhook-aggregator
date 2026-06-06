@@ -1500,7 +1500,7 @@ function processBlackPanther(symbol, group, ts) {
 //  Condition:
 //    - Same symbol
 //    - Exact same group/subgroup
-//    - 3 hits with span >=10m and <15m
+//    - 2 hits with span >=10m and <15m
 //    - Family independent: all families/groups are watched
 //    - Output controlled by INAUGURAL_10_TO_14 two-slot filter
 //  Bot 5
@@ -1817,7 +1817,7 @@ function processCheck(symbol, group, ts, body) {
 //  Condition:
 //    - Same symbol
 //    - Exact same group/subgroup
-//    - 3 hits with span >=3m and <10m
+//    - 2 hits with span >=3m and <10m
 //    - Family independent: all families/groups are watched
 //    - Output controlled by INAUGURAL_03_TO_09 two-slot filter
 //  Bot 5
@@ -1914,14 +1914,14 @@ function processTango(symbol, group, ts) {
 //  Condition:
 //    - Same symbol
 //    - Exact same group/subgroup
-//    - 3 hits with span >=15m and <=35m
+//    - 2 hits with span >=15m and <=35m
 //    - Family independent: all families/groups are watched
 //    - Output controlled by INAUGURAL_15_TO_60 two-slot filter
 //  Bot 5
 // ==========================================================
 
 const NEPTUNE_MIN_SPAN_MS = 15 * 60 * 1000;
-const NEPTUNE_MAX_SPAN_MS = 35 * 60 * 1000;
+const NEPTUNE_MAX_SPAN_MS = 2 * 60 * 60 * 1000;
 
 // neptuneMemory[symbol][group] = [timestamps]
 let neptuneMemory = persisted.neptuneMemory || {};
@@ -1932,7 +1932,7 @@ function processNeptune(symbol, group, ts) {
             source: "NEPTUNE",
             emoji: "🌊",
             alertName: "INAUGURAL_15_TO_60",
-            rangeLabel: "15m to 35m",
+            rangeLabel: "15m to 2h",
             minSpanMs: NEPTUNE_MIN_SPAN_MS,
             maxSpanMs: NEPTUNE_MAX_SPAN_MS,
             memory: neptuneMemory
@@ -4310,9 +4310,9 @@ function processPeterforge(symbol, group, ts, body) {
 // ==========================================================
 //  SOURCE RANGE ENGINES + INAUGURAL FILTER (PERSISTENT)
 //  Source engines:
-//    - SALSA   = 3m to 9m 59s
-//    - GAMMA   = 10m to 14m 59s
-//    - NEPTUNE = 15m to 35m
+//    - SALSA   = 2 hits, 3m to 9m 59s
+//    - GAMMA   = 2 hits, 10m to 14m 59s
+//    - NEPTUNE = 2 hits, 15m to 2h
 //
 //  Critical behaviour:
 //    - SALSA / GAMMA / NEPTUNE fire to Bot 5 PER EXACT GROUP.
@@ -4324,7 +4324,7 @@ let inauguralState = persisted.inauguralState || {};
 
 const INAUGURAL_RANGE_WINDOW_MS = 2 * 60 * 60 * 1000; // 2 hours
 const INAUGURAL_RANGE_MAX_SLOTS = 2;
-const RANGE_REPEAT_MIN_HITS = 3;
+const RANGE_REPEAT_MIN_HITS = 2;
 
 function rangeFamilyFromGroup(group) {
     return getFamily(group);
@@ -4357,7 +4357,7 @@ function processRangeRepeatEngine(cfg, symbol, group, ts) {
     clean = [...new Set(clean)];
     memory[symbol][group] = clean;
 
-    const picked = findRangeTripletEndingAtCurrent(
+    const picked = findRangePairEndingAtCurrent(
         clean,
         cfg.minSpanMs,
         cfg.maxSpanMs
@@ -4370,7 +4370,7 @@ function processRangeRepeatEngine(cfg, symbol, group, ts) {
     const spanMs = lastTime - firstTime;
 
     // 1) ALWAYS send the raw source engine alert to Bot 5.
-    // This is the old NEPTUNE-style behaviour: per symbol + exact group.
+    // This is per symbol + exact group.
     sendRangeSourceAlert(
         cfg,
         symbol,
@@ -4399,17 +4399,14 @@ function processRangeRepeatEngine(cfg, symbol, group, ts) {
         );
     }
 
-    // IMPORTANT:
     // Reset only this exact group for THIS source engine after source alert.
-    // This preserves old NEPTUNE behaviour and prevents 4th/5th-hit spam.
-    // It does NOT affect other groups like 26E vs 26Y.
-    // It also does NOT affect other source engines because their memories are separate.
+    // It does NOT affect other exact groups or other source engines.
     delete memory[symbol][group];
 
     saveState();
 }
 
-function findRangeTripletEndingAtCurrent(buf, minSpanMs, maxSpanMs) {
+function findRangePairEndingAtCurrent(buf, minSpanMs, maxSpanMs) {
 
     if (!Array.isArray(buf) || buf.length < RANGE_REPEAT_MIN_HITS) {
         return null;
@@ -4418,8 +4415,8 @@ function findRangeTripletEndingAtCurrent(buf, minSpanMs, maxSpanMs) {
     const lastIndex = buf.length - 1;
     const lastTime = buf[lastIndex];
 
-    // The newest/current hit must complete the 3-hit pattern.
-    for (let i = 0; i <= lastIndex - 2; i++) {
+    // The newest/current hit must complete the 2-hit pattern.
+    for (let i = 0; i < lastIndex; i++) {
 
         const firstTime = buf[i];
         const spanMs = lastTime - firstTime;
@@ -4432,14 +4429,7 @@ function findRangeTripletEndingAtCurrent(buf, minSpanMs, maxSpanMs) {
             break;
         }
 
-        // Any middle hit between first and current is enough.
-        const middleTime = buf
-            .slice(i + 1, lastIndex)
-            .find(t => t > firstTime && t < lastTime);
-
-        if (!middleTime) continue;
-
-        return [firstTime, middleTime, lastTime];
+        return [firstTime, lastTime];
     }
 
     return null;
@@ -4450,17 +4440,18 @@ function sendRangeSourceAlert(cfg, symbol, group, hitTimes, spanMs) {
     const family = rangeFamilyFromGroup(group);
     const spanMin = Math.floor(spanMs / 60000);
     const spanSec = Math.floor((spanMs % 60000) / 1000);
+    const emoji = cfg.emoji || "🔔";
 
     const hitLines = hitTimes
         .map((t, i) => (i + 1) + ") " + formatDateTime(t))
         .join("\n");
 
     sendToTelegram5(
-        cfg.emoji + " " + cfg.source + "\n" +
+        emoji + " " + cfg.source + "\n" +
         "Symbol: " + symbol + "\n" +
         "Group: " + group + "\n" +
         "Family: " + family + "\n" +
-        "Hits: 3\n" +
+        "Hits: " + RANGE_REPEAT_MIN_HITS + "\n" +
         "Range: " + cfg.rangeLabel + "\n" +
         "Span: " + spanMin + "m " + spanSec + "s\n" +
         "Window: " + cfg.rangeLabel + "\n\n" +
@@ -4550,7 +4541,7 @@ function recordInauguralRangeAlert(cfg, symbol, group, ts, hitTimes, spanMs) {
         "Range: " + cfg.rangeLabel + "\n" +
         "Span: " + spanMin + "m " + spanSec + "s\n" +
         "Window Start: " + formatDateTime(state.windowStart) + "\n\n" +
-        "3 Hits:\n" + hitLines + "\n\n" +
+        "2 Hits:\n" + hitLines + "\n\n" +
         "Slots Used:\n" + priorSlots
     );
 
