@@ -68,6 +68,10 @@ function loadState() {
                 bowlbridgeLastFire: parsed.bowlbridgeLastFire || {},
                 ledgeforgeMemory: parsed.ledgeforgeMemory || {},
                 ledgeforgeLastFire: parsed.ledgeforgeLastFire || {},
+                bowlbridge2Memory: parsed.bowlbridge2Memory || {},
+                bowlbridge2LastFire: parsed.bowlbridge2LastFire || {},
+                ledgeforge2Memory: parsed.ledgeforge2Memory || {},
+                ledgeforge2LastFire: parsed.ledgeforge2LastFire || {},
                 telegramOutbox: parsed.telegramOutbox || []
 
 
@@ -127,6 +131,10 @@ function loadState() {
         bowlbridgeLastFire: {},
         ledgeforgeMemory: {},
         ledgeforgeLastFire: {},
+        bowlbridge2Memory: {},
+        bowlbridge2LastFire: {},
+        ledgeforge2Memory: {},
+        ledgeforge2LastFire: {},
         telegramOutbox: []
 
 
@@ -192,6 +200,10 @@ function buildStateSnapshot() {
         bowlbridgeLastFire,
         ledgeforgeMemory,
         ledgeforgeLastFire,
+        bowlbridge2Memory,
+        bowlbridge2LastFire,
+        ledgeforge2Memory,
+        ledgeforge2LastFire,
         telegramOutbox
     };
 }
@@ -3989,6 +4001,522 @@ function processLedgeforge(symbol, group, ts, body) {
     }
 }
 
+
+// ==========================================================
+//  BOWLBRIDGE_2 + LEDGEFORGE_2 (comparison engines)
+//  Bot 8
+//
+//  IMPORTANT:
+//    - These engines DO NOT replace BOWLBRIDGE / LEDGEFORGE.
+//    - Old engines are left untouched so live comparison is possible.
+//    - These engines are stricter/quieter and focused on actionable zones.
+//    - No hard-code: POSITIVE/NEGATIVE is a label only, not buy/sell.
+//
+//  BOWLBRIDGE_2:
+//    - True same-zone exact subgroup bridge only.
+//    - Filters out far-away step/continuation repeats.
+//    - Bundles multiple subgroup bridges into one final message.
+//
+//  LEDGEFORGE_2:
+//    - Lower repeat gap to catch 5–8m repeats if overlap is strong.
+//    - Finalizes locks after a short delay so growing stacks do not spam.
+//    - Adds silent multi-family STACK SEED; alerts only if price expands.
+// ==========================================================
+
+const BOWLBRIDGE_2_ENABLED = (process.env.BOWLBRIDGE_2_ENABLED || "true").toLowerCase() !== "false";
+const LEDGEFORGE_2_ENABLED = (process.env.LEDGEFORGE_2_ENABLED || "true").toLowerCase() !== "false";
+
+const BOWLBRIDGE_2_MIN_GAP_MS = Number((process.env.BOWLBRIDGE_2_MIN_GAP_MIN || "20").trim()) * 60 * 1000;
+const BOWLBRIDGE_2_MAX_GAP_MS = Number((process.env.BOWLBRIDGE_2_MAX_GAP_MIN || "120").trim()) * 60 * 1000;
+const BOWLBRIDGE_2_CONTEXT_MS = Number((process.env.BOWLBRIDGE_2_CONTEXT_MIN || "8").trim()) * 60 * 1000;
+const BOWLBRIDGE_2_MAX_PRICE_PCT = Number((process.env.BOWLBRIDGE_2_MAX_PRICE_PCT || "0.60").trim());
+const BOWLBRIDGE_2_STRICT_PRICE_PCT = Number((process.env.BOWLBRIDGE_2_STRICT_PRICE_PCT || "0.25").trim());
+const BOWLBRIDGE_2_PRIME_PRICE_PCT = Number((process.env.BOWLBRIDGE_2_PRIME_PRICE_PCT || "0.35").trim());
+const BOWLBRIDGE_2_COOLDOWN_MS = Number((process.env.BOWLBRIDGE_2_COOLDOWN_MIN || "45").trim()) * 60 * 1000;
+const BOWLBRIDGE_2_FINALIZE_MS = Number((process.env.BOWLBRIDGE_2_FINALIZE_SEC || "75").trim()) * 1000;
+
+const LEDGEFORGE_2_STACK_WINDOW_MS = Number((process.env.LEDGEFORGE_2_STACK_WINDOW_SEC || "90").trim()) * 1000;
+const LEDGEFORGE_2_MIN_STACK_GROUPS = Number((process.env.LEDGEFORGE_2_MIN_STACK_GROUPS || "3").trim());
+const LEDGEFORGE_2_MIN_REPEAT_GAP_MS = Number((process.env.LEDGEFORGE_2_MIN_REPEAT_GAP_MIN || "5").trim()) * 60 * 1000;
+const LEDGEFORGE_2_MAX_REPEAT_GAP_MS = Number((process.env.LEDGEFORGE_2_MAX_REPEAT_GAP_MIN || "45").trim()) * 60 * 1000;
+const LEDGEFORGE_2_SHORT_GAP_MS = Number((process.env.LEDGEFORGE_2_SHORT_GAP_MIN || "8").trim()) * 60 * 1000;
+const LEDGEFORGE_2_MIN_OVERLAP = Number((process.env.LEDGEFORGE_2_MIN_OVERLAP || "2").trim());
+const LEDGEFORGE_2_SHORT_GAP_MIN_OVERLAP = Number((process.env.LEDGEFORGE_2_SHORT_GAP_MIN_OVERLAP || "3").trim());
+const LEDGEFORGE_2_PRICE_CLOSE_PCT = Number((process.env.LEDGEFORGE_2_PRICE_CLOSE_PCT || "0.35").trim());
+const LEDGEFORGE_2_BREAK_PCT = Number((process.env.LEDGEFORGE_2_BREAK_PCT || "0.65").trim());
+const LEDGEFORGE_2_LOCK_COOLDOWN_MS = Number((process.env.LEDGEFORGE_2_LOCK_COOLDOWN_MIN || "35").trim()) * 60 * 1000;
+const LEDGEFORGE_2_LOCK_TTL_MS = Number((process.env.LEDGEFORGE_2_LOCK_TTL_MIN || "240").trim()) * 60 * 1000;
+const LEDGEFORGE_2_FINALIZE_MS = Number((process.env.LEDGEFORGE_2_FINALIZE_SEC || "75").trim()) * 1000;
+const LEDGEFORGE_2_STACK_SEED_MIN_GROUPS = Number((process.env.LEDGEFORGE_2_STACK_SEED_MIN_GROUPS || "6").trim());
+const LEDGEFORGE_2_STACK_SEED_MIN_FAMILIES = Number((process.env.LEDGEFORGE_2_STACK_SEED_MIN_FAMILIES || "2").trim());
+const LEDGEFORGE_2_STACK_SEED_PRICE_SPREAD_PCT = Number((process.env.LEDGEFORGE_2_STACK_SEED_PRICE_SPREAD_PCT || "0.35").trim());
+
+let bowlbridge2Memory = persisted.bowlbridge2Memory || {};
+let bowlbridge2LastFire = persisted.bowlbridge2LastFire || {};
+let ledgeforge2Memory = persisted.ledgeforge2Memory || {};
+let ledgeforge2LastFire = persisted.ledgeforge2LastFire || {};
+
+// Runtime-only finalizer queues. They intentionally do not persist across redeploys.
+const bowlbridge2Pending = {};
+const ledgeforge2Pending = {};
+
+function bowlbridge2ContextCount(events, centerTime, excludeGroup) {
+    const start = centerTime - BOWLBRIDGE_2_CONTEXT_MS;
+    const end = centerTime + BOWLBRIDGE_2_CONTEXT_MS;
+
+    return new Set(
+        (events || [])
+            .filter(e => e.time >= start && e.time <= end)
+            .map(e => e.group)
+            .filter(g => g && g !== excludeGroup)
+    ).size;
+}
+
+function priceSpreadPct(events) {
+    const prices = (events || [])
+        .map(e => Number(e.price))
+        .filter(Number.isFinite);
+
+    if (prices.length < 2) return 0;
+
+    const lo = Math.min(...prices);
+    const hi = Math.max(...prices);
+    const mid = prices.reduce((a, b) => a + b, 0) / prices.length;
+
+    if (!Number.isFinite(mid) || mid === 0) return null;
+
+    return ((hi - lo) / mid) * 100;
+}
+
+function pctBucket(price, pct = 0.0035) {
+    const p = Number(price);
+    if (!Number.isFinite(p) || p <= 0) return "noprice";
+    const width = Math.max(p * pct, 0.00000001);
+    return String(Math.round(p / width));
+}
+
+function processBowlbridge2(symbol, group, ts, body) {
+    if (!BOWLBRIDGE_2_ENABLED) return;
+    if (!symbol || !group || !body) return;
+
+    const pot = parsePot2Group(group);
+    if (!pot) return;
+
+    const side = getDivergenceLabel(body);
+    const price = parsePatternPrice(body);
+
+    // Version 2 is intentionally price-led. If price is absent, old BOWLBRIDGE can still compare.
+    if (price === null) return;
+
+    if (!bowlbridge2Memory[symbol]) bowlbridge2Memory[symbol] = {};
+    if (!bowlbridge2Memory[symbol][side]) bowlbridge2Memory[symbol][side] = [];
+
+    const buf = bowlbridge2Memory[symbol][side];
+    const pruneCutoff = ts - (BOWLBRIDGE_2_MAX_GAP_MS + (30 * 60 * 1000));
+    while (buf.length && buf[0].time < pruneCutoff) buf.shift();
+
+    const priorCandidates = buf
+        .filter(e =>
+            e.group === pot.group &&
+            ts - e.time >= BOWLBRIDGE_2_MIN_GAP_MS &&
+            ts - e.time <= BOWLBRIDGE_2_MAX_GAP_MS
+        )
+        .sort((a, b) => b.time - a.time);
+
+    const previous = priorCandidates[0] || null;
+
+    buf.push({
+        group: pot.group,
+        main: pot.main,
+        price,
+        time: ts
+    });
+
+    if (!previous) return;
+
+    const priceClosePct = absPctDiff(previous.price, price);
+    if (!Number.isFinite(priceClosePct)) return;
+
+    const leftContext = bowlbridge2ContextCount(buf, previous.time, pot.group);
+    const rightContext = bowlbridge2ContextCount(buf, ts, pot.group);
+
+    const strictSameZone = priceClosePct <= BOWLBRIDGE_2_STRICT_PRICE_PCT && (leftContext + rightContext) >= 2;
+    const contextualSameZone = priceClosePct <= BOWLBRIDGE_2_MAX_PRICE_PCT && leftContext >= 2 && rightContext >= 2;
+
+    if (!strictSameZone && !contextualSameZone) return;
+
+    const groupCooldownKey = `${symbol}|${side}|${pot.group}`;
+    const lastSent = bowlbridge2LastFire[groupCooldownKey] || 0;
+    if (ts - lastSent < BOWLBRIDGE_2_COOLDOWN_MS) return;
+
+    const gapMs = ts - previous.time;
+    const candidate = {
+        symbol,
+        side,
+        group: pot.group,
+        main: pot.main,
+        firstTime: previous.time,
+        secondTime: ts,
+        firstPrice: previous.price,
+        secondPrice: price,
+        priceMovePct: pctDiff(previous.price, price),
+        priceClosePct,
+        leftContext,
+        rightContext,
+        gapMs,
+        score: (leftContext + rightContext) + Math.max(0, 6 - priceClosePct * 6)
+    };
+
+    const pendingKey = `${symbol}|${side}`;
+    if (!bowlbridge2Pending[pendingKey]) {
+        bowlbridge2Pending[pendingKey] = {
+            symbol,
+            side,
+            candidates: {},
+            timer: null
+        };
+    }
+
+    const pending = bowlbridge2Pending[pendingKey];
+    const old = pending.candidates[pot.group];
+    if (!old || candidate.score > old.score || candidate.secondTime > old.secondTime) {
+        pending.candidates[pot.group] = candidate;
+    }
+
+    if (!pending.timer) {
+        pending.timer = setTimeout(() => flushBowlbridge2(pendingKey), BOWLBRIDGE_2_FINALIZE_MS);
+    }
+}
+
+function flushBowlbridge2(pendingKey) {
+    const pending = bowlbridge2Pending[pendingKey];
+    if (!pending) return;
+
+    delete bowlbridge2Pending[pendingKey];
+
+    const candidates = Object.values(pending.candidates || {})
+        .filter(Boolean)
+        .sort((a, b) => b.score - a.score || a.secondTime - b.secondTime);
+
+    if (!candidates.length) return;
+
+    const best = candidates[0];
+    const primeCandidates = candidates.filter(c =>
+        c.priceClosePct <= BOWLBRIDGE_2_PRIME_PRICE_PCT &&
+        c.leftContext >= 2 &&
+        c.rightContext >= 2
+    );
+
+    const isPrime = primeCandidates.length >= 1 && (candidates.length >= 2 || best.leftContext + best.rightContext >= 6);
+    const tier = isPrime ? "PRIME" : "ZONE";
+    const emoji = isPrime ? "🏛️" : "🧲";
+
+    const firstTime = Math.min(...candidates.map(c => c.firstTime));
+    const secondTime = Math.max(...candidates.map(c => c.secondTime));
+    const avgClose = candidates.reduce((a, c) => a + c.priceClosePct, 0) / candidates.length;
+
+    const topLines = candidates.slice(0, 8).map((c, i) =>
+        `${i + 1}) ${c.group} | ${formatDateTime(c.firstTime)} → ${formatDateTime(c.secondTime)} | ` +
+        `${fmtPrice(c.firstPrice)} → ${fmtPrice(c.secondPrice)} | dist ${c.priceClosePct.toFixed(2)}% | ctx ${c.leftContext}/${c.rightContext}`
+    ).join("\n");
+
+    sendToTelegram8(
+        `${emoji} BOWLBRIDGE_2 ${tier} ${pending.side}\n` +
+        `Symbol: ${pending.symbol}\n` +
+        `Read: stricter same-zone POT-2 subgroup bridge bundle\n\n` +
+
+        `Bridge groups: ${candidates.map(c => c.group).slice(0, 12).join(", ")}\n` +
+        `Main families: ${[...new Set(candidates.map(c => c.main))].sort((a, b) => a - b).join(", ")}\n` +
+        `Bundle count: ${candidates.length}\n` +
+        `Avg price distance: ${avgClose.toFixed(2)}%\n\n` +
+
+        `First wave range: ${formatDateTime(firstTime)}\n` +
+        `Second wave range: ${formatDateTime(secondTime)}\n\n` +
+
+        `Top bridges:\n${topLines}\n\n` +
+        `Note: ${pending.side} is a divergence label only. This version filters out far-away step repeats.`
+    );
+
+    for (const c of candidates) {
+        bowlbridge2LastFire[`${pending.symbol}|${pending.side}|${c.group}`] = Date.now();
+    }
+
+    saveState();
+}
+
+function processLedgeforge2(symbol, group, ts, body) {
+    if (!LEDGEFORGE_2_ENABLED) return;
+    if (!symbol || !group || !body) return;
+
+    const pot = parsePot2Group(group);
+    if (!pot) return;
+
+    const side = getDivergenceLabel(body);
+    const price = parsePatternPrice(body);
+    if (price === null) return;
+
+    if (!ledgeforge2Memory[symbol]) ledgeforge2Memory[symbol] = {};
+    if (!ledgeforge2Memory[symbol][side]) {
+        ledgeforge2Memory[symbol][side] = {
+            events: [],
+            stacks: [],
+            locks: []
+        };
+    }
+
+    const state = ledgeforge2Memory[symbol][side];
+
+    // Watch existing locks/seeds for expansion first.
+    state.locks = (state.locks || []).filter(lock => {
+        if (!lock || !lock.createdAt || ts - lock.createdAt > LEDGEFORGE_2_LOCK_TTL_MS) return false;
+        if (lock.broken) return false;
+
+        const moveFromMid = pctDiff(lock.midPrice, price);
+        const absMove = Math.abs(moveFromMid || 0);
+
+        if (absMove >= LEDGEFORGE_2_BREAK_PCT) {
+            const direction = moveFromMid > 0 ? "UP BREAK" : "DOWN BREAK";
+            const breakKey = `${symbol}|${side}|${lock.id}|${direction}`;
+
+            if (!ledgeforge2LastFire[breakKey]) {
+                sendToTelegram8(
+                    `📈 LEDGEFORGE_2 ${direction} ${side}\n` +
+                    `Symbol: ${symbol}\n` +
+                    `Source: ${lock.source || "LOCK"}\n` +
+                    `Read: price expanded away from V2 ledge/stack zone\n\n` +
+
+                    `Ledge groups: ${(lock.groups || []).join(", ")}\n` +
+                    `Overlap: ${(lock.overlapGroups || []).join(", ") || "n/a"}\n` +
+                    `Ledge time 1: ${formatDateTime(lock.firstTime)}\n` +
+                    `Ledge time 2: ${formatDateTime(lock.secondTime)}\n` +
+                    `Ledge price: ${fmtPrice(lock.midPrice)}\n` +
+                    `Break price: ${fmtPrice(price)}\n` +
+                    `Move from ledge: ${fmtPctMaybe(moveFromMid)}\n\n` +
+
+                    `Current group: ${pot.group}\n` +
+                    `Note: ${side} is a divergence label only. Break direction is based on alert price movement.`
+                );
+
+                ledgeforge2LastFire[breakKey] = ts;
+            }
+
+            lock.broken = true;
+            return false;
+        }
+
+        return true;
+    });
+
+    state.events = (state.events || []).filter(e => e.time >= ts - LEDGEFORGE_2_STACK_WINDOW_MS);
+    state.events.push({
+        group: pot.group,
+        main: pot.main,
+        price,
+        time: ts
+    });
+
+    const uniqueGroups = [...new Set(state.events.map(e => e.group).filter(Boolean))].sort();
+    if (uniqueGroups.length < LEDGEFORGE_2_MIN_STACK_GROUPS) return;
+
+    const stackEvents = [...state.events];
+    const stackPrice = ledgeAveragePrice(stackEvents);
+    if (stackPrice === null) return;
+
+    const stackFamilies = [...new Set(stackEvents.map(e => e.main).filter(Number.isFinite))].sort((a, b) => a - b);
+    const spread = priceSpreadPct(stackEvents);
+
+    const stack = {
+        groups: uniqueGroups,
+        key: ledgeStackKey(uniqueGroups),
+        families: stackFamilies,
+        price: stackPrice,
+        firstTime: stackEvents[0].time,
+        lastTime: ts,
+        time: ts,
+        spread
+    };
+
+    // Silent multi-family stack seed: no early warning. It only alerts if price later expands.
+    if (
+        uniqueGroups.length >= LEDGEFORGE_2_STACK_SEED_MIN_GROUPS &&
+        stackFamilies.length >= LEDGEFORGE_2_STACK_SEED_MIN_FAMILIES &&
+        Number.isFinite(spread) &&
+        spread <= LEDGEFORGE_2_STACK_SEED_PRICE_SPREAD_PCT
+    ) {
+        const seedKey = `${symbol}|${side}|SEED|${stackFamilies.join("-")}|${pctBucket(stackPrice)}`;
+        const recentlySeeded = ledgeforge2LastFire[seedKey] && ts - ledgeforge2LastFire[seedKey] < LEDGEFORGE_2_LOCK_COOLDOWN_MS;
+
+        if (!recentlySeeded) {
+            state.locks.push({
+                id: `seed-${ts}-${Math.random().toString(36).slice(2)}`,
+                source: "STACK SEED",
+                groups: stack.groups,
+                overlapGroups: [],
+                firstTime: stack.firstTime,
+                secondTime: stack.lastTime,
+                firstPrice: stack.price,
+                secondPrice: stack.price,
+                midPrice: stack.price,
+                createdAt: ts,
+                broken: false
+            });
+
+            ledgeforge2LastFire[seedKey] = ts;
+        }
+    }
+
+    state.stacks = (state.stacks || []).filter(s =>
+        s && s.time >= ts - (LEDGEFORGE_2_MAX_REPEAT_GAP_MS + (10 * 60 * 1000))
+    );
+
+    const previousStacks = state.stacks
+        .filter(s => {
+            const gap = ts - s.time;
+            if (gap < LEDGEFORGE_2_MIN_REPEAT_GAP_MS || gap > LEDGEFORGE_2_MAX_REPEAT_GAP_MS) return false;
+
+            const overlap = ledgeOverlapGroups(s.groups, stack.groups);
+            const minOverlap = gap < LEDGEFORGE_2_SHORT_GAP_MS
+                ? LEDGEFORGE_2_SHORT_GAP_MIN_OVERLAP
+                : LEDGEFORGE_2_MIN_OVERLAP;
+
+            if (overlap.length < minOverlap) return false;
+
+            const priceDistance = absPctDiff(s.price, stack.price);
+            return Number.isFinite(priceDistance) && priceDistance <= LEDGEFORGE_2_PRICE_CLOSE_PCT;
+        })
+        .sort((a, b) => {
+            const overlapA = ledgeOverlapGroups(a.groups, stack.groups).length;
+            const overlapB = ledgeOverlapGroups(b.groups, stack.groups).length;
+            return overlapB - overlapA || b.time - a.time;
+        });
+
+    const previous = previousStacks[0] || null;
+
+    const lastStack = state.stacks[state.stacks.length - 1];
+    if (!lastStack || lastStack.key !== stack.key || ts - lastStack.time > LEDGEFORGE_2_STACK_WINDOW_MS) {
+        state.stacks.push(stack);
+    } else {
+        lastStack.groups = stack.groups;
+        lastStack.key = stack.key;
+        lastStack.families = stack.families;
+        lastStack.price = stack.price;
+        lastStack.spread = stack.spread;
+        lastStack.lastTime = stack.lastTime;
+        lastStack.time = stack.time;
+    }
+
+    if (!previous) return;
+
+    const overlap = ledgeOverlapGroups(previous.groups, stack.groups);
+    const priceDistance = absPctDiff(previous.price, stack.price);
+    const priceMove = pctDiff(previous.price, stack.price);
+    const gapMs = ts - previous.time;
+    const minOverlap = gapMs < LEDGEFORGE_2_SHORT_GAP_MS
+        ? LEDGEFORGE_2_SHORT_GAP_MIN_OVERLAP
+        : LEDGEFORGE_2_MIN_OVERLAP;
+
+    if (overlap.length < minOverlap) return;
+    if (!Number.isFinite(priceDistance) || priceDistance > LEDGEFORGE_2_PRICE_CLOSE_PCT) return;
+
+    const lockKey = `${symbol}|${side}|${overlap.sort().join("+")}|${pctBucket((previous.price + stack.price) / 2)}`;
+    const lastLock = ledgeforge2LastFire[lockKey] || 0;
+    if (ts - lastLock < LEDGEFORGE_2_LOCK_COOLDOWN_MS) return;
+
+    const candidate = {
+        symbol,
+        side,
+        lockKey,
+        previous,
+        stack,
+        overlap,
+        priceDistance,
+        priceMove,
+        gapMs,
+        score: (overlap.length * 20) + (stack.families.length * 6) - (priceDistance * 10) + Math.min(10, uniqueGroups.length)
+    };
+
+    const pendingKey = `${symbol}|${side}`;
+    if (!ledgeforge2Pending[pendingKey]) {
+        ledgeforge2Pending[pendingKey] = {
+            symbol,
+            side,
+            candidates: [],
+            timer: null
+        };
+    }
+
+    ledgeforge2Pending[pendingKey].candidates.push(candidate);
+
+    if (!ledgeforge2Pending[pendingKey].timer) {
+        ledgeforge2Pending[pendingKey].timer = setTimeout(() => flushLedgeforge2(pendingKey), LEDGEFORGE_2_FINALIZE_MS);
+    }
+}
+
+function flushLedgeforge2(pendingKey) {
+    const pending = ledgeforge2Pending[pendingKey];
+    if (!pending) return;
+
+    delete ledgeforge2Pending[pendingKey];
+
+    const candidates = (pending.candidates || [])
+        .filter(Boolean)
+        .sort((a, b) => b.score - a.score || a.priceDistance - b.priceDistance);
+
+    if (!candidates.length) return;
+
+    const best = candidates[0];
+    const now = Date.now();
+    const lastLock = ledgeforge2LastFire[best.lockKey] || 0;
+    if (now - lastLock < LEDGEFORGE_2_LOCK_COOLDOWN_MS) return;
+
+    if (!ledgeforge2Memory[pending.symbol]) return;
+    if (!ledgeforge2Memory[pending.symbol][pending.side]) return;
+
+    const state = ledgeforge2Memory[pending.symbol][pending.side];
+    const midPrice = (best.previous.price + best.stack.price) / 2;
+    const gapMin = Math.floor(best.gapMs / 60000);
+    const gapSec = Math.floor((best.gapMs % 60000) / 1000);
+
+    const lock = {
+        id: `${now}-${Math.random().toString(36).slice(2)}`,
+        source: "LOCK",
+        groups: best.stack.groups,
+        overlapGroups: best.overlap,
+        firstTime: best.previous.time,
+        secondTime: best.stack.time,
+        firstPrice: best.previous.price,
+        secondPrice: best.stack.price,
+        midPrice,
+        createdAt: now,
+        broken: false
+    };
+
+    state.locks.push(lock);
+    ledgeforge2LastFire[best.lockKey] = now;
+
+    sendToTelegram8(
+        `🔐 LEDGEFORGE_2 LOCK ${pending.side}\n` +
+        `Symbol: ${pending.symbol}\n` +
+        `Read: finalized overlapping POT-2 stack repeated at near-same price\n\n` +
+
+        `First stack: ${best.previous.groups.join(", ")}\n` +
+        `Second stack: ${best.stack.groups.join(", ")}\n` +
+        `Families: ${best.stack.families.join(", ")}\n` +
+        `Overlap: ${best.overlap.join(", ")}\n` +
+        `Gap: ${gapMin}m ${gapSec}s\n\n` +
+
+        `First stack price: ${fmtPrice(best.previous.price)}\n` +
+        `Second stack price: ${fmtPrice(best.stack.price)}\n` +
+        `Price move: ${fmtPctMaybe(best.priceMove)}\n` +
+        `Price distance: ${best.priceDistance.toFixed(2)}%\n\n` +
+
+        `Next watch: ${LEDGEFORGE_2_BREAK_PCT}% expansion away from ledge\n` +
+        `Note: ${pending.side} is a divergence label only. V2 waits to send the best final stack.`
+    );
+
+    saveState();
+}
+
 // ==========================================================
 //  SOURCE RANGE ENGINES + INAUGURAL FILTER (PERSISTENT)
 //  Source engines:
@@ -4325,6 +4853,8 @@ if (!isHash) {
         processMAMAMIA(symbol, group, ts);
         processBowlbridge(symbol, group, ts, body);
         processLedgeforge(symbol, group, ts, body);
+        processBowlbridge2(symbol, group, ts, body);
+        processLedgeforge2(symbol, group, ts, body);
         //processWakanda(symbol, group, ts, body);
         processJupiter(symbol, group, ts);
     }
