@@ -3523,7 +3523,7 @@ function processFirst(symbol, group, ts) {
 //
 //  Important:
 //    - These do NOT hard-code positive = bullish or negative = bearish.
-//    - The divergence label is reported as POSITIVE / NEGATIVE / UNKNOWN only.
+//    - The divergence bucket is tracked internally only.
 //    - POT 2 here means numeric families 36–44, exact subgroup preserved.
 //    - BOWLBRIDGE = exact subgroup repeats across two waves.
 //    - LEDGEFORGE = overlapping subgroup stack repeats at near-same price,
@@ -3638,6 +3638,42 @@ function fmtPctMaybe(n) {
     if (!Number.isFinite(Number(n))) return "n/a";
     const x = Number(n);
     return `${x >= 0 ? "+" : ""}${x.toFixed(2)}%`;
+}
+
+const PRIME_WINDOW_START_UTC_MIN = (21 * 60) + 30; // 21:30 UTC
+const PRIME_WINDOW_END_UTC_MIN = (22 * 60) + 30;   // 22:30 UTC
+
+function zoneBounds(a, b) {
+    const x = Number(a);
+    const y = Number(b);
+    if (!Number.isFinite(x) || !Number.isFinite(y)) {
+        return { low: null, high: null, mid: null };
+    }
+
+    return {
+        low: Math.min(x, y),
+        high: Math.max(x, y),
+        mid: (x + y) / 2
+    };
+}
+
+function expansionPrice(mid, pct, direction) {
+    const m = Number(mid);
+    const p = Number(pct);
+    if (!Number.isFinite(m) || !Number.isFinite(p)) return null;
+    const factor = direction === "up" ? (1 + (p / 100)) : (1 - (p / 100));
+    return m * factor;
+}
+
+function primeSessionText(ts) {
+    const d = new Date(Number(ts));
+    if (Number.isNaN(d.getTime())) return "Prime session ref: 21:30–22:30 UTC.";
+
+    const mins = (d.getUTCHours() * 60) + d.getUTCMinutes();
+    const active = mins >= PRIME_WINDOW_START_UTC_MIN && mins < PRIME_WINDOW_END_UTC_MIN;
+    return active
+        ? "Prime session: ACTIVE now (21:30–22:30 UTC)."
+        : "Prime session ref: 21:30–22:30 UTC.";
 }
 
 function parsePot2Group(group) {
@@ -3756,25 +3792,63 @@ function processBowlbridge(symbol, group, ts, body) {
         emoji = "🏛️";
     }
 
+    const bowlZone = zoneBounds(previous.price, price);
+    const bowlWatchPct = LEDGEFORGE_BREAK_PCT;
+    const bowlUpWatch = expansionPrice(bowlZone.mid, bowlWatchPct, "up");
+    const bowlDownWatch = expansionPrice(bowlZone.mid, bowlWatchPct, "down");
+
     sendToTelegram8(
-        `${emoji} BOWLBRIDGE ${tier} ${side}\n` +
-        `Symbol: ${symbol}\n` +
-        `Bridge group: ${pot.group}\n` +
-        `Main family: ${pot.main}\n` +
-        `Read: exact POT-2 subgroup repeated across two separate waves\n\n` +
+        `${emoji} BOWLBRIDGE ${tier}
+` +
+        `Symbol: ${symbol}
+` +
+        `Bridge group: ${pot.group}
+` +
+        `Main family: ${pot.main}
+` +
+        `Read: exact POT-2 subgroup repeated across two separate waves
 
-        `First hit: ${formatDateTime(previous.time)}\n` +
-        `Second hit: ${formatDateTime(ts)}\n` +
-        `Gap: ${gapMin}m ${gapSec}s\n\n` +
+` +
 
-        `First price: ${fmtPrice(previous.price)}\n` +
-        `Second price: ${fmtPrice(price)}\n` +
-        `Price move: ${fmtPctMaybe(priceMovePct)}\n` +
-        `Price distance: ${Number.isFinite(priceClosePct) ? priceClosePct.toFixed(2) + "%" : "n/a"}\n\n` +
+        `Bridge zone: ${fmtPrice(bowlZone.low)} – ${fmtPrice(bowlZone.high)}
+` +
+        `Midpoint: ${fmtPrice(bowlZone.mid)}
+` +
+        `Upside watch (${bowlWatchPct}%): ${fmtPrice(bowlUpWatch)}
+` +
+        `Downside watch (${bowlWatchPct}%): ${fmtPrice(bowlDownWatch)}
 
-        `Left wave context: ${leftContext} other POT-2 groups nearby\n` +
-        `Right wave context: ${rightContext} other POT-2 groups nearby\n` +
-        `Note: ${side} is a divergence label only, not automatic bullish/bearish direction.`
+` +
+
+        `First hit: ${formatDateTime(previous.time)}
+` +
+        `Second hit: ${formatDateTime(ts)}
+` +
+        `Gap: ${gapMin}m ${gapSec}s
+
+` +
+
+        `First price: ${fmtPrice(previous.price)}
+` +
+        `Second price: ${fmtPrice(price)}
+` +
+        `Price move: ${fmtPctMaybe(priceMovePct)}
+` +
+        `Price distance: ${Number.isFinite(priceClosePct) ? priceClosePct.toFixed(2) + "%" : "n/a"}
+
+` +
+
+        `Left wave context: ${leftContext} other POT-2 groups nearby
+` +
+        `Right wave context: ${rightContext} other POT-2 groups nearby
+` +
+        `Notes:
+` +
+        `- Treat this as a zone/reaction setup.
+` +
+        `- Best quality often comes after a spike/displacement.
+` +
+        `- ${primeSessionText(ts)}`
     );
 
     bowlbridgeLastFire[key] = ts;
@@ -3862,21 +3936,54 @@ function processLedgeforge(symbol, group, ts, body) {
             const breakKey = `${symbol}|${side}|${lock.id}|${direction}`;
 
             if (!ledgeforgeLastFire[breakKey]) {
+                const ledgeZone = zoneBounds(lock.firstPrice, lock.secondPrice);
+                const ledgeUpWatch = expansionPrice(ledgeZone.mid, LEDGEFORGE_BREAK_PCT, "up");
+                const ledgeDownWatch = expansionPrice(ledgeZone.mid, LEDGEFORGE_BREAK_PCT, "down");
+
                 sendToTelegram8(
-                    `📈 LEDGEFORGE ${direction} ${side}\n` +
-                    `Symbol: ${symbol}\n` +
-                    `Ledge groups: ${lock.groups.join(", ")}\n` +
-                    `Overlap: ${lock.overlapGroups.join(", ")}\n` +
-                    `Read: price expanded away from a repeated same-zone POT-2 stack\n\n` +
+                    `📈 LEDGEFORGE ${direction}
+` +
+                    `Symbol: ${symbol}
+` +
+                    `Ledge groups: ${lock.groups.join(", ")}
+` +
+                    `Overlap: ${lock.overlapGroups.join(", ")}
+` +
+                    `Read: price expanded away from a repeated same-zone POT-2 stack
 
-                    `Ledge time 1: ${formatDateTime(lock.firstTime)}\n` +
-                    `Ledge time 2: ${formatDateTime(lock.secondTime)}\n` +
-                    `Ledge price: ${fmtPrice(lock.midPrice)}\n` +
-                    `Break price: ${fmtPrice(price)}\n` +
-                    `Move from ledge: ${fmtPctMaybe(moveFromMid)}\n\n` +
+` +
 
-                    `Current group: ${pot.group}\n` +
-                    `Note: ${side} is a divergence label only. Break direction is based on alert price movement.`
+                    `Ledge zone: ${fmtPrice(ledgeZone.low)} – ${fmtPrice(ledgeZone.high)}
+` +
+                    `Midpoint: ${fmtPrice(ledgeZone.mid)}
+` +
+                    `Upside watch (${LEDGEFORGE_BREAK_PCT}%): ${fmtPrice(ledgeUpWatch)}
+` +
+                    `Downside watch (${LEDGEFORGE_BREAK_PCT}%): ${fmtPrice(ledgeDownWatch)}
+
+` +
+
+                    `Ledge time 1: ${formatDateTime(lock.firstTime)}
+` +
+                    `Ledge time 2: ${formatDateTime(lock.secondTime)}
+` +
+                    `Ledge price: ${fmtPrice(lock.midPrice)}
+` +
+                    `Break price: ${fmtPrice(price)}
+` +
+                    `Move from ledge: ${fmtPctMaybe(moveFromMid)}
+
+` +
+
+                    `Current group: ${pot.group}
+` +
+                    `Notes:
+` +
+                    `- Trade the hold/rejection around the watch levels.
+` +
+                    `- Best quality often comes after a spike/displacement.
+` +
+                    `- ${primeSessionText(ts)}`
                 );
 
                 ledgeforgeLastFire[breakKey] = ts;
@@ -3965,23 +4072,56 @@ function processLedgeforge(symbol, group, ts, body) {
     state.locks.push(lock);
     ledgeforgeLastFire[lockKey] = ts;
 
+    const lockZone = zoneBounds(previous.price, stack.price);
+    const lockUpWatch = expansionPrice(lockZone.mid, LEDGEFORGE_BREAK_PCT, "up");
+    const lockDownWatch = expansionPrice(lockZone.mid, LEDGEFORGE_BREAK_PCT, "down");
+
     sendToTelegram8(
-        `🔒 LEDGEFORGE LOCK ${side}\n` +
-        `Symbol: ${symbol}\n` +
-        `Read: overlapping POT-2 subgroup stack repeated at almost same price\n\n` +
+        `🔒 LEDGEFORGE LOCK
+` +
+        `Symbol: ${symbol}
+` +
+        `Read: overlapping POT-2 subgroup stack repeated at almost same price
 
-        `First stack: ${previous.groups.join(", ")}\n` +
-        `Second stack: ${stack.groups.join(", ")}\n` +
-        `Overlap: ${overlap.join(", ")}\n` +
-        `Gap: ${gapMin}m ${gapSec}s\n\n` +
+` +
 
-        `First stack price: ${fmtPrice(previous.price)}\n` +
-        `Second stack price: ${fmtPrice(stack.price)}\n` +
-        `Price move: ${fmtPctMaybe(priceMove)}\n` +
-        `Price distance: ${Number.isFinite(priceDistance) ? priceDistance.toFixed(2) + "%" : "n/a"}\n\n` +
+        `Ledge zone: ${fmtPrice(lockZone.low)} – ${fmtPrice(lockZone.high)}
+` +
+        `Midpoint: ${fmtPrice(lockZone.mid)}
+` +
+        `Upside watch (${LEDGEFORGE_BREAK_PCT}%): ${fmtPrice(lockUpWatch)}
+` +
+        `Downside watch (${LEDGEFORGE_BREAK_PCT}%): ${fmtPrice(lockDownWatch)}
 
-        `Next watch: ${LEDGEFORGE_BREAK_PCT}% expansion away from ledge\n` +
-        `Note: ${side} is a divergence label only. Break direction will come from price movement.`
+` +
+
+        `First stack: ${previous.groups.join(", ")}
+` +
+        `Second stack: ${stack.groups.join(", ")}
+` +
+        `Overlap: ${overlap.join(", ")}
+` +
+        `Gap: ${gapMin}m ${gapSec}s
+
+` +
+
+        `First stack price: ${fmtPrice(previous.price)}
+` +
+        `Second stack price: ${fmtPrice(stack.price)}
+` +
+        `Price move: ${fmtPctMaybe(priceMove)}
+` +
+        `Price distance: ${Number.isFinite(priceDistance) ? priceDistance.toFixed(2) + "%" : "n/a"}
+
+` +
+
+        `Notes:
+` +
+        `- Watch hold above the upside level or rejection below the downside level.
+` +
+        `- Best quality often comes after a spike/displacement.
+` +
+        `- ${primeSessionText(ts)}`
     );
 
     if (Object.keys(ledgeforgeMemory).length > 5000) {
@@ -4010,7 +4150,7 @@ function processLedgeforge(symbol, group, ts, body) {
 //    - These engines DO NOT replace BOWLBRIDGE / LEDGEFORGE.
 //    - Old engines are left untouched so live comparison is possible.
 //    - These engines are stricter/quieter and focused on actionable zones.
-//    - No hard-code: POSITIVE/NEGATIVE is a label only, not buy/sell.
+//    - No hard-code: direction comes from price behaviour around the zone.
 //
 //  BOWLBRIDGE_2:
 //    - True same-zone exact subgroup bridge only.
@@ -4220,21 +4360,61 @@ function flushBowlbridge2(pendingKey) {
         `${fmtPrice(c.firstPrice)} → ${fmtPrice(c.secondPrice)} | dist ${c.priceClosePct.toFixed(2)}% | ctx ${c.leftContext}/${c.rightContext}`
     ).join("\n");
 
+    const bundlePrices = candidates
+        .flatMap(c => [c.firstPrice, c.secondPrice])
+        .filter(Number.isFinite);
+    const bundleLow = bundlePrices.length ? Math.min(...bundlePrices) : null;
+    const bundleHigh = bundlePrices.length ? Math.max(...bundlePrices) : null;
+    const bundleMid = Number.isFinite(bundleLow) && Number.isFinite(bundleHigh) ? (bundleLow + bundleHigh) / 2 : null;
+    const bundleUpWatch = expansionPrice(bundleMid, LEDGEFORGE_2_BREAK_PCT, "up");
+    const bundleDownWatch = expansionPrice(bundleMid, LEDGEFORGE_2_BREAK_PCT, "down");
+
     sendToTelegram8(
-        `${emoji} BOWLBRIDGE_2 ${tier} ${pending.side}\n` +
-        `Symbol: ${pending.symbol}\n` +
-        `Read: stricter same-zone POT-2 subgroup bridge bundle\n\n` +
+        `${emoji} BOWLBRIDGE_2 ${tier}
+` +
+        `Symbol: ${pending.symbol}
+` +
+        `Read: stricter same-zone POT-2 subgroup bridge bundle
 
-        `Bridge groups: ${candidates.map(c => c.group).slice(0, 12).join(", ")}\n` +
-        `Main families: ${[...new Set(candidates.map(c => c.main))].sort((a, b) => a - b).join(", ")}\n` +
-        `Bundle count: ${candidates.length}\n` +
-        `Avg price distance: ${avgClose.toFixed(2)}%\n\n` +
+` +
 
-        `First wave range: ${formatDateTime(firstTime)}\n` +
-        `Second wave range: ${formatDateTime(secondTime)}\n\n` +
+        `Bridge zone: ${fmtPrice(bundleLow)} – ${fmtPrice(bundleHigh)}
+` +
+        `Midpoint: ${fmtPrice(bundleMid)}
+` +
+        `Upside watch (${LEDGEFORGE_2_BREAK_PCT}%): ${fmtPrice(bundleUpWatch)}
+` +
+        `Downside watch (${LEDGEFORGE_2_BREAK_PCT}%): ${fmtPrice(bundleDownWatch)}
 
-        `Top bridges:\n${topLines}\n\n` +
-        `Note: ${pending.side} is a divergence label only. This version filters out far-away step repeats.`
+` +
+
+        `Bridge groups: ${candidates.map(c => c.group).slice(0, 12).join(", ")}
+` +
+        `Main families: ${[...new Set(candidates.map(c => c.main))].sort((a, b) => a - b).join(", ")}
+` +
+        `Bundle count: ${candidates.length}
+` +
+        `Avg price distance: ${avgClose.toFixed(2)}%
+
+` +
+
+        `First wave range: ${formatDateTime(firstTime)}
+` +
+        `Second wave range: ${formatDateTime(secondTime)}
+
+` +
+
+        `Top bridges:
+${topLines}
+
+` +
+        `Notes:
+` +
+        `- This version filters out far-away step repeats.
+` +
+        `- Best quality often comes after a spike/displacement.
+` +
+        `- ${primeSessionText(secondTime)}`
     );
 
     for (const c of candidates) {
@@ -4279,22 +4459,56 @@ function processLedgeforge2(symbol, group, ts, body) {
             const breakKey = `${symbol}|${side}|${lock.id}|${direction}`;
 
             if (!ledgeforge2LastFire[breakKey]) {
+                const ledge2Zone = zoneBounds(lock.firstPrice, lock.secondPrice);
+                const ledge2UpWatch = expansionPrice(ledge2Zone.mid, LEDGEFORGE_2_BREAK_PCT, "up");
+                const ledge2DownWatch = expansionPrice(ledge2Zone.mid, LEDGEFORGE_2_BREAK_PCT, "down");
+
                 sendToTelegram8(
-                    `📈 LEDGEFORGE_2 ${direction} ${side}\n` +
-                    `Symbol: ${symbol}\n` +
-                    `Source: ${lock.source || "LOCK"}\n` +
-                    `Read: price expanded away from V2 ledge/stack zone\n\n` +
+                    `📈 LEDGEFORGE_2 ${direction}
+` +
+                    `Symbol: ${symbol}
+` +
+                    `Source: ${lock.source || "LOCK"}
+` +
+                    `Read: price expanded away from V2 ledge/stack zone
 
-                    `Ledge groups: ${(lock.groups || []).join(", ")}\n` +
-                    `Overlap: ${(lock.overlapGroups || []).join(", ") || "n/a"}\n` +
-                    `Ledge time 1: ${formatDateTime(lock.firstTime)}\n` +
-                    `Ledge time 2: ${formatDateTime(lock.secondTime)}\n` +
-                    `Ledge price: ${fmtPrice(lock.midPrice)}\n` +
-                    `Break price: ${fmtPrice(price)}\n` +
-                    `Move from ledge: ${fmtPctMaybe(moveFromMid)}\n\n` +
+` +
 
-                    `Current group: ${pot.group}\n` +
-                    `Note: ${side} is a divergence label only. Break direction is based on alert price movement.`
+                    `Ledge zone: ${fmtPrice(ledge2Zone.low)} – ${fmtPrice(ledge2Zone.high)}
+` +
+                    `Midpoint: ${fmtPrice(ledge2Zone.mid)}
+` +
+                    `Upside watch (${LEDGEFORGE_2_BREAK_PCT}%): ${fmtPrice(ledge2UpWatch)}
+` +
+                    `Downside watch (${LEDGEFORGE_2_BREAK_PCT}%): ${fmtPrice(ledge2DownWatch)}
+
+` +
+
+                    `Ledge groups: ${(lock.groups || []).join(", ")}
+` +
+                    `Overlap: ${(lock.overlapGroups || []).join(", ") || "n/a"}
+` +
+                    `Ledge time 1: ${formatDateTime(lock.firstTime)}
+` +
+                    `Ledge time 2: ${formatDateTime(lock.secondTime)}
+` +
+                    `Ledge price: ${fmtPrice(lock.midPrice)}
+` +
+                    `Break price: ${fmtPrice(price)}
+` +
+                    `Move from ledge: ${fmtPctMaybe(moveFromMid)}
+
+` +
+
+                    `Current group: ${pot.group}
+` +
+                    `Notes:
+` +
+                    `- Trade the hold/rejection around the watch levels.
+` +
+                    `- Best quality often comes after a spike/displacement.
+` +
+                    `- ${primeSessionText(ts)}`
                 );
 
                 ledgeforge2LastFire[breakKey] = ts;
@@ -4494,24 +4708,58 @@ function flushLedgeforge2(pendingKey) {
     state.locks.push(lock);
     ledgeforge2LastFire[best.lockKey] = now;
 
+    const lock2Zone = zoneBounds(best.previous.price, best.stack.price);
+    const lock2UpWatch = expansionPrice(lock2Zone.mid, LEDGEFORGE_2_BREAK_PCT, "up");
+    const lock2DownWatch = expansionPrice(lock2Zone.mid, LEDGEFORGE_2_BREAK_PCT, "down");
+
     sendToTelegram8(
-        `🔐 LEDGEFORGE_2 LOCK ${pending.side}\n` +
-        `Symbol: ${pending.symbol}\n` +
-        `Read: finalized overlapping POT-2 stack repeated at near-same price\n\n` +
+        `🔐 LEDGEFORGE_2 LOCK
+` +
+        `Symbol: ${pending.symbol}
+` +
+        `Read: finalized overlapping POT-2 stack repeated at near-same price
 
-        `First stack: ${best.previous.groups.join(", ")}\n` +
-        `Second stack: ${best.stack.groups.join(", ")}\n` +
-        `Families: ${best.stack.families.join(", ")}\n` +
-        `Overlap: ${best.overlap.join(", ")}\n` +
-        `Gap: ${gapMin}m ${gapSec}s\n\n` +
+` +
 
-        `First stack price: ${fmtPrice(best.previous.price)}\n` +
-        `Second stack price: ${fmtPrice(best.stack.price)}\n` +
-        `Price move: ${fmtPctMaybe(best.priceMove)}\n` +
-        `Price distance: ${best.priceDistance.toFixed(2)}%\n\n` +
+        `Ledge zone: ${fmtPrice(lock2Zone.low)} – ${fmtPrice(lock2Zone.high)}
+` +
+        `Midpoint: ${fmtPrice(lock2Zone.mid)}
+` +
+        `Upside watch (${LEDGEFORGE_2_BREAK_PCT}%): ${fmtPrice(lock2UpWatch)}
+` +
+        `Downside watch (${LEDGEFORGE_2_BREAK_PCT}%): ${fmtPrice(lock2DownWatch)}
 
-        `Next watch: ${LEDGEFORGE_2_BREAK_PCT}% expansion away from ledge\n` +
-        `Note: ${pending.side} is a divergence label only. V2 waits to send the best final stack.`
+` +
+
+        `First stack: ${best.previous.groups.join(", ")}
+` +
+        `Second stack: ${best.stack.groups.join(", ")}
+` +
+        `Families: ${best.stack.families.join(", ")}
+` +
+        `Overlap: ${best.overlap.join(", ")}
+` +
+        `Gap: ${gapMin}m ${gapSec}s
+
+` +
+
+        `First stack price: ${fmtPrice(best.previous.price)}
+` +
+        `Second stack price: ${fmtPrice(best.stack.price)}
+` +
+        `Price move: ${fmtPctMaybe(best.priceMove)}
+` +
+        `Price distance: ${best.priceDistance.toFixed(2)}%
+
+` +
+
+        `Notes:
+` +
+        `- V2 waits to send the best final stack.
+` +
+        `- Watch hold above the upside level or rejection below the downside level.
+` +
+        `- ${primeSessionText(best.stack.time)}`
     );
 
     saveState();
