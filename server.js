@@ -3665,15 +3665,95 @@ function expansionPrice(mid, pct, direction) {
     return m * factor;
 }
 
+function ukDateParts(ts) {
+    const d = new Date(Number(ts));
+
+    if (Number.isNaN(d.getTime())) return null;
+
+    const parts = new Intl.DateTimeFormat("en-GB", {
+        timeZone: "Europe/London",
+        year: "numeric",
+        month: "2-digit",
+        day: "2-digit",
+        hour: "2-digit",
+        minute: "2-digit",
+        hour12: false
+    }).formatToParts(d);
+
+    const get = type => Number(parts.find(p => p.type === type)?.value);
+
+    return {
+        year: get("year"),
+        month: get("month"),
+        day: get("day"),
+        hour: get("hour"),
+        minute: get("minute")
+    };
+}
+
+function ukOffsetMinutes(ts) {
+    const p = ukDateParts(ts);
+    if (!p) return 0;
+
+    const localAsUtc = Date.UTC(p.year, p.month - 1, p.day, p.hour, p.minute, 0);
+    const actual = new Date(Number(ts));
+    const roundedActual = Date.UTC(
+        actual.getUTCFullYear(),
+        actual.getUTCMonth(),
+        actual.getUTCDate(),
+        actual.getUTCHours(),
+        actual.getUTCMinutes(),
+        0
+    );
+
+    return Math.round((localAsUtc - roundedActual) / 60000);
+}
+
+function ukMinutesNow(ts) {
+    const p = ukDateParts(ts);
+    if (!p) return null;
+    return (p.hour * 60) + p.minute;
+}
+
+function inMinuteWindow(mins, start, end) {
+    if (!Number.isFinite(mins)) return false;
+    if (start <= end) return mins >= start && mins < end;
+    return mins >= start || mins < end;
+}
+
+function hhmmFromMins(mins) {
+    const normalized = ((mins % 1440) + 1440) % 1440;
+    const h = Math.floor(normalized / 60);
+    const m = normalized % 60;
+    return `${String(h).padStart(2, "0")}:${String(m).padStart(2, "0")}`;
+}
+
 function primeSessionText(ts) {
     const d = new Date(Number(ts));
-    if (Number.isNaN(d.getTime())) return "Prime session ref: 21:30–22:30 UTC.";
 
-    const mins = (d.getUTCHours() * 60) + d.getUTCMinutes();
-    const active = mins >= PRIME_WINDOW_START_UTC_MIN && mins < PRIME_WINDOW_END_UTC_MIN;
+    if (Number.isNaN(d.getTime())) {
+        return "Prime session ref: seasonal UK window auto-adjusts.";
+    }
+
+    const offset = ukOffsetMinutes(ts);
+
+    // User-observed seasonal prime window:
+    // BST / GMT+1: 22:30–23:30 UK time
+    // GMT / winter: 23:30–00:30 UK time
+    const startMin = offset >= 60
+        ? (22 * 60) + 30
+        : (23 * 60) + 30;
+
+    const endMin = offset >= 60
+        ? (23 * 60) + 30
+        : (0 * 60) + 30;
+
+    const nowUkMins = ukMinutesNow(ts);
+    const active = inMinuteWindow(nowUkMins, startMin, endMin);
+
     return active
-        ? "Prime session: ACTIVE now (21:30–22:30 UTC)."
-        : "Prime session ref: 21:30–22:30 UTC.";
+        ? `Prime session: ACTIVE now (${hhmmFromMins(startMin)}–${hhmmFromMins(endMin)} UK time).`
+        : `Prime session ref: ${hhmmFromMins(startMin)}–${hhmmFromMins(endMin)} UK time.`;
 }
 
 function parsePot2Group(group) {
