@@ -3756,6 +3756,219 @@ function primeSessionText(ts) {
         : `Prime session ref: ${hhmmFromMins(startMin)}–${hhmmFromMins(endMin)} UK time.`;
 }
 
+
+const LEDGEFORGE_FOLLOWUPS_ENABLED = (process.env.LEDGEFORGE_FOLLOWUPS_ENABLED || "true").toLowerCase() !== "false";
+const LEDGEFORGE_2_FOLLOWUPS_ENABLED = (process.env.LEDGEFORGE_2_FOLLOWUPS_ENABLED || "true").toLowerCase() !== "false";
+const LEDGE_RETEST_TOLERANCE_PCT = Number((process.env.LEDGE_RETEST_TOLERANCE_PCT || "0.15").trim());
+const LEDGE_FAIL_BUFFER_PCT = Number((process.env.LEDGE_FAIL_BUFFER_PCT || "0.05").trim());
+
+function expandedZoneWithPct(low, high, pct) {
+    const l = Number(low);
+    const h = Number(high);
+    const p = Number(pct);
+
+    if (!Number.isFinite(l) || !Number.isFinite(h) || !Number.isFinite(p)) {
+        return { low: null, high: null };
+    }
+
+    return {
+        low: l * (1 - (p / 100)),
+        high: h * (1 + (p / 100))
+    };
+}
+
+function isInsidePriceZone(price, low, high) {
+    const p = Number(price);
+    const l = Number(low);
+    const h = Number(high);
+
+    return Number.isFinite(p) && Number.isFinite(l) && Number.isFinite(h) && p >= l && p <= h;
+}
+
+function enrichLockForFollowups(lock, breakPct) {
+    if (!lock || lock.followupReady) return lock;
+
+    const z = zoneBounds(lock.firstPrice, lock.secondPrice);
+
+    lock.ledgeLow = z.low;
+    lock.ledgeHigh = z.high;
+    lock.midPrice = Number.isFinite(Number(lock.midPrice)) ? Number(lock.midPrice) : z.mid;
+    lock.upsideWatch = expansionPrice(lock.midPrice, breakPct, "up");
+    lock.downsideWatch = expansionPrice(lock.midPrice, breakPct, "down");
+
+    lock.highestSeen = Number.isFinite(Number(lock.secondPrice))
+        ? Number(lock.secondPrice)
+        : lock.midPrice;
+
+    lock.lowestSeen = Number.isFinite(Number(lock.secondPrice))
+        ? Number(lock.secondPrice)
+        : lock.midPrice;
+
+    lock.followupState = lock.followupState || "LOCKED";
+    lock.expansionSide = lock.expansionSide || null;
+    lock.hitNotified = !!lock.hitNotified;
+    lock.retestNotified = !!lock.retestNotified;
+    lock.failedNotified = !!lock.failedNotified;
+    lock.followupReady = true;
+
+    return lock;
+}
+
+function ledgeFollowupPrefix(engineName, direction) {
+    if (direction === "BUY") return `📈 ${engineName} BUY TRIGGER`;
+    if (direction === "SELL") return `📉 ${engineName} SELL TRIGGER`;
+    if (direction === "RETEST") return `🔁 ${engineName} RETESTING LEDGE`;
+    if (direction === "BUY_FAILED") return `⚠️ ${engineName} BUY FAILED`;
+    if (direction === "SELL_FAILED") return `⚠️ ${engineName} SELL FAILED`;
+    return `${engineName} UPDATE`;
+}
+
+function processLedgeFollowups(engineName, enabled, symbol, potGroup, ts, price, lock, breakPct) {
+    if (!enabled) return false;
+    if (!symbol || !lock) return false;
+    if (!Number.isFinite(Number(price))) return false;
+
+    enrichLockForFollowups(lock, breakPct);
+
+    if (!Number.isFinite(Number(lock.ledgeLow)) || !Number.isFinite(Number(lock.ledgeHigh))) {
+        return false;
+    }
+
+    const currentPrice = Number(price);
+
+    lock.highestSeen = Number.isFinite(Number(lock.highestSeen))
+        ? Math.max(Number(lock.highestSeen), currentPrice)
+        : currentPrice;
+
+    lock.lowestSeen = Number.isFinite(Number(lock.lowestSeen))
+        ? Math.min(Number(lock.lowestSeen), currentPrice)
+        : currentPrice;
+
+    const retestZone = expandedZoneWithPct(lock.ledgeLow, lock.ledgeHigh, LEDGE_RETEST_TOLERANCE_PCT);
+    const failZone = expandedZoneWithPct(lock.ledgeLow, lock.ledgeHigh, LEDGE_FAIL_BUFFER_PCT);
+
+    if (!lock.hitNotified) {
+        if (Number.isFinite(Number(lock.upsideWatch)) && currentPrice >= Number(lock.upsideWatch)) {
+            lock.hitNotified = true;
+            lock.expansionSide = "UP";
+            lock.followupState = "UP_EXPANDED";
+
+            sendToTelegram8(
+                `${ledgeFollowupPrefix(engineName, "BUY")}\n` +
+                `Symbol: ${symbol}\n` +
+                `Ledge zone: ${fmtPrice(lock.ledgeLow)} – ${fmtPrice(lock.ledgeHigh)}\n` +
+                `Buy trigger: ${fmtPrice(lock.upsideWatch)}\n` +
+                `Sell trigger: ${fmtPrice(lock.downsideWatch)}\n` +
+                `Current price: ${fmtPrice(currentPrice)}\n` +
+                `High seen: ${fmtPrice(lock.highestSeen)}\n` +
+                `Move from ledge: ${fmtPctMaybe(pctDiff(lock.midPrice, currentPrice))}\n` +
+                `Current group: ${potGroup}\n\n` +
+                `Notes:\n` +
+                `- Buy side has triggered.\n` +
+                `- Watch hold above buy trigger or retest of original ledge.\n` +
+                `- ${primeSessionText(ts)}`
+            );
+
+            return true;
+        }
+
+        if (Number.isFinite(Number(lock.downsideWatch)) && currentPrice <= Number(lock.downsideWatch)) {
+            lock.hitNotified = true;
+            lock.expansionSide = "DOWN";
+            lock.followupState = "DOWN_EXPANDED";
+
+            sendToTelegram8(
+                `${ledgeFollowupPrefix(engineName, "SELL")}\n` +
+                `Symbol: ${symbol}\n` +
+                `Ledge zone: ${fmtPrice(lock.ledgeLow)} – ${fmtPrice(lock.ledgeHigh)}\n` +
+                `Buy trigger: ${fmtPrice(lock.upsideWatch)}\n` +
+                `Sell trigger: ${fmtPrice(lock.downsideWatch)}\n` +
+                `Current price: ${fmtPrice(currentPrice)}\n` +
+                `Low seen: ${fmtPrice(lock.lowestSeen)}\n` +
+                `Move from ledge: ${fmtPctMaybe(pctDiff(lock.midPrice, currentPrice))}\n` +
+                `Current group: ${potGroup}\n\n` +
+                `Notes:\n` +
+                `- Sell side has triggered.\n` +
+                `- Watch hold below sell trigger or retest of original ledge.\n` +
+                `- ${primeSessionText(ts)}`
+            );
+
+            return true;
+        }
+
+        return false;
+    }
+
+    if (lock.hitNotified && !lock.retestNotified && isInsidePriceZone(currentPrice, retestZone.low, retestZone.high)) {
+        lock.retestNotified = true;
+        lock.followupState = `${lock.expansionSide}_RETESTING_LEDGE`;
+
+        const sideWord = lock.expansionSide === "UP" ? "buy" : "sell";
+        const seenLine = lock.expansionSide === "UP"
+            ? `High seen: ${fmtPrice(lock.highestSeen)}\n`
+            : `Low seen: ${fmtPrice(lock.lowestSeen)}\n`;
+
+        sendToTelegram8(
+            `${ledgeFollowupPrefix(engineName, "RETEST")}\n` +
+            `Symbol: ${symbol}\n` +
+            `Original ledge: ${fmtPrice(lock.ledgeLow)} – ${fmtPrice(lock.ledgeHigh)}\n` +
+            `Retest band: ${fmtPrice(retestZone.low)} – ${fmtPrice(retestZone.high)}\n` +
+            seenLine +
+            `Current price: ${fmtPrice(currentPrice)}\n` +
+            `Current group: ${potGroup}\n\n` +
+            `Notes:\n` +
+            `- Price returned to the original ledge after ${sideWord} trigger.\n` +
+            `- Watch whether the ledge holds or fails.`
+        );
+
+        return true;
+    }
+
+    if (lock.hitNotified && !lock.failedNotified) {
+        if (lock.expansionSide === "UP" && Number.isFinite(Number(failZone.low)) && currentPrice < Number(failZone.low)) {
+            lock.failedNotified = true;
+            lock.broken = true;
+            lock.followupState = "BUY_FAILED";
+
+            sendToTelegram8(
+                `${ledgeFollowupPrefix(engineName, "BUY_FAILED")}\n` +
+                `Symbol: ${symbol}\n` +
+                `Original ledge: ${fmtPrice(lock.ledgeLow)} – ${fmtPrice(lock.ledgeHigh)}\n` +
+                `High seen: ${fmtPrice(lock.highestSeen)}\n` +
+                `Current price: ${fmtPrice(currentPrice)}\n` +
+                `Current group: ${potGroup}\n\n` +
+                `Notes:\n` +
+                `- Buy expansion failed back below the original ledge.\n` +
+                `- Protect/exit buy idea or watch possible rejection setup.`
+            );
+
+            return true;
+        }
+
+        if (lock.expansionSide === "DOWN" && Number.isFinite(Number(failZone.high)) && currentPrice > Number(failZone.high)) {
+            lock.failedNotified = true;
+            lock.broken = true;
+            lock.followupState = "SELL_FAILED";
+
+            sendToTelegram8(
+                `${ledgeFollowupPrefix(engineName, "SELL_FAILED")}\n` +
+                `Symbol: ${symbol}\n` +
+                `Original ledge: ${fmtPrice(lock.ledgeLow)} – ${fmtPrice(lock.ledgeHigh)}\n` +
+                `Low seen: ${fmtPrice(lock.lowestSeen)}\n` +
+                `Current price: ${fmtPrice(currentPrice)}\n` +
+                `Current group: ${potGroup}\n\n` +
+                `Notes:\n` +
+                `- Sell expansion failed back above the original ledge.\n` +
+                `- Protect/exit sell idea or watch possible reclaim setup.`
+            );
+
+            return true;
+        }
+    }
+
+    return false;
+}
+
 function parsePot2Group(group) {
     const g = String(group || "").trim().toUpperCase();
     if (!g || g.startsWith("#")) return null;
@@ -4003,77 +4216,22 @@ function processLedgeforge(symbol, group, ts, body) {
 
     const uniqueGroups = [...new Set(state.events.map(e => e.group).filter(Boolean))];
 
-    // Watch existing locks for expansion/break first.
+    // Watch existing locks for trade lifecycle follow-ups.
     state.locks = (state.locks || []).filter(lock => {
         if (!lock || !lock.createdAt || ts - lock.createdAt > LEDGEFORGE_LOCK_TTL_MS) return false;
-        if (lock.broken) return false;
 
-        const moveFromMid = pctDiff(lock.midPrice, price);
-        const absMove = Math.abs(moveFromMid || 0);
+        processLedgeFollowups(
+            "LEDGEFORGE",
+            LEDGEFORGE_FOLLOWUPS_ENABLED,
+            symbol,
+            pot.group,
+            ts,
+            price,
+            lock,
+            LEDGEFORGE_BREAK_PCT
+        );
 
-        if (absMove >= LEDGEFORGE_BREAK_PCT) {
-            const direction = moveFromMid > 0 ? "UP BREAK" : "DOWN BREAK";
-            const breakKey = `${symbol}|${side}|${lock.id}|${direction}`;
-
-            if (!ledgeforgeLastFire[breakKey]) {
-                const ledgeZone = zoneBounds(lock.firstPrice, lock.secondPrice);
-                const ledgeUpWatch = expansionPrice(ledgeZone.mid, LEDGEFORGE_BREAK_PCT, "up");
-                const ledgeDownWatch = expansionPrice(ledgeZone.mid, LEDGEFORGE_BREAK_PCT, "down");
-
-                sendToTelegram8(
-                    `📈 LEDGEFORGE ${direction}
-` +
-                    `Symbol: ${symbol}
-` +
-                    `Ledge groups: ${lock.groups.join(", ")}
-` +
-                    `Overlap: ${lock.overlapGroups.join(", ")}
-` +
-                    `Read: price expanded away from a repeated same-zone POT-2 stack
-
-` +
-
-                    `Ledge zone: ${fmtPrice(ledgeZone.low)} – ${fmtPrice(ledgeZone.high)}
-` +
-                    `Midpoint: ${fmtPrice(ledgeZone.mid)}
-` +
-                    `Upside watch (${LEDGEFORGE_BREAK_PCT}%): ${fmtPrice(ledgeUpWatch)}
-` +
-                    `Downside watch (${LEDGEFORGE_BREAK_PCT}%): ${fmtPrice(ledgeDownWatch)}
-
-` +
-
-                    `Ledge time 1: ${formatDateTime(lock.firstTime)}
-` +
-                    `Ledge time 2: ${formatDateTime(lock.secondTime)}
-` +
-                    `Ledge price: ${fmtPrice(lock.midPrice)}
-` +
-                    `Break price: ${fmtPrice(price)}
-` +
-                    `Move from ledge: ${fmtPctMaybe(moveFromMid)}
-
-` +
-
-                    `Current group: ${pot.group}
-` +
-                    `Notes:
-` +
-                    `- Trade the hold/rejection around the watch levels.
-` +
-                    `- Best quality often comes after a spike/displacement.
-` +
-                    `- ${primeSessionText(ts)}`
-                );
-
-                ledgeforgeLastFire[breakKey] = ts;
-            }
-
-            lock.broken = true;
-            return false;
-        }
-
-        return true;
+        return !lock.failedNotified;
     });
 
     if (uniqueGroups.length < LEDGEFORGE_MIN_STACK_GROUPS) return;
@@ -4149,6 +4307,7 @@ function processLedgeforge(symbol, group, ts, body) {
         broken: false
     };
 
+    enrichLockForFollowups(lock, LEDGEFORGE_BREAK_PCT);
     state.locks.push(lock);
     ledgeforgeLastFire[lockKey] = ts;
 
@@ -4526,79 +4685,22 @@ function processLedgeforge2(symbol, group, ts, body) {
 
     const state = ledgeforge2Memory[symbol][side];
 
-    // Watch existing locks/seeds for expansion first.
+    // Watch existing locks/seeds for trade lifecycle follow-ups.
     state.locks = (state.locks || []).filter(lock => {
         if (!lock || !lock.createdAt || ts - lock.createdAt > LEDGEFORGE_2_LOCK_TTL_MS) return false;
-        if (lock.broken) return false;
 
-        const moveFromMid = pctDiff(lock.midPrice, price);
-        const absMove = Math.abs(moveFromMid || 0);
+        processLedgeFollowups(
+            "LEDGEFORGE_2",
+            LEDGEFORGE_2_FOLLOWUPS_ENABLED,
+            symbol,
+            pot.group,
+            ts,
+            price,
+            lock,
+            LEDGEFORGE_2_BREAK_PCT
+        );
 
-        if (absMove >= LEDGEFORGE_2_BREAK_PCT) {
-            const direction = moveFromMid > 0 ? "UP BREAK" : "DOWN BREAK";
-            const breakKey = `${symbol}|${side}|${lock.id}|${direction}`;
-
-            if (!ledgeforge2LastFire[breakKey]) {
-                const ledge2Zone = zoneBounds(lock.firstPrice, lock.secondPrice);
-                const ledge2UpWatch = expansionPrice(ledge2Zone.mid, LEDGEFORGE_2_BREAK_PCT, "up");
-                const ledge2DownWatch = expansionPrice(ledge2Zone.mid, LEDGEFORGE_2_BREAK_PCT, "down");
-
-                sendToTelegram8(
-                    `📈 LEDGEFORGE_2 ${direction}
-` +
-                    `Symbol: ${symbol}
-` +
-                    `Source: ${lock.source || "LOCK"}
-` +
-                    `Read: price expanded away from V2 ledge/stack zone
-
-` +
-
-                    `Ledge zone: ${fmtPrice(ledge2Zone.low)} – ${fmtPrice(ledge2Zone.high)}
-` +
-                    `Midpoint: ${fmtPrice(ledge2Zone.mid)}
-` +
-                    `Upside watch (${LEDGEFORGE_2_BREAK_PCT}%): ${fmtPrice(ledge2UpWatch)}
-` +
-                    `Downside watch (${LEDGEFORGE_2_BREAK_PCT}%): ${fmtPrice(ledge2DownWatch)}
-
-` +
-
-                    `Ledge groups: ${(lock.groups || []).join(", ")}
-` +
-                    `Overlap: ${(lock.overlapGroups || []).join(", ") || "n/a"}
-` +
-                    `Ledge time 1: ${formatDateTime(lock.firstTime)}
-` +
-                    `Ledge time 2: ${formatDateTime(lock.secondTime)}
-` +
-                    `Ledge price: ${fmtPrice(lock.midPrice)}
-` +
-                    `Break price: ${fmtPrice(price)}
-` +
-                    `Move from ledge: ${fmtPctMaybe(moveFromMid)}
-
-` +
-
-                    `Current group: ${pot.group}
-` +
-                    `Notes:
-` +
-                    `- Trade the hold/rejection around the watch levels.
-` +
-                    `- Best quality often comes after a spike/displacement.
-` +
-                    `- ${primeSessionText(ts)}`
-                );
-
-                ledgeforge2LastFire[breakKey] = ts;
-            }
-
-            lock.broken = true;
-            return false;
-        }
-
-        return true;
+        return !lock.failedNotified;
     });
 
     state.events = (state.events || []).filter(e => e.time >= ts - LEDGEFORGE_2_STACK_WINDOW_MS);
@@ -4641,7 +4743,7 @@ function processLedgeforge2(symbol, group, ts, body) {
         const recentlySeeded = ledgeforge2LastFire[seedKey] && ts - ledgeforge2LastFire[seedKey] < LEDGEFORGE_2_LOCK_COOLDOWN_MS;
 
         if (!recentlySeeded) {
-            state.locks.push({
+            const seedLock = {
                 id: `seed-${ts}-${Math.random().toString(36).slice(2)}`,
                 source: "STACK SEED",
                 groups: stack.groups,
@@ -4653,7 +4755,10 @@ function processLedgeforge2(symbol, group, ts, body) {
                 midPrice: stack.price,
                 createdAt: ts,
                 broken: false
-            });
+            };
+
+            enrichLockForFollowups(seedLock, LEDGEFORGE_2_BREAK_PCT);
+            state.locks.push(seedLock);
 
             ledgeforge2LastFire[seedKey] = ts;
         }
@@ -4785,6 +4890,7 @@ function flushLedgeforge2(pendingKey) {
         broken: false
     };
 
+    enrichLockForFollowups(lock, LEDGEFORGE_2_BREAK_PCT);
     state.locks.push(lock);
     ledgeforge2LastFire[best.lockKey] = now;
 
