@@ -329,6 +329,9 @@ process.on("SIGINT", () => {
 let scoreState = persisted.scoreState || {};
 let lastSeenState = persisted.lastSeenState || {};
 
+let inauguralState = persisted.inauguralState || {};
+
+
 
 
 
@@ -1494,6 +1497,241 @@ function processBlackPanther(symbol, group, ts) {
         }
     }
 }
+
+// ==========================================================
+//  SOURCE RANGE ENGINE FALLBACK / REPAIR
+//  SALSA   = 2 hits, 3m to 9m 59s
+//  GAMMA   = 2 hits, 10m to 14m 59s
+//  NEPTUNE = 2 hits, 15m to 2h
+//
+//  Raw source alerts go to Bot 5.
+//  INAUGURAL filter layer goes to Bot 1.
+// ==========================================================
+
+const INAUGURAL_RANGE_WINDOW_MS = 2 * 60 * 60 * 1000; // 2 hours
+const INAUGURAL_RANGE_MAX_SLOTS = 2;
+const RANGE_REPEAT_MIN_HITS = 2;
+
+function rangeFamilyFromGroup(group) {
+    return getFamily(group);
+}
+
+function processRangeRepeatEngine(cfg, symbol, group, ts) {
+
+    if (!symbol || !group) return;
+
+    const memory = cfg.memory;
+
+    if (!memory[symbol]) {
+        memory[symbol] = {};
+    }
+
+    if (!memory[symbol][group]) {
+        memory[symbol][group] = [];
+    }
+
+    memory[symbol][group].push(ts);
+
+    const cutoff = ts - cfg.maxSpanMs - (60 * 1000);
+
+    let clean = memory[symbol][group]
+        .filter(t => typeof t === "number" && t >= cutoff)
+        .sort((a, b) => a - b);
+
+    clean = [...new Set(clean)];
+    memory[symbol][group] = clean;
+
+    const picked = findRangePairEndingAtCurrent(
+        clean,
+        cfg.minSpanMs,
+        cfg.maxSpanMs
+    );
+
+    if (!picked) return;
+
+    const firstTime = picked[0];
+    const lastTime = picked[picked.length - 1];
+    const spanMs = lastTime - firstTime;
+
+    sendRangeSourceAlert(
+        cfg,
+        symbol,
+        group,
+        picked,
+        spanMs
+    );
+
+    const result = recordInauguralRangeAlert(
+        cfg,
+        symbol,
+        group,
+        ts,
+        picked,
+        spanMs
+    );
+
+    if (!result || !result.fired) {
+        console.log(
+            "INAUGURAL range matched but blocked:",
+            cfg.alertName,
+            "symbol:", symbol,
+            "group:", group,
+            "reason:", result?.reason || "unknown"
+        );
+    }
+
+    delete memory[symbol][group];
+
+    saveState();
+}
+
+function findRangePairEndingAtCurrent(buf, minSpanMs, maxSpanMs) {
+
+    if (!Array.isArray(buf) || buf.length < RANGE_REPEAT_MIN_HITS) {
+        return null;
+    }
+
+    const lastIndex = buf.length - 1;
+    const lastTime = buf[lastIndex];
+
+    for (let i = 0; i < lastIndex; i++) {
+
+        const firstTime = buf[i];
+        const spanMs = lastTime - firstTime;
+
+        if (spanMs > maxSpanMs) {
+            continue;
+        }
+
+        if (spanMs < minSpanMs) {
+            break;
+        }
+
+        return [firstTime, lastTime];
+    }
+
+    return null;
+}
+
+function sendRangeSourceAlert(cfg, symbol, group, hitTimes, spanMs) {
+
+    const family = rangeFamilyFromGroup(group);
+    const spanMin = Math.floor(spanMs / 60000);
+    const spanSec = Math.floor((spanMs % 60000) / 1000);
+    const emoji = cfg.emoji || "🔔";
+
+    const hitLines = hitTimes
+        .map((t, i) => (i + 1) + ") " + formatDateTime(t))
+        .join("\n");
+
+    sendToTelegram5(
+        emoji + " " + cfg.source + "\n" +
+        "Symbol: " + symbol + "\n" +
+        "Group: " + group + "\n" +
+        "Family: " + family + "\n" +
+        "Hits: " + RANGE_REPEAT_MIN_HITS + "\n" +
+        "Range: " + cfg.rangeLabel + "\n" +
+        "Span: " + spanMin + "m " + spanSec + "s\n" +
+        "Window: " + cfg.rangeLabel + "\n\n" +
+        "Times:\n" + hitLines
+    );
+}
+
+function recordInauguralRangeAlert(cfg, symbol, group, ts, hitTimes, spanMs) {
+
+    if (!inauguralState || typeof inauguralState !== "object") {
+        inauguralState = {};
+    }
+
+    if (!inauguralState[cfg.alertName] || typeof inauguralState[cfg.alertName] !== "object") {
+        inauguralState[cfg.alertName] = {};
+    }
+
+    const family = rangeFamilyFromGroup(group);
+    const current = inauguralState[cfg.alertName][symbol];
+
+    const invalidOldFormat =
+        current &&
+        (
+            typeof current.windowStart !== "number" ||
+            !Array.isArray(current.slots)
+        );
+
+    if (
+        !current ||
+        invalidOldFormat ||
+        (ts - current.windowStart >= INAUGURAL_RANGE_WINDOW_MS)
+    ) {
+        inauguralState[cfg.alertName][symbol] = {
+            windowStart: ts,
+            slots: []
+        };
+    }
+
+    const state = inauguralState[cfg.alertName][symbol];
+
+    if (state.slots.some(e => e.family === family)) {
+        return {
+            fired: false,
+            reason: "same family already used in this 2h window"
+        };
+    }
+
+    if (state.slots.length >= INAUGURAL_RANGE_MAX_SLOTS) {
+        return {
+            fired: false,
+            reason: "2 slots already used in this 2h window"
+        };
+    }
+
+    state.slots.push({
+        source: cfg.source,
+        family,
+        group,
+        time: ts
+    });
+
+    const slot = state.slots.length;
+    const spanMin = Math.floor(spanMs / 60000);
+    const spanSec = Math.floor((spanMs % 60000) / 1000);
+
+    const hitLines = hitTimes
+        .map((t, i) => (i + 1) + ") " + formatDateTime(t))
+        .join("\n");
+
+    const priorSlots = state.slots
+        .map((e, i) =>
+            (i + 1) +
+            ") Family " + e.family +
+            " | Group " + e.group +
+            " | " + formatDateTime(e.time)
+        )
+        .join("\n");
+
+    sendToTelegram1(
+        "🎖 " + cfg.alertName + "\n" +
+        "Source: " + cfg.source + "\n" +
+        "Symbol: " + symbol + "\n" +
+        "Group: " + group + "\n" +
+        "Family: " + family + "\n" +
+        "Slot: " + slot + "/" + INAUGURAL_RANGE_MAX_SLOTS + "\n" +
+        "Rule: First 2 different families in 2 hours\n" +
+        "Range: " + cfg.rangeLabel + "\n" +
+        "Span: " + spanMin + "m " + spanSec + "s\n" +
+        "Window Start: " + formatDateTime(state.windowStart) + "\n\n" +
+        "2 Hits:\n" + hitLines + "\n\n" +
+        "Slots Used:\n" + priorSlots
+    );
+
+    saveState();
+
+    return {
+        fired: true,
+        reason: "sent",
+        slot
+    };
+}
+
 
 // ==========================================================
 //  GAMMA RANGE ENGINE
