@@ -1384,7 +1384,7 @@ function passesStructuredGroupFilter(groups) {
 //    - Same symbol
 //    - Same family: 16A/16B/16C => family 16
 //    - 3 DISTINCT subgroups within 1 minute
-//  Bot 4
+// Bot 3
 // ==========================================================
 
 const BLACK_PANTHER_WINDOW_MS = 60 * 1000; // 1 minute
@@ -1445,7 +1445,7 @@ function processBlackPanther(symbol, group, ts) {
         return;
     }
 
-    sendToTelegram4(
+    sendToTelegram3(
         `🖤 BLACK_PANTHER\n` +
         `Symbol: ${symbol}\n` +
         `Family: ${family}\n` +
@@ -1608,7 +1608,7 @@ function sendRangeSourceAlert(cfg, symbol, group, hitTimes, spanMs) {
         .map((t, i) => (i + 1) + ") " + formatDateTime(t))
         .join("\n");
 
-    sendToTelegram5(
+    sendToTelegram3(
         emoji + " " + cfg.source + "\n" +
         "Symbol: " + symbol + "\n" +
         "Group: " + group + "\n" +
@@ -1692,7 +1692,7 @@ function recordInauguralRangeAlert(cfg, symbol, group, ts, hitTimes, spanMs) {
         )
         .join("\n");
 
-    sendToTelegram1(
+    sendToTelegram3(
         "🎖 " + cfg.alertName + "\n" +
         "Source: " + cfg.source + "\n" +
         "Symbol: " + symbol + "\n" +
@@ -1752,8 +1752,7 @@ function processGamma(symbol, group, ts) {
 }
 
 // ==========================================================
-//  ONE-POT FAMILY HELPERS
-//  There is no POT 1 / POT 2 split anymore.
+//  FAMILY PAIR HELPERS
 //
 //  BABABIA:
 //    - Same symbol
@@ -1772,14 +1771,14 @@ function processGamma(symbol, group, ts) {
 //  Both send to Bot 2.
 // ==========================================================
 
-const ONE_POT_PAIR_WINDOW_MS = 5 * 60 * 1000;       // 5 minutes
-const ONE_POT_CYCLE_WINDOW_MS = 2 * 60 * 60 * 1000; // 2 hours
-const ONE_POT_MAX_SLOTS = 2;
+const FAMILY_PAIR_WINDOW_MS = 5 * 60 * 1000;
+const FAMILY_PAIR_CYCLE_MS = 2 * 60 * 60 * 1000;
+const FAMILY_PAIR_MAX_SLOTS = 2;
 
 // Reuse existing persisted container.
 let mamamiaHashMemory = persisted.mamamiaHashMemory || {};
 
-function parseOnePotFamilyGroup(group) {
+function parseFamilyPairGroup(group) {
     const raw = String(group || "").trim().toUpperCase();
 
     if (!raw || raw.startsWith("#")) return null;
@@ -1795,7 +1794,7 @@ function parseOnePotFamilyGroup(group) {
     };
 }
 
-function getOnePotStore(key) {
+function getFamilyPairStore(key) {
     if (!mamamiaHashMemory[key] || typeof mamamiaHashMemory[key] !== "object") {
         mamamiaHashMemory[key] = {};
     }
@@ -1803,7 +1802,7 @@ function getOnePotStore(key) {
     return mamamiaHashMemory[key];
 }
 
-function resetOnePotSymbolState(store, symbol, ts) {
+function resetFamilyPairSymbolState(store, symbol, ts) {
     store[symbol] = {
         windowStart: ts,
         slots: [],
@@ -1813,7 +1812,7 @@ function resetOnePotSymbolState(store, symbol, ts) {
     return store[symbol];
 }
 
-function getOnePotSymbolState(store, symbol, ts) {
+function getFamilyPairSymbolState(store, symbol, ts) {
     const existing = store[symbol];
 
     if (
@@ -1821,16 +1820,16 @@ function getOnePotSymbolState(store, symbol, ts) {
         typeof existing.windowStart !== "number" ||
         !Array.isArray(existing.slots) ||
         !Array.isArray(existing.events) ||
-        (ts - existing.windowStart >= ONE_POT_CYCLE_WINDOW_MS)
+        (ts - existing.windowStart >= FAMILY_PAIR_CYCLE_MS)
     ) {
-        return resetOnePotSymbolState(store, symbol, ts);
+        return resetFamilyPairSymbolState(store, symbol, ts);
     }
 
     return existing;
 }
 
-function pruneOnePotEvents(events, ts) {
-    const cutoff = ts - ONE_POT_PAIR_WINDOW_MS;
+function pruneFamilyPairEvents(events, ts) {
+    const cutoff = ts - FAMILY_PAIR_WINDOW_MS;
 
     return (events || [])
         .filter(e =>
@@ -1841,13 +1840,13 @@ function pruneOnePotEvents(events, ts) {
         .sort((a, b) => a.time - b.time);
 }
 
-function onePotFormatEvent(e) {
+function familyPairFormatEvent(e) {
     return String(e.raw) +
         " | family " + e.family +
         " @ " + formatDateTime(e.time);
 }
 
-function onePotSlotLines(slots) {
+function familyPairSlotLines(slots) {
     if (!Array.isArray(slots) || !slots.length) return "none";
 
     return slots
@@ -1860,17 +1859,16 @@ function onePotSlotLines(slots) {
         .join("\n");
 }
 
-function addOnePotEvent(state, event) {
-    state.events = pruneOnePotEvents(state.events, event.time);
+function addFamilyPairEvent(state, event) {
+    state.events = pruneFamilyPairEvents(state.events, event.time);
     state.events.push(event);
     state.events.sort((a, b) => a.time - b.time);
 }
 
-function findOnePotMatch(state, event, mode) {
-    const candidates = pruneOnePotEvents(state.events, event.time)
+function findFamilyPairMatch(state, event, mode) {
+    const candidates = pruneFamilyPairEvents(state.events, event.time)
         .filter(e => e.raw !== event.raw);
 
-    // Latest valid match first.
     candidates.sort((a, b) => b.time - a.time);
 
     for (const prior of candidates) {
@@ -1888,15 +1886,15 @@ function findOnePotMatch(state, event, mode) {
     return null;
 }
 
-function processOnePotTwoSlotDetector(cfg, symbol, group, ts) {
+function processFamilyPairTwoSlotDetector(cfg, symbol, group, ts) {
 
     if (!symbol || !group) return;
 
-    const parsed = parseOnePotFamilyGroup(group);
+    const parsed = parseFamilyPairGroup(group);
     if (!parsed) return;
 
-    const store = getOnePotStore(cfg.storeKey);
-    const state = getOnePotSymbolState(store, symbol, ts);
+    const store = getFamilyPairStore(cfg.storeKey);
+    const state = getFamilyPairSymbolState(store, symbol, ts);
 
     const event = {
         raw: parsed.raw,
@@ -1905,17 +1903,16 @@ function processOnePotTwoSlotDetector(cfg, symbol, group, ts) {
         time: ts
     };
 
-    // Cycle is full. Do not track more until the 2h expiry resets it.
-    if (state.slots.length >= ONE_POT_MAX_SLOTS) {
+    if (state.slots.length >= FAMILY_PAIR_MAX_SLOTS) {
         return;
     }
 
-    state.events = pruneOnePotEvents(state.events, ts);
+    state.events = pruneFamilyPairEvents(state.events, ts);
 
-    const match = findOnePotMatch(state, event, cfg.mode);
+    const match = findFamilyPairMatch(state, event, cfg.mode);
 
     if (!match) {
-        addOnePotEvent(state, event);
+        addFamilyPairEvent(state, event);
         saveState();
         return;
     }
@@ -1939,41 +1936,40 @@ function processOnePotTwoSlotDetector(cfg, symbol, group, ts) {
 
     state.slots.push(slot);
 
-    // Keep the current event as part of the continuing 2h cycle.
-    addOnePotEvent(state, event);
+    addFamilyPairEvent(state, event);
 
     cfg.sender(
         cfg.emoji + " " + cfg.name + "\n" +
         "Symbol: " + symbol + "\n" +
-        "Slot: " + slotNo + "/" + ONE_POT_MAX_SLOTS + "\n" +
+        "Slot: " + slotNo + "/" + FAMILY_PAIR_MAX_SLOTS + "\n" +
         "Cycle: 2 hours\n" +
         "Pair Window: 5 minutes\n" +
         "Rule: " + cfg.ruleLabel + "\n\n" +
 
-        "1) " + onePotFormatEvent(first) + "\n" +
-        "2) " + onePotFormatEvent(second) + "\n" +
+        "1) " + familyPairFormatEvent(first) + "\n" +
+        "2) " + familyPairFormatEvent(second) + "\n" +
         "Gap: " + gapMin + "m " + gapSec + "s\n\n" +
 
         "Slots Used This Cycle:\n" +
-        onePotSlotLines(state.slots)
+        familyPairSlotLines(state.slots)
     );
 
     saveState();
 }
 
 // ==========================================================
-//  BABABIA — one-pot consecutive family pair
+//  BABABIA — consecutive family pair
 //  Bot 2
 // ==========================================================
 
 function processBababia(symbol, group, ts) {
-    processOnePotTwoSlotDetector(
+    processFamilyPairTwoSlotDetector(
         {
             name: "BABABIA",
             emoji: "🎉",
             mode: "CONSECUTIVE",
             ruleLabel: "family numbers must be consecutive",
-            storeKey: "__BABABIA_ONEPOT_2SLOT_STATE__",
+            storeKey: "__BABABIA_FAMILY_PAIR_2SLOT_STATE__",
             sender: sendToTelegram2
         },
         symbol,
@@ -1983,18 +1979,18 @@ function processBababia(symbol, group, ts) {
 }
 
 // ==========================================================
-//  MAMAMIA — one-pot NON-consecutive family pair
+//  MAMAMIA — NON-consecutive family pair
 //  Bot 2
 // ==========================================================
 
 function processMAMAMIA(symbol, group, ts) {
-    processOnePotTwoSlotDetector(
+    processFamilyPairTwoSlotDetector(
         {
             name: "MAMAMIA",
             emoji: "🎶",
             mode: "NON_CONSECUTIVE",
             ruleLabel: "family numbers must be non-consecutive",
-            storeKey: "__MAMAMIA_ONEPOT_2SLOT_STATE__",
+            storeKey: "__MAMAMIA_FAMILY_PAIR_2SLOT_STATE__",
             sender: sendToTelegram2
         },
         symbol,
@@ -2168,7 +2164,7 @@ function processNeptune(symbol, group, ts) {
 //    - First occurrence in 4 hours (per family)
 //    - Pair must occur within 10 minutes
 //  One cycle per symbol+family → resets after fire
-//  Bot 6
+// Bot 3
 // ==========================================================
 
 const ZULU_FIRST_WINDOW_MS = 4 * 60 * 60 * 1000;  // 4 hours
@@ -2228,7 +2224,7 @@ function processZulu(symbol, group, ts) {
         const diffMin = Math.floor(diffMs / 60000);
         const diffSec = Math.floor((diffMs % 60000) / 1000);
 
-        sendToTelegram4(
+        sendToTelegram3(
             `🟡 ZULU\n` +
             `Symbol: ${symbol}\n` +
             `Family: ${family}\n` +
