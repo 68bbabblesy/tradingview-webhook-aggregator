@@ -64,14 +64,12 @@ function loadState() {
                 boomMemory: parsed.boomMemory || {},
                 jupiterState: parsed.jupiterState || {},
                 yabaMemory: parsed.yabaMemory || {},
-                bowlbridgeMemory: parsed.bowlbridgeMemory || {},
-                bowlbridgeLastFire: parsed.bowlbridgeLastFire || {},
-                ledgeforgeMemory: parsed.ledgeforgeMemory || {},
-                ledgeforgeLastFire: parsed.ledgeforgeLastFire || {},
-                bowlbridge2Memory: parsed.bowlbridge2Memory || {},
-                bowlbridge2LastFire: parsed.bowlbridge2LastFire || {},
-                ledgeforge2Memory: parsed.ledgeforge2Memory || {},
-                ledgeforge2LastFire: parsed.ledgeforge2LastFire || {},
+                zoneforgeMemory: parsed.zoneforgeMemory || {},
+                zoneforgeLastFire: parsed.zoneforgeLastFire || {},
+                anchorforgeMemory: parsed.anchorforgeMemory || {},
+                anchorforgeLastFire: parsed.anchorforgeLastFire || {},
+                peterforgeMemory: parsed.peterforgeMemory || {},
+                peterforgeLastFire: parsed.peterforgeLastFire || {},
                 telegramOutbox: parsed.telegramOutbox || []
 
 
@@ -127,14 +125,12 @@ function loadState() {
         boomMemory: {},
         jupiterState: {},
         yabaMemory: {},
-        bowlbridgeMemory: {},
-        bowlbridgeLastFire: {},
-        ledgeforgeMemory: {},
-        ledgeforgeLastFire: {},
-        bowlbridge2Memory: {},
-        bowlbridge2LastFire: {},
-        ledgeforge2Memory: {},
-        ledgeforge2LastFire: {},
+        zoneforgeMemory: {},
+        zoneforgeLastFire: {},
+        anchorforgeMemory: {},
+        anchorforgeLastFire: {},
+        peterforgeMemory: {},
+        peterforgeLastFire: {},
         telegramOutbox: []
 
 
@@ -196,14 +192,12 @@ function buildStateSnapshot() {
         boomMemory,
         jupiterState,
         yabaMemory,
-        bowlbridgeMemory,
-        bowlbridgeLastFire,
-        ledgeforgeMemory,
-        ledgeforgeLastFire,
-        bowlbridge2Memory,
-        bowlbridge2LastFire,
-        ledgeforge2Memory,
-        ledgeforge2LastFire,
+        zoneforgeMemory,
+        zoneforgeLastFire,
+        anchorforgeMemory,
+        anchorforgeLastFire,
+        peterforgeMemory,
+        peterforgeLastFire,
         telegramOutbox
     };
 }
@@ -3481,1722 +3475,131 @@ function processCobra(symbol, group, ts) {
 }
 
 // ==========================================================
-// FIRST (PER SYMBOL — 4H COOLDOWN, GLOBAL ENGINE)
-// Bot 2
+// FIRST (PERSISTENT — restartable first different pair per symbol)
+// Bot 8
+//
+// Rule:
+//   - Normal ecosystem only; route ignores # groups before calling this
+//   - Same symbol
+//   - First alert starts a 1h search cycle
+//   - Any later alert with a DIFFERENT exact group completes the pair
+//   - Same exact group is ignored
+//   - If 1h expires with no different exact group, cycle restarts
+//   - Once FIRST fires, symbol is locked for 2h from the first alert of that fired pair
+//
+// Valid:
+//   40L then 40M
+//   40L then 42L
+//   39A then 41Z
+//   A then B
+//
+// Invalid:
+//   40L then 40L
+//   39A then 39A
+//
+// Persistence:
+//   - Stored inside lastSeenState.__FIRST_BOT8_RESTARTABLE_STATE__
+//   - lastSeenState is already persisted in state.json
 // ==========================================================
 
-const FIRST_WINDOW_MS = 4 * 60 * 60 * 1000;
+const FIRST_WINDOW_MS = 2 * 60 * 60 * 1000; // 2 hours after a fired pair
+const FIRST_PAIR_SPAN_MS = 60 * 60 * 1000;  // 1 hour to find matching different group
+const FIRST_STATE_KEY = "__FIRST_BOT8_RESTARTABLE_STATE__";
+
+function normalizeFirstGroup(group) {
+    return String(group || "").trim().toUpperCase();
+}
+
+function getFirstBot8Store() {
+    if (!lastSeenState[FIRST_STATE_KEY] || typeof lastSeenState[FIRST_STATE_KEY] !== "object") {
+        lastSeenState[FIRST_STATE_KEY] = {};
+    }
+
+    return lastSeenState[FIRST_STATE_KEY];
+}
+
+function resetFirstBot8Cycle(store, symbol, group, ts) {
+    store[symbol] = {
+        first: {
+            group,
+            time: ts
+        },
+        firedPair: null,
+        lockedUntil: 0
+    };
+}
 
 function processFirst(symbol, group, ts) {
 
-    if (!symbol) return;
-
-    const key = "ALL"; // 🔑 ONE KEY PER SYMBOL
-    const last = getLastSeen(symbol, key);
-
-    // 🔥 FIRST or after 4h
-    if (!last || (ts - last >= FIRST_WINDOW_MS)) {
-
-        sendToTelegram2(
-            `🥇 FIRST\n` +
-            `Symbol: ${symbol}\n` +
-            `Group: ${group}\n` +
-            `Last: ${last ? formatDateTime(last) : "none"}\n` +
-            `Now: ${formatDateTime(ts)}`
-        );
-
-        setLastSeen(symbol, key, ts);
-        activateGodzilla(symbol, "FIRST", ts, group);
-
-
-    
-        processPremier(symbol, group, ts);
-}
-
-    // else → ignore
-}
-
-
-// ==========================================================
-//  BOWLBRIDGE + LEDGEFORGE (price-aware pot-2 pattern engines)
-//  Bot 8
-//
-//  Important:
-//    - These do NOT hard-code positive = bullish or negative = bearish.
-//    - The divergence bucket is tracked internally only.
-//    - POT 2 here means numeric families 36–44, exact subgroup preserved.
-//    - BOWLBRIDGE = exact subgroup repeats across two waves.
-//    - LEDGEFORGE = overlapping subgroup stack repeats at near-same price,
-//      then watches for price expansion away from that ledge.
-// ==========================================================
-
-const BOWLBRIDGE_ENABLED = (process.env.BOWLBRIDGE_ENABLED || "true").toLowerCase() !== "false";
-const LEDGEFORGE_ENABLED = (process.env.LEDGEFORGE_ENABLED || "true").toLowerCase() !== "false";
-
-const POT2_MIN_MAIN = Number((process.env.POT2_MIN_MAIN || "36").trim());
-const POT2_MAX_MAIN = Number((process.env.POT2_MAX_MAIN || "44").trim());
-
-const BOWLBRIDGE_MIN_GAP_MS = Number((process.env.BOWLBRIDGE_MIN_GAP_MIN || "20").trim()) * 60 * 1000;
-const BOWLBRIDGE_MAX_GAP_MS = Number((process.env.BOWLBRIDGE_MAX_GAP_MIN || "120").trim()) * 60 * 1000;
-const BOWLBRIDGE_CONTEXT_MS = Number((process.env.BOWLBRIDGE_CONTEXT_MIN || "8").trim()) * 60 * 1000;
-const BOWLBRIDGE_PRICE_CLOSE_PCT = Number((process.env.BOWLBRIDGE_PRICE_CLOSE_PCT || "0.50").trim());
-const BOWLBRIDGE_PRIME_PRICE_PCT = Number((process.env.BOWLBRIDGE_PRIME_PRICE_PCT || "0.35").trim());
-const BOWLBRIDGE_COOLDOWN_MS = Number((process.env.BOWLBRIDGE_COOLDOWN_MIN || "30").trim()) * 60 * 1000;
-
-const LEDGEFORGE_STACK_WINDOW_MS = Number((process.env.LEDGEFORGE_STACK_WINDOW_SEC || "60").trim()) * 1000;
-const LEDGEFORGE_MIN_STACK_GROUPS = Number((process.env.LEDGEFORGE_MIN_STACK_GROUPS || "3").trim());
-const LEDGEFORGE_MIN_REPEAT_GAP_MS = Number((process.env.LEDGEFORGE_MIN_REPEAT_GAP_MIN || "8").trim()) * 60 * 1000;
-const LEDGEFORGE_MAX_REPEAT_GAP_MS = Number((process.env.LEDGEFORGE_MAX_REPEAT_GAP_MIN || "35").trim()) * 60 * 1000;
-const LEDGEFORGE_MIN_OVERLAP = Number((process.env.LEDGEFORGE_MIN_OVERLAP || "2").trim());
-const LEDGEFORGE_PRICE_CLOSE_PCT = Number((process.env.LEDGEFORGE_PRICE_CLOSE_PCT || "0.35").trim());
-const LEDGEFORGE_BREAK_PCT = Number((process.env.LEDGEFORGE_BREAK_PCT || "0.75").trim());
-const LEDGEFORGE_LOCK_COOLDOWN_MS = Number((process.env.LEDGEFORGE_LOCK_COOLDOWN_MIN || "20").trim()) * 60 * 1000;
-const LEDGEFORGE_LOCK_TTL_MS = Number((process.env.LEDGEFORGE_LOCK_TTL_MIN || "240").trim()) * 60 * 1000;
-
-// bowlbridgeMemory[symbol][side] = [{ group, main, price, time }]
-let bowlbridgeMemory = persisted.bowlbridgeMemory || {};
-let bowlbridgeLastFire = persisted.bowlbridgeLastFire || {};
-
-// ledgeforgeMemory[symbol][side] = { events: [], stacks: [], locks: [] }
-let ledgeforgeMemory = persisted.ledgeforgeMemory || {};
-let ledgeforgeLastFire = persisted.ledgeforgeLastFire || {};
-
-function getPatternText(body) {
-    if (!body) return "";
-
-    return [
-        body.kind,
-        body.signal,
-        body.type,
-        body.action,
-        body.direction,
-        body.name,
-        body.source,
-        body.message,
-        body.alert_name,
-        body.indicator,
-        body.script,
-        body.bot
-    ]
-        .filter(Boolean)
-        .map(x => String(x))
-        .join(" ");
-}
-
-function getDivergenceLabel(body) {
-    const text = getPatternText(body).toUpperCase();
-    const direction = String(body?.direction || body?.dir || "").toUpperCase();
-
-    if (
-        text.includes("POSITIVE_REGULAR_DIVERGENCE") ||
-        text.includes("POSITIVE REGULAR DIVERGENCE") ||
-        text.includes("POSITIVE_DIVERGENCE") ||
-        direction.includes("POS")
-    ) {
-        return "POSITIVE";
-    }
-
-    if (
-        text.includes("NEGATIVE_REGULAR_DIVERGENCE") ||
-        text.includes("NEGATIVE REGULAR DIVERGENCE") ||
-        text.includes("NEGATIVE_DIVERGENCE") ||
-        direction.includes("NEG")
-    ) {
-        return "NEGATIVE";
-    }
-
-    return "UNKNOWN";
-}
-
-function parsePatternPrice(body) {
-    const raw = body?.price ?? body?.close ?? body?.level ?? body?.fib_level;
-    if (raw === undefined || raw === null || String(raw).trim() === "") return null;
-
-    const n = Number(String(raw).replace(/,/g, ""));
-    return Number.isFinite(n) ? n : null;
-}
-
-function pctDiff(fromPrice, toPrice) {
-    const a = Number(fromPrice);
-    const b = Number(toPrice);
-
-    if (!Number.isFinite(a) || !Number.isFinite(b) || a === 0) return null;
-
-    return ((b - a) / a) * 100;
-}
-
-function absPctDiff(a, b) {
-    const d = pctDiff(a, b);
-    return d === null ? null : Math.abs(d);
-}
-
-function fmtPrice(n) {
-    return Number.isFinite(Number(n)) ? String(Number(n)) : "n/a";
-}
-
-function fmtPctMaybe(n) {
-    if (!Number.isFinite(Number(n))) return "n/a";
-    const x = Number(n);
-    return `${x >= 0 ? "+" : ""}${x.toFixed(2)}%`;
-}
-
-const PRIME_WINDOW_START_UTC_MIN = (21 * 60) + 30; // 21:30 UTC
-const PRIME_WINDOW_END_UTC_MIN = (22 * 60) + 30;   // 22:30 UTC
-
-function zoneBounds(a, b) {
-    const x = Number(a);
-    const y = Number(b);
-    if (!Number.isFinite(x) || !Number.isFinite(y)) {
-        return { low: null, high: null, mid: null };
-    }
-
-    return {
-        low: Math.min(x, y),
-        high: Math.max(x, y),
-        mid: (x + y) / 2
-    };
-}
-
-function expansionPrice(mid, pct, direction) {
-    const m = Number(mid);
-    const p = Number(pct);
-    if (!Number.isFinite(m) || !Number.isFinite(p)) return null;
-    const factor = direction === "up" ? (1 + (p / 100)) : (1 - (p / 100));
-    return m * factor;
-}
-
-function ukDateParts(ts) {
-    const d = new Date(Number(ts));
-
-    if (Number.isNaN(d.getTime())) return null;
-
-    const parts = new Intl.DateTimeFormat("en-GB", {
-        timeZone: "Europe/London",
-        year: "numeric",
-        month: "2-digit",
-        day: "2-digit",
-        hour: "2-digit",
-        minute: "2-digit",
-        hour12: false
-    }).formatToParts(d);
-
-    const get = type => Number(parts.find(p => p.type === type)?.value);
-
-    return {
-        year: get("year"),
-        month: get("month"),
-        day: get("day"),
-        hour: get("hour"),
-        minute: get("minute")
-    };
-}
-
-function ukOffsetMinutes(ts) {
-    const p = ukDateParts(ts);
-    if (!p) return 0;
-
-    const localAsUtc = Date.UTC(p.year, p.month - 1, p.day, p.hour, p.minute, 0);
-    const actual = new Date(Number(ts));
-    const roundedActual = Date.UTC(
-        actual.getUTCFullYear(),
-        actual.getUTCMonth(),
-        actual.getUTCDate(),
-        actual.getUTCHours(),
-        actual.getUTCMinutes(),
-        0
-    );
-
-    return Math.round((localAsUtc - roundedActual) / 60000);
-}
-
-function ukMinutesNow(ts) {
-    const p = ukDateParts(ts);
-    if (!p) return null;
-    return (p.hour * 60) + p.minute;
-}
-
-function inMinuteWindow(mins, start, end) {
-    if (!Number.isFinite(mins)) return false;
-    if (start <= end) return mins >= start && mins < end;
-    return mins >= start || mins < end;
-}
-
-function hhmmFromMins(mins) {
-    const normalized = ((mins % 1440) + 1440) % 1440;
-    const h = Math.floor(normalized / 60);
-    const m = normalized % 60;
-    return `${String(h).padStart(2, "0")}:${String(m).padStart(2, "0")}`;
-}
-
-function primeSessionText(ts) {
-    const d = new Date(Number(ts));
-
-    if (Number.isNaN(d.getTime())) {
-        return "Prime session ref: seasonal UK window auto-adjusts.";
-    }
-
-    const offset = ukOffsetMinutes(ts);
-
-    // User-observed seasonal prime window:
-    // BST / GMT+1: 22:30–23:30 UK time
-    // GMT / winter: 23:30–00:30 UK time
-    const startMin = offset >= 60
-        ? (22 * 60) + 30
-        : (23 * 60) + 30;
-
-    const endMin = offset >= 60
-        ? (23 * 60) + 30
-        : (0 * 60) + 30;
-
-    const nowUkMins = ukMinutesNow(ts);
-    const active = inMinuteWindow(nowUkMins, startMin, endMin);
-
-    return active
-        ? `Prime session: ACTIVE now (${hhmmFromMins(startMin)}–${hhmmFromMins(endMin)} UK time).`
-        : `Prime session ref: ${hhmmFromMins(startMin)}–${hhmmFromMins(endMin)} UK time.`;
-}
-
-
-const LEDGEFORGE_FOLLOWUPS_ENABLED = (process.env.LEDGEFORGE_FOLLOWUPS_ENABLED || "true").toLowerCase() !== "false";
-const LEDGEFORGE_2_FOLLOWUPS_ENABLED = (process.env.LEDGEFORGE_2_FOLLOWUPS_ENABLED || "true").toLowerCase() !== "false";
-const LEDGE_RETEST_TOLERANCE_PCT = Number((process.env.LEDGE_RETEST_TOLERANCE_PCT || "0.15").trim());
-const LEDGE_FAIL_BUFFER_PCT = Number((process.env.LEDGE_FAIL_BUFFER_PCT || "0.05").trim());
-
-function expandedZoneWithPct(low, high, pct) {
-    const l = Number(low);
-    const h = Number(high);
-    const p = Number(pct);
-
-    if (!Number.isFinite(l) || !Number.isFinite(h) || !Number.isFinite(p)) {
-        return { low: null, high: null };
-    }
-
-    return {
-        low: l * (1 - (p / 100)),
-        high: h * (1 + (p / 100))
-    };
-}
-
-function isInsidePriceZone(price, low, high) {
-    const p = Number(price);
-    const l = Number(low);
-    const h = Number(high);
-
-    return Number.isFinite(p) && Number.isFinite(l) && Number.isFinite(h) && p >= l && p <= h;
-}
-
-function enrichLockForFollowups(lock, breakPct) {
-    if (!lock || lock.followupReady) return lock;
-
-    const z = zoneBounds(lock.firstPrice, lock.secondPrice);
-
-    lock.ledgeLow = z.low;
-    lock.ledgeHigh = z.high;
-    lock.midPrice = Number.isFinite(Number(lock.midPrice)) ? Number(lock.midPrice) : z.mid;
-    lock.upsideWatch = expansionPrice(lock.midPrice, breakPct, "up");
-    lock.downsideWatch = expansionPrice(lock.midPrice, breakPct, "down");
-
-    lock.highestSeen = Number.isFinite(Number(lock.secondPrice))
-        ? Number(lock.secondPrice)
-        : lock.midPrice;
-
-    lock.lowestSeen = Number.isFinite(Number(lock.secondPrice))
-        ? Number(lock.secondPrice)
-        : lock.midPrice;
-
-    lock.followupState = lock.followupState || "LOCKED";
-    lock.expansionSide = lock.expansionSide || null;
-    lock.hitNotified = !!lock.hitNotified;
-    lock.retestNotified = !!lock.retestNotified;
-    lock.failedNotified = !!lock.failedNotified;
-    lock.followupReady = true;
-
-    return lock;
-}
-
-function ledgeFollowupPrefix(engineName, direction) {
-    if (direction === "BUY") return `📈 ${engineName} BUY TRIGGER`;
-    if (direction === "SELL") return `📉 ${engineName} SELL TRIGGER`;
-    if (direction === "RETEST") return `🔁 ${engineName} RETESTING LEDGE`;
-    if (direction === "BUY_FAILED") return `⚠️ ${engineName} BUY FAILED`;
-    if (direction === "SELL_FAILED") return `⚠️ ${engineName} SELL FAILED`;
-    return `${engineName} UPDATE`;
-}
-
-function processLedgeFollowups(engineName, enabled, symbol, potGroup, ts, price, lock, breakPct) {
-    if (!enabled) return false;
-    if (!symbol || !lock) return false;
-    if (!Number.isFinite(Number(price))) return false;
-
-    enrichLockForFollowups(lock, breakPct);
-
-    if (!Number.isFinite(Number(lock.ledgeLow)) || !Number.isFinite(Number(lock.ledgeHigh))) {
-        return false;
-    }
-
-    const currentPrice = Number(price);
-
-    lock.highestSeen = Number.isFinite(Number(lock.highestSeen))
-        ? Math.max(Number(lock.highestSeen), currentPrice)
-        : currentPrice;
-
-    lock.lowestSeen = Number.isFinite(Number(lock.lowestSeen))
-        ? Math.min(Number(lock.lowestSeen), currentPrice)
-        : currentPrice;
-
-    const retestZone = expandedZoneWithPct(lock.ledgeLow, lock.ledgeHigh, LEDGE_RETEST_TOLERANCE_PCT);
-    const failZone = expandedZoneWithPct(lock.ledgeLow, lock.ledgeHigh, LEDGE_FAIL_BUFFER_PCT);
-
-    if (!lock.hitNotified) {
-        if (Number.isFinite(Number(lock.upsideWatch)) && currentPrice >= Number(lock.upsideWatch)) {
-            lock.hitNotified = true;
-            lock.expansionSide = "UP";
-            lock.followupState = "UP_EXPANDED";
-
-            sendToTelegram8(
-                `${ledgeFollowupPrefix(engineName, "BUY")}\n` +
-                `Symbol: ${symbol}\n` +
-                `Ledge zone: ${fmtPrice(lock.ledgeLow)} – ${fmtPrice(lock.ledgeHigh)}\n` +
-                `Buy trigger: ${fmtPrice(lock.upsideWatch)}\n` +
-                `Sell trigger: ${fmtPrice(lock.downsideWatch)}\n` +
-                `Current price: ${fmtPrice(currentPrice)}\n` +
-                `High seen: ${fmtPrice(lock.highestSeen)}\n` +
-                `Move from ledge: ${fmtPctMaybe(pctDiff(lock.midPrice, currentPrice))}\n` +
-                `Current group: ${potGroup}\n\n` +
-                `Notes:\n` +
-                `- Buy side has triggered.\n` +
-                `- Watch hold above buy trigger or retest of original ledge.\n` +
-                `- ${primeSessionText(ts)}`
-            );
-
-            return true;
-        }
-
-        if (Number.isFinite(Number(lock.downsideWatch)) && currentPrice <= Number(lock.downsideWatch)) {
-            lock.hitNotified = true;
-            lock.expansionSide = "DOWN";
-            lock.followupState = "DOWN_EXPANDED";
-
-            sendToTelegram8(
-                `${ledgeFollowupPrefix(engineName, "SELL")}\n` +
-                `Symbol: ${symbol}\n` +
-                `Ledge zone: ${fmtPrice(lock.ledgeLow)} – ${fmtPrice(lock.ledgeHigh)}\n` +
-                `Buy trigger: ${fmtPrice(lock.upsideWatch)}\n` +
-                `Sell trigger: ${fmtPrice(lock.downsideWatch)}\n` +
-                `Current price: ${fmtPrice(currentPrice)}\n` +
-                `Low seen: ${fmtPrice(lock.lowestSeen)}\n` +
-                `Move from ledge: ${fmtPctMaybe(pctDiff(lock.midPrice, currentPrice))}\n` +
-                `Current group: ${potGroup}\n\n` +
-                `Notes:\n` +
-                `- Sell side has triggered.\n` +
-                `- Watch hold below sell trigger or retest of original ledge.\n` +
-                `- ${primeSessionText(ts)}`
-            );
-
-            return true;
-        }
-
-        return false;
-    }
-
-    if (lock.hitNotified && !lock.retestNotified && isInsidePriceZone(currentPrice, retestZone.low, retestZone.high)) {
-        lock.retestNotified = true;
-        lock.followupState = `${lock.expansionSide}_RETESTING_LEDGE`;
-
-        const sideWord = lock.expansionSide === "UP" ? "buy" : "sell";
-        const seenLine = lock.expansionSide === "UP"
-            ? `High seen: ${fmtPrice(lock.highestSeen)}\n`
-            : `Low seen: ${fmtPrice(lock.lowestSeen)}\n`;
-
-        sendToTelegram8(
-            `${ledgeFollowupPrefix(engineName, "RETEST")}\n` +
-            `Symbol: ${symbol}\n` +
-            `Original ledge: ${fmtPrice(lock.ledgeLow)} – ${fmtPrice(lock.ledgeHigh)}\n` +
-            `Retest band: ${fmtPrice(retestZone.low)} – ${fmtPrice(retestZone.high)}\n` +
-            seenLine +
-            `Current price: ${fmtPrice(currentPrice)}\n` +
-            `Current group: ${potGroup}\n\n` +
-            `Notes:\n` +
-            `- Price returned to the original ledge after ${sideWord} trigger.\n` +
-            `- Watch whether the ledge holds or fails.`
-        );
-
-        return true;
-    }
-
-    if (lock.hitNotified && !lock.failedNotified) {
-        if (lock.expansionSide === "UP" && Number.isFinite(Number(failZone.low)) && currentPrice < Number(failZone.low)) {
-            lock.failedNotified = true;
-            lock.broken = true;
-            lock.followupState = "BUY_FAILED";
-
-            sendToTelegram8(
-                `${ledgeFollowupPrefix(engineName, "BUY_FAILED")}\n` +
-                `Symbol: ${symbol}\n` +
-                `Original ledge: ${fmtPrice(lock.ledgeLow)} – ${fmtPrice(lock.ledgeHigh)}\n` +
-                `High seen: ${fmtPrice(lock.highestSeen)}\n` +
-                `Current price: ${fmtPrice(currentPrice)}\n` +
-                `Current group: ${potGroup}\n\n` +
-                `Notes:\n` +
-                `- Buy expansion failed back below the original ledge.\n` +
-                `- Protect/exit buy idea or watch possible rejection setup.`
-            );
-
-            return true;
-        }
-
-        if (lock.expansionSide === "DOWN" && Number.isFinite(Number(failZone.high)) && currentPrice > Number(failZone.high)) {
-            lock.failedNotified = true;
-            lock.broken = true;
-            lock.followupState = "SELL_FAILED";
-
-            sendToTelegram8(
-                `${ledgeFollowupPrefix(engineName, "SELL_FAILED")}\n` +
-                `Symbol: ${symbol}\n` +
-                `Original ledge: ${fmtPrice(lock.ledgeLow)} – ${fmtPrice(lock.ledgeHigh)}\n` +
-                `Low seen: ${fmtPrice(lock.lowestSeen)}\n` +
-                `Current price: ${fmtPrice(currentPrice)}\n` +
-                `Current group: ${potGroup}\n\n` +
-                `Notes:\n` +
-                `- Sell expansion failed back above the original ledge.\n` +
-                `- Protect/exit sell idea or watch possible reclaim setup.`
-            );
-
-            return true;
-        }
-    }
-
-    return false;
-}
-
-function parsePot2Group(group) {
-    const g = String(group || "").trim().toUpperCase();
-    if (!g || g.startsWith("#")) return null;
-
-    const m = g.match(/^(\d+)([A-Z]+)?$/);
-    if (!m) return null;
-
-    const main = Number(m[1]);
-    if (!Number.isFinite(main)) return null;
-    if (main < POT2_MIN_MAIN || main > POT2_MAX_MAIN) return null;
-
-    return {
-        group: g,
-        main,
-        subgroup: m[2] || ""
-    };
-}
-
-function patternContextCount(events, centerTime, excludeGroup) {
-    const start = centerTime - BOWLBRIDGE_CONTEXT_MS;
-    const end = centerTime + BOWLBRIDGE_CONTEXT_MS;
-
-    const groups = new Set(
-        (events || [])
-            .filter(e => e.time >= start && e.time <= end)
-            .map(e => e.group)
-            .filter(g => g && g !== excludeGroup)
-    );
-
-    return groups.size;
-}
-
-function processBowlbridge(symbol, group, ts, body) {
-    if (!BOWLBRIDGE_ENABLED) return;
-    if (!symbol || !group || !body) return;
-
-    const pot = parsePot2Group(group);
-    if (!pot) return;
-
-    const side = getDivergenceLabel(body);
-    const price = parsePatternPrice(body);
-
-    if (!bowlbridgeMemory[symbol]) {
-        bowlbridgeMemory[symbol] = {};
-    }
-
-    if (!bowlbridgeMemory[symbol][side]) {
-        bowlbridgeMemory[symbol][side] = [];
-    }
-
-    const buf = bowlbridgeMemory[symbol][side];
-
-    const pruneCutoff = ts - (BOWLBRIDGE_MAX_GAP_MS + (30 * 60 * 1000));
-    while (buf.length && buf[0].time < pruneCutoff) {
-        buf.shift();
-    }
-
-    const priorCandidates = buf
-        .filter(e =>
-            e.group === pot.group &&
-            ts - e.time >= BOWLBRIDGE_MIN_GAP_MS &&
-            ts - e.time <= BOWLBRIDGE_MAX_GAP_MS
-        )
-        .sort((a, b) => b.time - a.time);
-
-    const previous = priorCandidates[0] || null;
-
-    buf.push({
-        group: pot.group,
-        main: pot.main,
-        price,
-        time: ts
-    });
-
-    if (!previous) return;
-
-    const key = `${symbol}|${side}|${pot.group}`;
-    const lastSent = bowlbridgeLastFire[key] || 0;
-    if (ts - lastSent < BOWLBRIDGE_COOLDOWN_MS) return;
-
-    const gapMs = ts - previous.time;
-    const gapMin = Math.floor(gapMs / 60000);
-    const gapSec = Math.floor((gapMs % 60000) / 1000);
-
-    const priceMovePct = (previous.price !== null && price !== null)
-        ? pctDiff(previous.price, price)
-        : null;
-
-    const priceClosePct = (previous.price !== null && price !== null)
-        ? absPctDiff(previous.price, price)
-        : null;
-
-    const leftContext = patternContextCount(buf, previous.time, pot.group);
-    const rightContext = patternContextCount(buf, ts, pot.group);
-
-    let tier = "FAST";
-    let emoji = "🌀";
-
-    if (
-        (Number.isFinite(priceClosePct) && priceClosePct <= BOWLBRIDGE_PRICE_CLOSE_PCT) ||
-        (leftContext >= 2 && rightContext >= 2)
-    ) {
-        tier = "CORE";
-        emoji = "🧲";
-    }
-
-    if (
-        Number.isFinite(priceClosePct) &&
-        priceClosePct <= BOWLBRIDGE_PRIME_PRICE_PCT &&
-        leftContext >= 2 &&
-        rightContext >= 2
-    ) {
-        tier = "PRIME";
-        emoji = "🏛️";
-    }
-
-    const bowlZone = zoneBounds(previous.price, price);
-    const bowlWatchPct = LEDGEFORGE_BREAK_PCT;
-    const bowlUpWatch = expansionPrice(bowlZone.mid, bowlWatchPct, "up");
-    const bowlDownWatch = expansionPrice(bowlZone.mid, bowlWatchPct, "down");
-
-    sendToTelegram8(
-        `${emoji} BOWLBRIDGE ${tier}
-` +
-        `Symbol: ${symbol}
-` +
-        `Bridge group: ${pot.group}
-` +
-        `Main family: ${pot.main}
-` +
-        `Read: exact POT-2 subgroup repeated across two separate waves
-
-` +
-
-        `Bridge zone: ${fmtPrice(bowlZone.low)} – ${fmtPrice(bowlZone.high)}
-` +
-        `Midpoint: ${fmtPrice(bowlZone.mid)}
-` +
-        `Upside watch (${bowlWatchPct}%): ${fmtPrice(bowlUpWatch)}
-` +
-        `Downside watch (${bowlWatchPct}%): ${fmtPrice(bowlDownWatch)}
-
-` +
-
-        `First hit: ${formatDateTime(previous.time)}
-` +
-        `Second hit: ${formatDateTime(ts)}
-` +
-        `Gap: ${gapMin}m ${gapSec}s
-
-` +
-
-        `First price: ${fmtPrice(previous.price)}
-` +
-        `Second price: ${fmtPrice(price)}
-` +
-        `Price move: ${fmtPctMaybe(priceMovePct)}
-` +
-        `Price distance: ${Number.isFinite(priceClosePct) ? priceClosePct.toFixed(2) + "%" : "n/a"}
-
-` +
-
-        `Left wave context: ${leftContext} other POT-2 groups nearby
-` +
-        `Right wave context: ${rightContext} other POT-2 groups nearby
-` +
-        `Notes:
-` +
-        `- Treat this as a zone/reaction setup.
-` +
-        `- Best quality often comes after a spike/displacement.
-` +
-        `- ${primeSessionText(ts)}`
-    );
-
-    bowlbridgeLastFire[key] = ts;
-
-    if (Object.keys(bowlbridgeMemory).length > 5000) {
-        const old = ts - (4 * 60 * 60 * 1000);
-        for (const sym of Object.keys(bowlbridgeMemory)) {
-            for (const s of Object.keys(bowlbridgeMemory[sym])) {
-                bowlbridgeMemory[sym][s] = bowlbridgeMemory[sym][s].filter(e => e.time >= old);
-                if (!bowlbridgeMemory[sym][s].length) delete bowlbridgeMemory[sym][s];
-            }
-            if (!Object.keys(bowlbridgeMemory[sym]).length) delete bowlbridgeMemory[sym];
-        }
-    }
-}
-
-function ledgeOverlapGroups(a, b) {
-    const setA = new Set((a || []).map(String));
-    const setB = new Set((b || []).map(String));
-
-    return [...setA].filter(g => setB.has(g));
-}
-
-function ledgeAveragePrice(events) {
-    const prices = (events || [])
-        .map(e => Number(e.price))
-        .filter(Number.isFinite);
-
-    if (!prices.length) return null;
-
-    return prices.reduce((a, b) => a + b, 0) / prices.length;
-}
-
-function ledgeStackKey(groups) {
-    return [...new Set((groups || []).map(String).filter(Boolean))]
-        .sort()
-        .join("+");
-}
-
-function processLedgeforge(symbol, group, ts, body) {
-    if (!LEDGEFORGE_ENABLED) return;
-    if (!symbol || !group || !body) return;
-
-    const pot = parsePot2Group(group);
-    if (!pot) return;
-
-    const side = getDivergenceLabel(body);
-    const price = parsePatternPrice(body);
-    if (price === null) return;
-
-    if (!ledgeforgeMemory[symbol]) {
-        ledgeforgeMemory[symbol] = {};
-    }
-
-    if (!ledgeforgeMemory[symbol][side]) {
-        ledgeforgeMemory[symbol][side] = {
-            events: [],
-            stacks: [],
-            locks: []
-        };
-    }
-
-    const state = ledgeforgeMemory[symbol][side];
-
-    state.events = (state.events || []).filter(e => e.time >= ts - LEDGEFORGE_STACK_WINDOW_MS);
-    state.events.push({
-        group: pot.group,
-        main: pot.main,
-        price,
-        time: ts
-    });
-
-    const uniqueGroups = [...new Set(state.events.map(e => e.group).filter(Boolean))];
-
-    // Watch existing locks for trade lifecycle follow-ups.
-    state.locks = (state.locks || []).filter(lock => {
-        if (!lock || !lock.createdAt || ts - lock.createdAt > LEDGEFORGE_LOCK_TTL_MS) return false;
-
-        processLedgeFollowups(
-            "LEDGEFORGE",
-            LEDGEFORGE_FOLLOWUPS_ENABLED,
-            symbol,
-            pot.group,
-            ts,
-            price,
-            lock,
-            LEDGEFORGE_BREAK_PCT
-        );
-
-        return !lock.failedNotified;
-    });
-
-    if (uniqueGroups.length < LEDGEFORGE_MIN_STACK_GROUPS) return;
-
-    const stackEvents = [...state.events];
-    const stackGroups = uniqueGroups.sort();
-    const stackPrice = ledgeAveragePrice(stackEvents);
-    if (stackPrice === null) return;
-
-    const stack = {
-        groups: stackGroups,
-        key: ledgeStackKey(stackGroups),
-        price: stackPrice,
-        firstTime: stackEvents[0].time,
-        lastTime: ts,
-        time: ts
-    };
-
-    state.stacks = (state.stacks || []).filter(s =>
-        s && s.time >= ts - (LEDGEFORGE_MAX_REPEAT_GAP_MS + (10 * 60 * 1000))
-    );
-
-    const previousStacks = state.stacks
-        .filter(s => {
-            const gap = ts - s.time;
-            if (gap < LEDGEFORGE_MIN_REPEAT_GAP_MS || gap > LEDGEFORGE_MAX_REPEAT_GAP_MS) return false;
-            const overlap = ledgeOverlapGroups(s.groups, stack.groups);
-            if (overlap.length < LEDGEFORGE_MIN_OVERLAP) return false;
-
-            const priceDistance = absPctDiff(s.price, stack.price);
-            return Number.isFinite(priceDistance) && priceDistance <= LEDGEFORGE_PRICE_CLOSE_PCT;
-        })
-        .sort((a, b) => b.time - a.time);
-
-    const previous = previousStacks[0] || null;
-
-    // Save stack only once per same key/cluster minute to avoid noisy duplicates.
-    const lastStack = state.stacks[state.stacks.length - 1];
-    if (!lastStack || lastStack.key !== stack.key || ts - lastStack.time > LEDGEFORGE_STACK_WINDOW_MS) {
-        state.stacks.push(stack);
-    } else {
-        lastStack.price = stack.price;
-        lastStack.lastTime = stack.lastTime;
-        lastStack.time = stack.time;
-    }
-
-    if (!previous) return;
-
-    const overlap = ledgeOverlapGroups(previous.groups, stack.groups);
-    const priceDistance = absPctDiff(previous.price, stack.price);
-    const priceMove = pctDiff(previous.price, stack.price);
-
-    const lockKey = `${symbol}|${side}|${previous.key}|${stack.key}`;
-    const lastLock = ledgeforgeLastFire[lockKey] || 0;
-    if (ts - lastLock < LEDGEFORGE_LOCK_COOLDOWN_MS) return;
-
-    const gapMs = ts - previous.time;
-    const gapMin = Math.floor(gapMs / 60000);
-    const gapSec = Math.floor((gapMs % 60000) / 1000);
-
-    const midPrice = (previous.price + stack.price) / 2;
-
-    const lock = {
-        id: `${ts}-${Math.random().toString(36).slice(2)}`,
-        groups: stack.groups,
-        overlapGroups: overlap,
-        firstTime: previous.time,
-        secondTime: ts,
-        firstPrice: previous.price,
-        secondPrice: stack.price,
-        midPrice,
-        createdAt: ts,
-        broken: false
-    };
-
-    enrichLockForFollowups(lock, LEDGEFORGE_BREAK_PCT);
-    state.locks.push(lock);
-    ledgeforgeLastFire[lockKey] = ts;
-
-    const lockZone = zoneBounds(previous.price, stack.price);
-    const lockUpWatch = expansionPrice(lockZone.mid, LEDGEFORGE_BREAK_PCT, "up");
-    const lockDownWatch = expansionPrice(lockZone.mid, LEDGEFORGE_BREAK_PCT, "down");
-
-    sendToTelegram8(
-        `🔒 LEDGEFORGE LOCK
-` +
-        `Symbol: ${symbol}
-` +
-        `Read: overlapping POT-2 subgroup stack repeated at almost same price
-
-` +
-
-        `Ledge zone: ${fmtPrice(lockZone.low)} – ${fmtPrice(lockZone.high)}
-` +
-        `Midpoint: ${fmtPrice(lockZone.mid)}
-` +
-        `Upside watch (${LEDGEFORGE_BREAK_PCT}%): ${fmtPrice(lockUpWatch)}
-` +
-        `Downside watch (${LEDGEFORGE_BREAK_PCT}%): ${fmtPrice(lockDownWatch)}
-
-` +
-
-        `First stack: ${previous.groups.join(", ")}
-` +
-        `Second stack: ${stack.groups.join(", ")}
-` +
-        `Overlap: ${overlap.join(", ")}
-` +
-        `Gap: ${gapMin}m ${gapSec}s
-
-` +
-
-        `First stack price: ${fmtPrice(previous.price)}
-` +
-        `Second stack price: ${fmtPrice(stack.price)}
-` +
-        `Price move: ${fmtPctMaybe(priceMove)}
-` +
-        `Price distance: ${Number.isFinite(priceDistance) ? priceDistance.toFixed(2) + "%" : "n/a"}
-
-` +
-
-        `Notes:
-` +
-        `- Watch hold above the upside level or rejection below the downside level.
-` +
-        `- Best quality often comes after a spike/displacement.
-` +
-        `- ${primeSessionText(ts)}`
-    );
-
-    if (Object.keys(ledgeforgeMemory).length > 5000) {
-        const old = ts - (4 * 60 * 60 * 1000);
-        for (const sym of Object.keys(ledgeforgeMemory)) {
-            for (const s of Object.keys(ledgeforgeMemory[sym])) {
-                const st = ledgeforgeMemory[sym][s];
-                st.events = (st.events || []).filter(e => e.time >= old);
-                st.stacks = (st.stacks || []).filter(e => e.time >= old);
-                st.locks = (st.locks || []).filter(e => e.createdAt >= old && !e.broken);
-                if (!st.events.length && !st.stacks.length && !st.locks.length) {
-                    delete ledgeforgeMemory[sym][s];
-                }
-            }
-            if (!Object.keys(ledgeforgeMemory[sym]).length) delete ledgeforgeMemory[sym];
-        }
-    }
-}
-
-
-// ==========================================================
-//  BOWLBRIDGE_2 + LEDGEFORGE_2 (comparison engines)
-//  Bot 8
-//
-//  IMPORTANT:
-//    - These engines DO NOT replace BOWLBRIDGE / LEDGEFORGE.
-//    - Old engines are left untouched so live comparison is possible.
-//    - These engines are stricter/quieter and focused on actionable zones.
-//    - No hard-code: direction comes from price behaviour around the zone.
-//
-//  BOWLBRIDGE_2:
-//    - True same-zone exact subgroup bridge only.
-//    - Filters out far-away step/continuation repeats.
-//    - Bundles multiple subgroup bridges into one final message.
-//
-//  LEDGEFORGE_2:
-//    - Lower repeat gap to catch 5–8m repeats if overlap is strong.
-//    - Finalizes locks after a short delay so growing stacks do not spam.
-//    - Adds silent multi-family STACK SEED; alerts only if price expands.
-// ==========================================================
-
-const BOWLBRIDGE_2_ENABLED = (process.env.BOWLBRIDGE_2_ENABLED || "true").toLowerCase() !== "false";
-const LEDGEFORGE_2_ENABLED = (process.env.LEDGEFORGE_2_ENABLED || "true").toLowerCase() !== "false";
-
-const BOWLBRIDGE_2_MIN_GAP_MS = Number((process.env.BOWLBRIDGE_2_MIN_GAP_MIN || "20").trim()) * 60 * 1000;
-const BOWLBRIDGE_2_MAX_GAP_MS = Number((process.env.BOWLBRIDGE_2_MAX_GAP_MIN || "120").trim()) * 60 * 1000;
-const BOWLBRIDGE_2_CONTEXT_MS = Number((process.env.BOWLBRIDGE_2_CONTEXT_MIN || "8").trim()) * 60 * 1000;
-const BOWLBRIDGE_2_MAX_PRICE_PCT = Number((process.env.BOWLBRIDGE_2_MAX_PRICE_PCT || "0.60").trim());
-const BOWLBRIDGE_2_STRICT_PRICE_PCT = Number((process.env.BOWLBRIDGE_2_STRICT_PRICE_PCT || "0.25").trim());
-const BOWLBRIDGE_2_PRIME_PRICE_PCT = Number((process.env.BOWLBRIDGE_2_PRIME_PRICE_PCT || "0.35").trim());
-const BOWLBRIDGE_2_COOLDOWN_MS = Number((process.env.BOWLBRIDGE_2_COOLDOWN_MIN || "45").trim()) * 60 * 1000;
-const BOWLBRIDGE_2_FINALIZE_MS = Number((process.env.BOWLBRIDGE_2_FINALIZE_SEC || "75").trim()) * 1000;
-
-const LEDGEFORGE_2_STACK_WINDOW_MS = Number((process.env.LEDGEFORGE_2_STACK_WINDOW_SEC || "90").trim()) * 1000;
-const LEDGEFORGE_2_MIN_STACK_GROUPS = Number((process.env.LEDGEFORGE_2_MIN_STACK_GROUPS || "3").trim());
-const LEDGEFORGE_2_MIN_REPEAT_GAP_MS = Number((process.env.LEDGEFORGE_2_MIN_REPEAT_GAP_MIN || "5").trim()) * 60 * 1000;
-const LEDGEFORGE_2_MAX_REPEAT_GAP_MS = Number((process.env.LEDGEFORGE_2_MAX_REPEAT_GAP_MIN || "45").trim()) * 60 * 1000;
-const LEDGEFORGE_2_SHORT_GAP_MS = Number((process.env.LEDGEFORGE_2_SHORT_GAP_MIN || "8").trim()) * 60 * 1000;
-const LEDGEFORGE_2_MIN_OVERLAP = Number((process.env.LEDGEFORGE_2_MIN_OVERLAP || "2").trim());
-const LEDGEFORGE_2_SHORT_GAP_MIN_OVERLAP = Number((process.env.LEDGEFORGE_2_SHORT_GAP_MIN_OVERLAP || "3").trim());
-const LEDGEFORGE_2_PRICE_CLOSE_PCT = Number((process.env.LEDGEFORGE_2_PRICE_CLOSE_PCT || "0.35").trim());
-const LEDGEFORGE_2_BREAK_PCT = Number((process.env.LEDGEFORGE_2_BREAK_PCT || "0.65").trim());
-const LEDGEFORGE_2_LOCK_COOLDOWN_MS = Number((process.env.LEDGEFORGE_2_LOCK_COOLDOWN_MIN || "35").trim()) * 60 * 1000;
-const LEDGEFORGE_2_LOCK_TTL_MS = Number((process.env.LEDGEFORGE_2_LOCK_TTL_MIN || "240").trim()) * 60 * 1000;
-const LEDGEFORGE_2_FINALIZE_MS = Number((process.env.LEDGEFORGE_2_FINALIZE_SEC || "75").trim()) * 1000;
-const LEDGEFORGE_2_STACK_SEED_MIN_GROUPS = Number((process.env.LEDGEFORGE_2_STACK_SEED_MIN_GROUPS || "6").trim());
-const LEDGEFORGE_2_STACK_SEED_MIN_FAMILIES = Number((process.env.LEDGEFORGE_2_STACK_SEED_MIN_FAMILIES || "2").trim());
-const LEDGEFORGE_2_STACK_SEED_PRICE_SPREAD_PCT = Number((process.env.LEDGEFORGE_2_STACK_SEED_PRICE_SPREAD_PCT || "0.35").trim());
-
-let bowlbridge2Memory = persisted.bowlbridge2Memory || {};
-let bowlbridge2LastFire = persisted.bowlbridge2LastFire || {};
-let ledgeforge2Memory = persisted.ledgeforge2Memory || {};
-let ledgeforge2LastFire = persisted.ledgeforge2LastFire || {};
-
-// Runtime-only finalizer queues. They intentionally do not persist across redeploys.
-const bowlbridge2Pending = {};
-const ledgeforge2Pending = {};
-
-function bowlbridge2ContextCount(events, centerTime, excludeGroup) {
-    const start = centerTime - BOWLBRIDGE_2_CONTEXT_MS;
-    const end = centerTime + BOWLBRIDGE_2_CONTEXT_MS;
-
-    return new Set(
-        (events || [])
-            .filter(e => e.time >= start && e.time <= end)
-            .map(e => e.group)
-            .filter(g => g && g !== excludeGroup)
-    ).size;
-}
-
-function priceSpreadPct(events) {
-    const prices = (events || [])
-        .map(e => Number(e.price))
-        .filter(Number.isFinite);
-
-    if (prices.length < 2) return 0;
-
-    const lo = Math.min(...prices);
-    const hi = Math.max(...prices);
-    const mid = prices.reduce((a, b) => a + b, 0) / prices.length;
-
-    if (!Number.isFinite(mid) || mid === 0) return null;
-
-    return ((hi - lo) / mid) * 100;
-}
-
-function pctBucket(price, pct = 0.0035) {
-    const p = Number(price);
-    if (!Number.isFinite(p) || p <= 0) return "noprice";
-    const width = Math.max(p * pct, 0.00000001);
-    return String(Math.round(p / width));
-}
-
-function processBowlbridge2(symbol, group, ts, body) {
-    if (!BOWLBRIDGE_2_ENABLED) return;
-    if (!symbol || !group || !body) return;
-
-    const pot = parsePot2Group(group);
-    if (!pot) return;
-
-    const side = getDivergenceLabel(body);
-    const price = parsePatternPrice(body);
-
-    // Version 2 is intentionally price-led. If price is absent, old BOWLBRIDGE can still compare.
-    if (price === null) return;
-
-    if (!bowlbridge2Memory[symbol]) bowlbridge2Memory[symbol] = {};
-    if (!bowlbridge2Memory[symbol][side]) bowlbridge2Memory[symbol][side] = [];
-
-    const buf = bowlbridge2Memory[symbol][side];
-    const pruneCutoff = ts - (BOWLBRIDGE_2_MAX_GAP_MS + (30 * 60 * 1000));
-    while (buf.length && buf[0].time < pruneCutoff) buf.shift();
-
-    const priorCandidates = buf
-        .filter(e =>
-            e.group === pot.group &&
-            ts - e.time >= BOWLBRIDGE_2_MIN_GAP_MS &&
-            ts - e.time <= BOWLBRIDGE_2_MAX_GAP_MS
-        )
-        .sort((a, b) => b.time - a.time);
-
-    const previous = priorCandidates[0] || null;
-
-    buf.push({
-        group: pot.group,
-        main: pot.main,
-        price,
-        time: ts
-    });
-
-    if (!previous) return;
-
-    const priceClosePct = absPctDiff(previous.price, price);
-    if (!Number.isFinite(priceClosePct)) return;
-
-    const leftContext = bowlbridge2ContextCount(buf, previous.time, pot.group);
-    const rightContext = bowlbridge2ContextCount(buf, ts, pot.group);
-
-    const strictSameZone = priceClosePct <= BOWLBRIDGE_2_STRICT_PRICE_PCT && (leftContext + rightContext) >= 2;
-    const contextualSameZone = priceClosePct <= BOWLBRIDGE_2_MAX_PRICE_PCT && leftContext >= 2 && rightContext >= 2;
-
-    if (!strictSameZone && !contextualSameZone) return;
-
-    const groupCooldownKey = `${symbol}|${side}|${pot.group}`;
-    const lastSent = bowlbridge2LastFire[groupCooldownKey] || 0;
-    if (ts - lastSent < BOWLBRIDGE_2_COOLDOWN_MS) return;
-
-    const gapMs = ts - previous.time;
-    const candidate = {
-        symbol,
-        side,
-        group: pot.group,
-        main: pot.main,
-        firstTime: previous.time,
-        secondTime: ts,
-        firstPrice: previous.price,
-        secondPrice: price,
-        priceMovePct: pctDiff(previous.price, price),
-        priceClosePct,
-        leftContext,
-        rightContext,
-        gapMs,
-        score: (leftContext + rightContext) + Math.max(0, 6 - priceClosePct * 6)
-    };
-
-    const pendingKey = `${symbol}|${side}`;
-    if (!bowlbridge2Pending[pendingKey]) {
-        bowlbridge2Pending[pendingKey] = {
-            symbol,
-            side,
-            candidates: {},
-            timer: null
-        };
-    }
-
-    const pending = bowlbridge2Pending[pendingKey];
-    const old = pending.candidates[pot.group];
-    if (!old || candidate.score > old.score || candidate.secondTime > old.secondTime) {
-        pending.candidates[pot.group] = candidate;
-    }
-
-    if (!pending.timer) {
-        pending.timer = setTimeout(() => flushBowlbridge2(pendingKey), BOWLBRIDGE_2_FINALIZE_MS);
-    }
-}
-
-function flushBowlbridge2(pendingKey) {
-    const pending = bowlbridge2Pending[pendingKey];
-    if (!pending) return;
-
-    delete bowlbridge2Pending[pendingKey];
-
-    const candidates = Object.values(pending.candidates || {})
-        .filter(Boolean)
-        .sort((a, b) => b.score - a.score || a.secondTime - b.secondTime);
-
-    if (!candidates.length) return;
-
-    const best = candidates[0];
-    const primeCandidates = candidates.filter(c =>
-        c.priceClosePct <= BOWLBRIDGE_2_PRIME_PRICE_PCT &&
-        c.leftContext >= 2 &&
-        c.rightContext >= 2
-    );
-
-    const isPrime = primeCandidates.length >= 1 && (candidates.length >= 2 || best.leftContext + best.rightContext >= 6);
-    const tier = isPrime ? "PRIME" : "ZONE";
-    const emoji = isPrime ? "🏛️" : "🧲";
-
-    const firstTime = Math.min(...candidates.map(c => c.firstTime));
-    const secondTime = Math.max(...candidates.map(c => c.secondTime));
-    const avgClose = candidates.reduce((a, c) => a + c.priceClosePct, 0) / candidates.length;
-
-    const topLines = candidates.slice(0, 8).map((c, i) =>
-        `${i + 1}) ${c.group} | ${formatDateTime(c.firstTime)} → ${formatDateTime(c.secondTime)} | ` +
-        `${fmtPrice(c.firstPrice)} → ${fmtPrice(c.secondPrice)} | dist ${c.priceClosePct.toFixed(2)}% | ctx ${c.leftContext}/${c.rightContext}`
-    ).join("\n");
-
-    const bundlePrices = candidates
-        .flatMap(c => [c.firstPrice, c.secondPrice])
-        .filter(Number.isFinite);
-    const bundleLow = bundlePrices.length ? Math.min(...bundlePrices) : null;
-    const bundleHigh = bundlePrices.length ? Math.max(...bundlePrices) : null;
-    const bundleMid = Number.isFinite(bundleLow) && Number.isFinite(bundleHigh) ? (bundleLow + bundleHigh) / 2 : null;
-    const bundleUpWatch = expansionPrice(bundleMid, LEDGEFORGE_2_BREAK_PCT, "up");
-    const bundleDownWatch = expansionPrice(bundleMid, LEDGEFORGE_2_BREAK_PCT, "down");
-
-    sendToTelegram8(
-        `${emoji} BOWLBRIDGE_2 ${tier}
-` +
-        `Symbol: ${pending.symbol}
-` +
-        `Read: stricter same-zone POT-2 subgroup bridge bundle
-
-` +
-
-        `Bridge zone: ${fmtPrice(bundleLow)} – ${fmtPrice(bundleHigh)}
-` +
-        `Midpoint: ${fmtPrice(bundleMid)}
-` +
-        `Upside watch (${LEDGEFORGE_2_BREAK_PCT}%): ${fmtPrice(bundleUpWatch)}
-` +
-        `Downside watch (${LEDGEFORGE_2_BREAK_PCT}%): ${fmtPrice(bundleDownWatch)}
-
-` +
-
-        `Bridge groups: ${candidates.map(c => c.group).slice(0, 12).join(", ")}
-` +
-        `Main families: ${[...new Set(candidates.map(c => c.main))].sort((a, b) => a - b).join(", ")}
-` +
-        `Bundle count: ${candidates.length}
-` +
-        `Avg price distance: ${avgClose.toFixed(2)}%
-
-` +
-
-        `First wave range: ${formatDateTime(firstTime)}
-` +
-        `Second wave range: ${formatDateTime(secondTime)}
-
-` +
-
-        `Top bridges:
-${topLines}
-
-` +
-        `Notes:
-` +
-        `- This version filters out far-away step repeats.
-` +
-        `- Best quality often comes after a spike/displacement.
-` +
-        `- ${primeSessionText(secondTime)}`
-    );
-
-    for (const c of candidates) {
-        bowlbridge2LastFire[`${pending.symbol}|${pending.side}|${c.group}`] = Date.now();
-    }
-
-    saveState();
-}
-
-function processLedgeforge2(symbol, group, ts, body) {
-    if (!LEDGEFORGE_2_ENABLED) return;
-    if (!symbol || !group || !body) return;
-
-    const pot = parsePot2Group(group);
-    if (!pot) return;
-
-    const side = getDivergenceLabel(body);
-    const price = parsePatternPrice(body);
-    if (price === null) return;
-
-    if (!ledgeforge2Memory[symbol]) ledgeforge2Memory[symbol] = {};
-    if (!ledgeforge2Memory[symbol][side]) {
-        ledgeforge2Memory[symbol][side] = {
-            events: [],
-            stacks: [],
-            locks: []
-        };
-    }
-
-    const state = ledgeforge2Memory[symbol][side];
-
-    // Watch existing locks/seeds for trade lifecycle follow-ups.
-    state.locks = (state.locks || []).filter(lock => {
-        if (!lock || !lock.createdAt || ts - lock.createdAt > LEDGEFORGE_2_LOCK_TTL_MS) return false;
-
-        processLedgeFollowups(
-            "LEDGEFORGE_2",
-            LEDGEFORGE_2_FOLLOWUPS_ENABLED,
-            symbol,
-            pot.group,
-            ts,
-            price,
-            lock,
-            LEDGEFORGE_2_BREAK_PCT
-        );
-
-        return !lock.failedNotified;
-    });
-
-    state.events = (state.events || []).filter(e => e.time >= ts - LEDGEFORGE_2_STACK_WINDOW_MS);
-    state.events.push({
-        group: pot.group,
-        main: pot.main,
-        price,
-        time: ts
-    });
-
-    const uniqueGroups = [...new Set(state.events.map(e => e.group).filter(Boolean))].sort();
-    if (uniqueGroups.length < LEDGEFORGE_2_MIN_STACK_GROUPS) return;
-
-    const stackEvents = [...state.events];
-    const stackPrice = ledgeAveragePrice(stackEvents);
-    if (stackPrice === null) return;
-
-    const stackFamilies = [...new Set(stackEvents.map(e => e.main).filter(Number.isFinite))].sort((a, b) => a - b);
-    const spread = priceSpreadPct(stackEvents);
-
-    const stack = {
-        groups: uniqueGroups,
-        key: ledgeStackKey(uniqueGroups),
-        families: stackFamilies,
-        price: stackPrice,
-        firstTime: stackEvents[0].time,
-        lastTime: ts,
-        time: ts,
-        spread
-    };
-
-    // Silent multi-family stack seed: no early warning. It only alerts if price later expands.
-    if (
-        uniqueGroups.length >= LEDGEFORGE_2_STACK_SEED_MIN_GROUPS &&
-        stackFamilies.length >= LEDGEFORGE_2_STACK_SEED_MIN_FAMILIES &&
-        Number.isFinite(spread) &&
-        spread <= LEDGEFORGE_2_STACK_SEED_PRICE_SPREAD_PCT
-    ) {
-        const seedKey = `${symbol}|${side}|SEED|${stackFamilies.join("-")}|${pctBucket(stackPrice)}`;
-        const recentlySeeded = ledgeforge2LastFire[seedKey] && ts - ledgeforge2LastFire[seedKey] < LEDGEFORGE_2_LOCK_COOLDOWN_MS;
-
-        if (!recentlySeeded) {
-            const seedLock = {
-                id: `seed-${ts}-${Math.random().toString(36).slice(2)}`,
-                source: "STACK SEED",
-                groups: stack.groups,
-                overlapGroups: [],
-                firstTime: stack.firstTime,
-                secondTime: stack.lastTime,
-                firstPrice: stack.price,
-                secondPrice: stack.price,
-                midPrice: stack.price,
-                createdAt: ts,
-                broken: false
-            };
-
-            enrichLockForFollowups(seedLock, LEDGEFORGE_2_BREAK_PCT);
-            state.locks.push(seedLock);
-
-            ledgeforge2LastFire[seedKey] = ts;
-        }
-    }
-
-    state.stacks = (state.stacks || []).filter(s =>
-        s && s.time >= ts - (LEDGEFORGE_2_MAX_REPEAT_GAP_MS + (10 * 60 * 1000))
-    );
-
-    const previousStacks = state.stacks
-        .filter(s => {
-            const gap = ts - s.time;
-            if (gap < LEDGEFORGE_2_MIN_REPEAT_GAP_MS || gap > LEDGEFORGE_2_MAX_REPEAT_GAP_MS) return false;
-
-            const overlap = ledgeOverlapGroups(s.groups, stack.groups);
-            const minOverlap = gap < LEDGEFORGE_2_SHORT_GAP_MS
-                ? LEDGEFORGE_2_SHORT_GAP_MIN_OVERLAP
-                : LEDGEFORGE_2_MIN_OVERLAP;
-
-            if (overlap.length < minOverlap) return false;
-
-            const priceDistance = absPctDiff(s.price, stack.price);
-            return Number.isFinite(priceDistance) && priceDistance <= LEDGEFORGE_2_PRICE_CLOSE_PCT;
-        })
-        .sort((a, b) => {
-            const overlapA = ledgeOverlapGroups(a.groups, stack.groups).length;
-            const overlapB = ledgeOverlapGroups(b.groups, stack.groups).length;
-            return overlapB - overlapA || b.time - a.time;
-        });
-
-    const previous = previousStacks[0] || null;
-
-    const lastStack = state.stacks[state.stacks.length - 1];
-    if (!lastStack || lastStack.key !== stack.key || ts - lastStack.time > LEDGEFORGE_2_STACK_WINDOW_MS) {
-        state.stacks.push(stack);
-    } else {
-        lastStack.groups = stack.groups;
-        lastStack.key = stack.key;
-        lastStack.families = stack.families;
-        lastStack.price = stack.price;
-        lastStack.spread = stack.spread;
-        lastStack.lastTime = stack.lastTime;
-        lastStack.time = stack.time;
-    }
-
-    if (!previous) return;
-
-    const overlap = ledgeOverlapGroups(previous.groups, stack.groups);
-    const priceDistance = absPctDiff(previous.price, stack.price);
-    const priceMove = pctDiff(previous.price, stack.price);
-    const gapMs = ts - previous.time;
-    const minOverlap = gapMs < LEDGEFORGE_2_SHORT_GAP_MS
-        ? LEDGEFORGE_2_SHORT_GAP_MIN_OVERLAP
-        : LEDGEFORGE_2_MIN_OVERLAP;
-
-    if (overlap.length < minOverlap) return;
-    if (!Number.isFinite(priceDistance) || priceDistance > LEDGEFORGE_2_PRICE_CLOSE_PCT) return;
-
-    const lockKey = `${symbol}|${side}|${overlap.sort().join("+")}|${pctBucket((previous.price + stack.price) / 2)}`;
-    const lastLock = ledgeforge2LastFire[lockKey] || 0;
-    if (ts - lastLock < LEDGEFORGE_2_LOCK_COOLDOWN_MS) return;
-
-    const candidate = {
-        symbol,
-        side,
-        lockKey,
-        previous,
-        stack,
-        overlap,
-        priceDistance,
-        priceMove,
-        gapMs,
-        score: (overlap.length * 20) + (stack.families.length * 6) - (priceDistance * 10) + Math.min(10, uniqueGroups.length)
-    };
-
-    const pendingKey = `${symbol}|${side}`;
-    if (!ledgeforge2Pending[pendingKey]) {
-        ledgeforge2Pending[pendingKey] = {
-            symbol,
-            side,
-            candidates: [],
-            timer: null
-        };
-    }
-
-    ledgeforge2Pending[pendingKey].candidates.push(candidate);
-
-    if (!ledgeforge2Pending[pendingKey].timer) {
-        ledgeforge2Pending[pendingKey].timer = setTimeout(() => flushLedgeforge2(pendingKey), LEDGEFORGE_2_FINALIZE_MS);
-    }
-}
-
-function flushLedgeforge2(pendingKey) {
-    const pending = ledgeforge2Pending[pendingKey];
-    if (!pending) return;
-
-    delete ledgeforge2Pending[pendingKey];
-
-    const candidates = (pending.candidates || [])
-        .filter(Boolean)
-        .sort((a, b) => b.score - a.score || a.priceDistance - b.priceDistance);
-
-    if (!candidates.length) return;
-
-    const best = candidates[0];
-    const now = Date.now();
-    const lastLock = ledgeforge2LastFire[best.lockKey] || 0;
-    if (now - lastLock < LEDGEFORGE_2_LOCK_COOLDOWN_MS) return;
-
-    if (!ledgeforge2Memory[pending.symbol]) return;
-    if (!ledgeforge2Memory[pending.symbol][pending.side]) return;
-
-    const state = ledgeforge2Memory[pending.symbol][pending.side];
-    const midPrice = (best.previous.price + best.stack.price) / 2;
-    const gapMin = Math.floor(best.gapMs / 60000);
-    const gapSec = Math.floor((best.gapMs % 60000) / 1000);
-
-    const lock = {
-        id: `${now}-${Math.random().toString(36).slice(2)}`,
-        source: "LOCK",
-        groups: best.stack.groups,
-        overlapGroups: best.overlap,
-        firstTime: best.previous.time,
-        secondTime: best.stack.time,
-        firstPrice: best.previous.price,
-        secondPrice: best.stack.price,
-        midPrice,
-        createdAt: now,
-        broken: false
-    };
-
-    enrichLockForFollowups(lock, LEDGEFORGE_2_BREAK_PCT);
-    state.locks.push(lock);
-    ledgeforge2LastFire[best.lockKey] = now;
-
-    const lock2Zone = zoneBounds(best.previous.price, best.stack.price);
-    const lock2UpWatch = expansionPrice(lock2Zone.mid, LEDGEFORGE_2_BREAK_PCT, "up");
-    const lock2DownWatch = expansionPrice(lock2Zone.mid, LEDGEFORGE_2_BREAK_PCT, "down");
-
-    sendToTelegram8(
-        `🔐 LEDGEFORGE_2 LOCK
-` +
-        `Symbol: ${pending.symbol}
-` +
-        `Read: finalized overlapping POT-2 stack repeated at near-same price
-
-` +
-
-        `Ledge zone: ${fmtPrice(lock2Zone.low)} – ${fmtPrice(lock2Zone.high)}
-` +
-        `Midpoint: ${fmtPrice(lock2Zone.mid)}
-` +
-        `Upside watch (${LEDGEFORGE_2_BREAK_PCT}%): ${fmtPrice(lock2UpWatch)}
-` +
-        `Downside watch (${LEDGEFORGE_2_BREAK_PCT}%): ${fmtPrice(lock2DownWatch)}
-
-` +
-
-        `First stack: ${best.previous.groups.join(", ")}
-` +
-        `Second stack: ${best.stack.groups.join(", ")}
-` +
-        `Families: ${best.stack.families.join(", ")}
-` +
-        `Overlap: ${best.overlap.join(", ")}
-` +
-        `Gap: ${gapMin}m ${gapSec}s
-
-` +
-
-        `First stack price: ${fmtPrice(best.previous.price)}
-` +
-        `Second stack price: ${fmtPrice(best.stack.price)}
-` +
-        `Price move: ${fmtPctMaybe(best.priceMove)}
-` +
-        `Price distance: ${best.priceDistance.toFixed(2)}%
-
-` +
-
-        `Notes:
-` +
-        `- V2 waits to send the best final stack.
-` +
-        `- Watch hold above the upside level or rejection below the downside level.
-` +
-        `- ${primeSessionText(best.stack.time)}`
-    );
-
-    saveState();
-}
-
-// ==========================================================
-//  SOURCE RANGE ENGINES + INAUGURAL FILTER (PERSISTENT)
-//  Source engines:
-//    - SALSA   = 2 hits, 3m to 9m 59s
-//    - GAMMA   = 2 hits, 10m to 14m 59s
-//    - NEPTUNE = 2 hits, 15m to 2h
-//
-//  Critical behaviour:
-//    - SALSA / GAMMA / NEPTUNE fire to Bot 5 PER EXACT GROUP.
-//    - Example: UNIUSDT 26E and UNIUSDT 26Y can both fire.
-//    - INAUGURAL is only a separate Bot 1 filter layer.
-// ==========================================================
-
-let inauguralState = persisted.inauguralState || {};
-
-const INAUGURAL_RANGE_WINDOW_MS = 2 * 60 * 60 * 1000; // 2 hours
-const INAUGURAL_RANGE_MAX_SLOTS = 2;
-const RANGE_REPEAT_MIN_HITS = 2;
-
-function rangeFamilyFromGroup(group) {
-    return getFamily(group);
-}
-
-function processRangeRepeatEngine(cfg, symbol, group, ts) {
-
     if (!symbol || !group) return;
 
-    const memory = cfg.memory;
+    const g = normalizeFirstGroup(group);
+    if (!g) return;
 
-    if (!memory[symbol]) {
-        memory[symbol] = {};
-    }
+    const store = getFirstBot8Store();
+    let state = store[symbol];
 
-    if (!memory[symbol][group]) {
-        memory[symbol][group] = [];
-    }
-
-    // Add current hit to THIS source engine memory.
-    // SALSA, GAMMA, and NEPTUNE each have separate memory objects.
-    memory[symbol][group].push(ts);
-
-    const cutoff = ts - cfg.maxSpanMs - (60 * 1000);
-
-    let clean = memory[symbol][group]
-        .filter(t => typeof t === "number" && t >= cutoff)
-        .sort((a, b) => a - b);
-
-    clean = [...new Set(clean)];
-    memory[symbol][group] = clean;
-
-    const picked = findRangePairEndingAtCurrent(
-        clean,
-        cfg.minSpanMs,
-        cfg.maxSpanMs
-    );
-
-    if (!picked) return;
-
-    const firstTime = picked[0];
-    const lastTime = picked[picked.length - 1];
-    const spanMs = lastTime - firstTime;
-
-    // 1) ALWAYS send the raw source engine alert to Bot 5.
-    // This is per symbol + exact group.
-    sendRangeSourceAlert(
-        cfg,
-        symbol,
-        group,
-        picked,
-        spanMs
-    );
-
-    // 2) Run INAUGURAL separately on Bot 1.
-    const result = recordInauguralRangeAlert(
-        cfg,
-        symbol,
-        group,
-        ts,
-        picked,
-        spanMs
-    );
-
-    if (!result || !result.fired) {
-        console.log(
-            "INAUGURAL range matched but blocked:",
-            cfg.alertName,
-            "symbol:", symbol,
-            "group:", group,
-            "reason:", result?.reason || "unknown"
-        );
-    }
-
-    // Reset only this exact group for THIS source engine after source alert.
-    // It does NOT affect other exact groups or other source engines.
-    delete memory[symbol][group];
-
-    saveState();
-}
-
-function findRangePairEndingAtCurrent(buf, minSpanMs, maxSpanMs) {
-
-    if (!Array.isArray(buf) || buf.length < RANGE_REPEAT_MIN_HITS) {
-        return null;
-    }
-
-    const lastIndex = buf.length - 1;
-    const lastTime = buf[lastIndex];
-
-    // The newest/current hit must complete the 2-hit pattern.
-    for (let i = 0; i < lastIndex; i++) {
-
-        const firstTime = buf[i];
-        const spanMs = lastTime - firstTime;
-
-        if (spanMs > maxSpanMs) {
-            continue;
-        }
-
-        if (spanMs < minSpanMs) {
-            break;
-        }
-
-        return [firstTime, lastTime];
-    }
-
-    return null;
-}
-
-function sendRangeSourceAlert(cfg, symbol, group, hitTimes, spanMs) {
-
-    const family = rangeFamilyFromGroup(group);
-    const spanMin = Math.floor(spanMs / 60000);
-    const spanSec = Math.floor((spanMs % 60000) / 1000);
-    const emoji = cfg.emoji || "🔔";
-
-    const hitLines = hitTimes
-        .map((t, i) => (i + 1) + ") " + formatDateTime(t))
-        .join("\n");
-
-    sendToTelegram5(
-        emoji + " " + cfg.source + "\n" +
-        "Symbol: " + symbol + "\n" +
-        "Group: " + group + "\n" +
-        "Family: " + family + "\n" +
-        "Hits: " + RANGE_REPEAT_MIN_HITS + "\n" +
-        "Range: " + cfg.rangeLabel + "\n" +
-        "Span: " + spanMin + "m " + spanSec + "s\n" +
-        "Window: " + cfg.rangeLabel + "\n\n" +
-        "Times:\n" + hitLines
-    );
-}
-
-function recordInauguralRangeAlert(cfg, symbol, group, ts, hitTimes, spanMs) {
-
-    if (!inauguralState || typeof inauguralState !== "object") {
-        inauguralState = {};
-    }
-
-    if (!inauguralState[cfg.alertName] || typeof inauguralState[cfg.alertName] !== "object") {
-        inauguralState[cfg.alertName] = {};
-    }
-
-    const family = rangeFamilyFromGroup(group);
-    const current = inauguralState[cfg.alertName][symbol];
-
-    const invalidOldFormat =
-        current &&
-        (
-            typeof current.windowStart !== "number" ||
-            !Array.isArray(current.slots)
-        );
-
+    // If a valid FIRST already fired, suppress this symbol until its 2h lock expires.
     if (
-        !current ||
-        invalidOldFormat ||
-        (ts - current.windowStart >= INAUGURAL_RANGE_WINDOW_MS)
+        state &&
+        Number(state.lockedUntil || 0) &&
+        ts < Number(state.lockedUntil || 0)
     ) {
-        inauguralState[cfg.alertName][symbol] = {
-            windowStart: ts,
-            slots: []
-        };
+        return;
     }
 
-    const state = inauguralState[cfg.alertName][symbol];
-
-    if (state.slots.some(e => e.family === family)) {
-        return {
-            fired: false,
-            reason: "same family already used in this 2h window"
-        };
+    // Start fresh if no state, invalid state, or previous lock has expired.
+    if (!state || !state.first || typeof state.first.time !== "number") {
+        resetFirstBot8Cycle(store, symbol, g, ts);
+        saveState();
+        return;
     }
 
-    if (state.slots.length >= INAUGURAL_RANGE_MAX_SLOTS) {
-        return {
-            fired: false,
-            reason: "2 slots already used in this 2h window"
-        };
+    const first = state.first;
+    const gapMs = ts - first.time;
+
+    // If 1h has expired without a matching different group, restart cycle from this alert.
+    if (gapMs > FIRST_PAIR_SPAN_MS) {
+        resetFirstBot8Cycle(store, symbol, g, ts);
+        saveState();
+        return;
     }
 
-    state.slots.push({
-        source: cfg.source,
-        family,
-        group,
-        time: ts
-    });
+    // Same exact group does NOT complete the pair.
+    // Keep waiting until 1h expires.
+    if (first.group === g) {
+        saveState();
+        return;
+    }
 
-    const slot = state.slots.length;
-    const spanMin = Math.floor(spanMs / 60000);
-    const spanSec = Math.floor((spanMs % 60000) / 1000);
+    // Different exact group inside 1h completes FIRST.
+    const gapMin = Math.floor(gapMs / 60000);
+    const gapSec = Math.floor((gapMs % 60000) / 1000);
+    const lockedUntil = first.time + FIRST_WINDOW_MS;
 
-    const hitLines = hitTimes
-        .map((t, i) => (i + 1) + ") " + formatDateTime(t))
-        .join("\n");
+    state.firedPair = {
+        firstGroup: first.group,
+        firstTime: first.time,
+        secondGroup: g,
+        secondTime: ts
+    };
 
-    const priorSlots = state.slots
-        .map((e, i) =>
-            (i + 1) +
-            ") Family " + e.family +
-            " | Group " + e.group +
-            " | " + formatDateTime(e.time)
-        )
-        .join("\n");
+    state.lockedUntil = lockedUntil;
 
-    sendToTelegram1(
-        "🎖 " + cfg.alertName + "\n" +
-        "Source: " + cfg.source + "\n" +
+    sendToTelegram8(
+        "🥇 FIRST\n" +
         "Symbol: " + symbol + "\n" +
-        "Group: " + group + "\n" +
-        "Family: " + family + "\n" +
-        "Slot: " + slot + "/" + INAUGURAL_RANGE_MAX_SLOTS + "\n" +
-        "Rule: First 2 different families in 2 hours\n" +
-        "Range: " + cfg.rangeLabel + "\n" +
-        "Span: " + spanMin + "m " + spanSec + "s\n" +
-        "Window Start: " + formatDateTime(state.windowStart) + "\n\n" +
-        "2 Hits:\n" + hitLines + "\n\n" +
-        "Slots Used:\n" + priorSlots
+        "Rule: first different-group pair, restart after 1h if incomplete\n" +
+        "Condition: exact groups must be different\n\n" +
+        "1) " + first.group + " @ " + formatDateTime(first.time) + "\n" +
+        "2) " + g + " @ " + formatDateTime(ts) + "\n" +
+        "Gap: " + gapMin + "m " + gapSec + "s\n" +
+        "Locked Until: " + formatDateTime(lockedUntil)
     );
 
     saveState();
-
-    return {
-        fired: true,
-        reason: "sent",
-        slot
-    };
 }
+
 
 // ==========================================================
 //  WEBHOOK HANDLER
@@ -5229,15 +3632,21 @@ app.post("/incoming", (req, res) => {
         const group  = (body.group || "").trim();
         const symbol = normalizeSymbol(body.symbol);
         const isHash = group.startsWith("#");
+        const isPeterPayload = isPeterForgePayload(body, group);
 
         const ts = nowMs();
 
-        const hash = alertHash(symbol, group, ts);
+        const effectiveHashGroup = group || (isPeterPayload
+            ? `PETER-${body.direction || ""}-${body.matched_tfs || body.timeframes || body.tfs || body.tf_combo || ""}`
+            : "");
+
+        const hash = alertHash(symbol, effectiveHashGroup, ts);
         if (recentHashes.has(hash)) return res.sendStatus(200);
         recentHashes.add(hash);
         setTimeout(() => recentHashes.delete(hash), 300000);
 
-        if (!symbol || !group) return res.sendStatus(200);
+        if (!symbol) return res.sendStatus(200);
+        if (!group && !isPeterPayload) return res.sendStatus(200);
 
         if (group) {
             if (!events[group]) events[group] = [];
@@ -5251,7 +3660,7 @@ app.post("/incoming", (req, res) => {
 		
         // ✅ FIX: FIRST must IGNORE # groups and group-less Peter_o payloads
         if (group && !isHash) {
-            // processFirst(symbol, group, ts); // disabled temporarily
+            processFirst(symbol, group, ts);
             // processInaugural(symbol, group, ts); // disabled: now range-engine driven
         }
 
@@ -5261,6 +3670,8 @@ app.post("/incoming", (req, res) => {
 
 if (!isHash) {
     // 🔵 NORMAL ECOSYSTEM
+    // Group-less Peter_o payloads are handled by PETERFORGE only.
+
     if (group) {
         processAnyTwo(symbol, group, ts);    
         processBundle(symbol, group, ts);      
@@ -5285,13 +3696,13 @@ if (!isHash) {
         //processAudit(symbol, group, ts, body);
         processBababia(symbol, group, ts);
         processMAMAMIA(symbol, group, ts);
-        processBowlbridge(symbol, group, ts, body);
-        processLedgeforge(symbol, group, ts, body);
-        processBowlbridge2(symbol, group, ts, body);
-        processLedgeforge2(symbol, group, ts, body);
+        processZoneforge(symbol, group, ts, body);
+        // processAnchorforge(symbol, group, ts, body); // disabled temporarily for CABAL Bot3
         //processWakanda(symbol, group, ts, body);
         processJupiter(symbol, group, ts);
     }
+
+    processPeterforge(symbol, group, ts, body);
 
 } else {
     // 🔴 HASH ECOSYSTEM (isolated)
