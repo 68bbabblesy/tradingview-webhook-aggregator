@@ -3602,6 +3602,78 @@ function processFirst(symbol, group, ts) {
 
 
 // ==========================================================
+//  PETERFORGE PAYLOAD HELPERS
+//  Runtime safety:
+//    - /incoming uses isPeterForgePayload() before split pipeline.
+//    - These helpers prevent ReferenceError if Peterforge block is absent.
+// ==========================================================
+
+function textFromBody(body) {
+    if (!body || typeof body !== "object") return "";
+
+    return [
+        body.kind,
+        body.signal,
+        body.type,
+        body.action,
+        body.direction,
+        body.name,
+        body.source,
+        body.message,
+        body.alert_name,
+        body.indicator,
+        body.script,
+        body.bot
+    ]
+        .filter(Boolean)
+        .map(x => String(x))
+        .join(" ");
+}
+
+function isPeterForgePayload(body, group) {
+    if (!body || typeof body !== "object") return false;
+
+    const text = textFromBody(body).toUpperCase();
+
+    if (text.includes("PETER")) return true;
+
+    // Fallback for Peter_o JSON that may not carry the word PETER,
+    // but carries the distinctive MTF divergence fields.
+    const hasCombo = Boolean(
+        body.matched_tfs ||
+        body.timeframes ||
+        body.tfs ||
+        body.tf_combo
+    );
+
+    const hasPrice =
+        body.price !== undefined &&
+        body.price !== null &&
+        String(body.price).trim() !== "";
+
+    const dir = String(body.direction || body.dir || "").toUpperCase();
+
+    const hasDirection =
+        dir === "POSITIVE" ||
+        dir === "NEGATIVE" ||
+        dir === "BUY" ||
+        dir === "SELL";
+
+    return hasCombo && hasPrice && hasDirection && !group;
+}
+
+
+// ==========================================================
+//  PETERFORGE NO-OP FALLBACK
+//  Keeps route safe if Peterforge was removed/commented out.
+// ==========================================================
+
+function processPeterforge(symbol, group, ts, body) {
+    return;
+}
+
+
+// ==========================================================
 //  WEBHOOK HANDLER
 // ==========================================================
 
