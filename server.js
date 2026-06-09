@@ -192,12 +192,12 @@ function buildStateSnapshot() {
         boomMemory,
         jupiterState,
         yabaMemory,
-        zoneforgeMemory,
-        zoneforgeLastFire,
-        anchorforgeMemory,
-        anchorforgeLastFire,
-        peterforgeMemory,
-        peterforgeLastFire,
+        zoneforgeMemory: typeof zoneforgeMemory !== "undefined" ? zoneforgeMemory : {},
+        zoneforgeLastFire: typeof zoneforgeLastFire !== "undefined" ? zoneforgeLastFire : {},
+        anchorforgeMemory: typeof anchorforgeMemory !== "undefined" ? anchorforgeMemory : {},
+        anchorforgeLastFire: typeof anchorforgeLastFire !== "undefined" ? anchorforgeLastFire : {},
+        peterforgeMemory: typeof peterforgeMemory !== "undefined" ? peterforgeMemory : {},
+        peterforgeLastFire: typeof peterforgeLastFire !== "undefined" ? peterforgeLastFire : {},
         telegramOutbox
     };
 }
@@ -313,6 +313,30 @@ function pruneCompactComboState(state, ts, windowMs) {
 
 // Load previous state
 const persisted = loadState();
+let ledgeforge2LastFire = persisted.ledgeforge2LastFire || {};
+
+let ledgeforge2Memory = persisted.ledgeforge2Memory || {};
+
+let bowlbridge2LastFire = persisted.bowlbridge2LastFire || {};
+
+let bowlbridge2Memory = persisted.bowlbridge2Memory || {};
+
+let ledgeforgeLastFire = persisted.ledgeforgeLastFire || {};
+
+let ledgeforgeMemory = persisted.ledgeforgeMemory || {};
+
+let bowlbridgeLastFire = persisted.bowlbridgeLastFire || {};
+
+let bowlbridgeMemory = persisted.bowlbridgeMemory || {};
+
+let peterforgeLastFire = persisted.peterforgeLastFire || {};
+
+let peterforgeMemory = persisted.peterforgeMemory || {};
+
+let anchorforgeLastFire = persisted.anchorforgeLastFire || {};
+
+let anchorforgeMemory = persisted.anchorforgeMemory || {};
+
 let zoneforgeLastFire = persisted.zoneforgeLastFire || {};
 
 let zoneforgeMemory = persisted.zoneforgeMemory || {};
@@ -3966,7 +3990,7 @@ if (!isHash) {
         processJupiter(symbol, group, ts);
     }
 
-    processPeterforge(symbol, group, ts, body);
+    // processPeterforge(symbol, group, ts, body); // disabled by forge cleanup
 
 } else {
     // 🔴 HASH ECOSYSTEM (isolated)
