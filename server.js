@@ -313,6 +313,10 @@ function pruneCompactComboState(state, ts, windowMs) {
 
 // Load previous state
 const persisted = loadState();
+let zoneforgeLastFire = persisted.zoneforgeLastFire || {};
+
+let zoneforgeMemory = persisted.zoneforgeMemory || {};
+
 
 
 
@@ -1025,80 +1029,121 @@ function getRecentHashBefore(symbol, ts, windowMs) {
 }
 
 // ==========================================================
-//  BAZOOKA (PERSISTENT — YABA ↔ HASH CONFIRMATION)
-//  Modes:
-//    - Mode 1: YABA → HASH within 30m
-//    - Mode 2: HASH → YABA within 30m
-//  Bot 7
+//  BAZOOKA (HASH ECOSYSTEM — 2+ # flavour alerts in 5m)
+//  Bot 4
+//
+//  Rule:
+//    - # ecosystem only
+//    - Group must look like #1A, #1G, #2B, #3J, etc.
+//    - Same symbol
+//    - 2 or more # flavour alerts inside 5 minutes
+//    - Fires once per 5-minute cluster
+//
+//  Old YABA/GAMMA activation links are disabled by no-op activators.
 // ==========================================================
-
-// bazookaState[symbol] = {
-//   source: "YABA",
-//   sourceTime: ts,
-//   sourceGroup: group
-// }
 
 let bazookaState = persisted.bazookaState || {};
 
-const BAZOOKA_EXPIRE_MS = 30 * 60 * 1000; // 30 minutes
+const HASH_ECOSYSTEM_WINDOW_MS = 5 * 60 * 1000;
+const HASH_ECOSYSTEM_STORE_KEY = "__HASH_ECOSYSTEM_CLUSTER__";
 
-function sendBazookaAlert(symbol, mode, sourceGroup, sourceTime, hashGroup, hashTime) {
+function isHashFlavourGroup(group) {
+    return /^#\d+[A-Z]+$/i.test(String(group || "").trim());
+}
 
-    const firstTime = sourceTime <= hashTime ? sourceTime : hashTime;
-    const secondTime = sourceTime <= hashTime ? hashTime : sourceTime;
+function getHashEcosystemStore() {
+    if (!bazookaState[HASH_ECOSYSTEM_STORE_KEY] || typeof bazookaState[HASH_ECOSYSTEM_STORE_KEY] !== "object") {
+        bazookaState[HASH_ECOSYSTEM_STORE_KEY] = {};
+    }
 
-    const gapMs = secondTime - firstTime;
-    const gapMin = Math.floor(gapMs / 60000);
-    const gapSec = Math.floor((gapMs % 60000) / 1000);
+    return bazookaState[HASH_ECOSYSTEM_STORE_KEY];
+}
 
-    sendToTelegram7(
-        `💥 BAZOOKA\n` +
-        `Mode: ${mode}\n` +
-        `Source: YABA\n` +
-        `Symbol: ${symbol}\n\n` +
+function createHashEcosystemCluster(group, ts) {
+    return {
+        windowStart: ts,
+        events: [
+            {
+                group,
+                time: ts
+            }
+        ],
+        bazookaSent: false,
+        wakandaSent: false
+    };
+}
 
-        `YABA Alert:\n` +
-        `Group: ${sourceGroup || "n/a"}\n` +
-        `Time: ${formatDateTime(sourceTime)}\n\n` +
+function hashEcoFormatEvents(events) {
+    return (events || [])
+        .slice()
+        .sort((a, b) => a.time - b.time)
+        .map((e, i) =>
+            (i + 1) + ") " + e.group + " @ " + formatDateTime(e.time)
+        )
+        .join("\n");
+}
 
-        `Hash Confirmation:\n` +
-        `Group: ${hashGroup}\n` +
-        `Time: ${formatDateTime(hashTime)}\n\n` +
+function sendHashEcosystemBazooka(symbol, cluster) {
+    const events = (cluster.events || []).slice().sort((a, b) => a.time - b.time);
 
-        `Gap: ${gapMin}m ${gapSec}s`
+    if (events.length < 2) return;
+
+    const first = events[0];
+    const last = events[events.length - 1];
+
+    const spanMs = last.time - first.time;
+    const spanMin = Math.floor(spanMs / 60000);
+    const spanSec = Math.floor((spanMs % 60000) / 1000);
+
+    sendToTelegram4(
+        "💥 BAZOOKA\n" +
+        "Mode: HASH ECOSYSTEM\n" +
+        "Symbol: " + symbol + "\n" +
+        "Condition: 2+ # flavour alerts inside 5 minutes\n" +
+        "Count: " + events.length + "\n" +
+        "Span: " + spanMin + "m " + spanSec + "s\n" +
+        "Window Start: " + formatDateTime(cluster.windowStart) + "\n\n" +
+        "Alerts:\n" + hashEcoFormatEvents(events)
     );
 }
 
-function activateBazooka(symbol, source, sourceTime, sourceGroup) {
+function finalizeExpiredHashEcosystemCluster(symbol, cluster, ts) {
+    if (!cluster || !Array.isArray(cluster.events)) return false;
 
-    if (!symbol || !source) return;
+    const expired = ts - Number(cluster.windowStart || 0) >= HASH_ECOSYSTEM_WINDOW_MS;
 
-    // BAZOOKA is currently only for YABA.
-    if (source !== "YABA") return;
+    if (!expired) return false;
 
-    // MODE 2: HASH → YABA
-    // If a recent hash already happened before YABA, fire Mode 2 immediately.
-    const priorHash = getRecentHashBefore(symbol, sourceTime, BAZOOKA_EXPIRE_MS);
+    if (cluster.events.length === 1 && !cluster.wakandaSent && !cluster.bazookaSent) {
+        const only = cluster.events[0];
 
-    if (priorHash) {
-        sendBazookaAlert(
-            symbol,
-            "HASH → YABA",
-            sourceGroup,
-            sourceTime,
-            priorHash.group,
-            priorHash.time
+        sendToTelegram4(
+            "🚨 WAKANDA\n" +
+            "Mode: HASH ECOSYSTEM\n" +
+            "Symbol: " + symbol + "\n" +
+            "Condition: exactly 1 # flavour alert in 5 minutes\n" +
+            "Group: " + only.group + "\n" +
+            "Time: " + formatDateTime(only.time) + "\n" +
+            "Window Start: " + formatDateTime(cluster.windowStart) + "\n" +
+            "Window End: " + formatDateTime(Number(cluster.windowStart || 0) + HASH_ECOSYSTEM_WINDOW_MS)
         );
+
+        cluster.wakandaSent = true;
     }
 
-    // IMPORTANT:
-    // Even if Mode 2 fired, still arm Mode 1.
-    // This allows a later hash after YABA to fire YABA → HASH as well.
-    bazookaState[symbol] = {
-        source,
-        sourceTime,
-        sourceGroup: sourceGroup || "n/a"
-    };
+    return true;
+}
+
+function scanHashEcosystemSingletons(ts = Date.now()) {
+    const store = getHashEcosystemStore();
+
+    for (const symbol of Object.keys(store)) {
+        const cluster = store[symbol];
+
+        if (finalizeExpiredHashEcosystemCluster(symbol, cluster, ts)) {
+            delete store[symbol];
+        }
+    }
 
     saveState();
 }
@@ -1106,51 +1151,62 @@ function activateBazooka(symbol, source, sourceTime, sourceGroup) {
 function processBazooka(symbol, group, ts) {
 
     if (!symbol || !group) return;
+    if (!isHashFlavourGroup(group)) return;
 
-    // BAZOOKA listens to the first # group after YABA
-    if (!group.startsWith("#")) return;
+    const g = String(group).trim().toUpperCase();
+    const store = getHashEcosystemStore();
 
-    const state = bazookaState[symbol];
+    const existing = store[symbol];
 
-    // Must be activated by YABA first
-    if (!state) return;
+    if (existing && (ts - Number(existing.windowStart || 0) >= HASH_ECOSYSTEM_WINDOW_MS)) {
+        finalizeExpiredHashEcosystemCluster(symbol, existing, ts);
+        delete store[symbol];
+    }
 
-    const gapFromSourceMs = ts - state.sourceTime;
-
-    // Expire stale YABA → HASH tracking after 30 minutes
-    if (gapFromSourceMs > BAZOOKA_EXPIRE_MS) {
-        console.log(
-            "BAZOOKA expired:",
-            symbol,
-            "source:",
-            state.source,
-            "sourceTime:",
-            formatDateTime(state.sourceTime),
-            "hash:",
-            group,
-            "hashTime:",
-            formatDateTime(ts)
-        );
-
-        delete bazookaState[symbol];
+    if (!store[symbol]) {
+        store[symbol] = createHashEcosystemCluster(g, ts);
         saveState();
         return;
     }
 
-    // MODE 1: YABA → HASH
-    sendBazookaAlert(
-        symbol,
-        "YABA → HASH",
-        state.sourceGroup,
-        state.sourceTime,
-        group,
-        ts
-    );
+    const cluster = store[symbol];
 
-    // Reset only after Mode 1 completes.
-    delete bazookaState[symbol];
+    cluster.events.push({
+        group: g,
+        time: ts
+    });
+
+    cluster.events = cluster.events
+        .filter(e => e && typeof e.time === "number" && e.time >= cluster.windowStart)
+        .sort((a, b) => a.time - b.time);
+
+    if (cluster.events.length >= 2 && !cluster.bazookaSent) {
+        cluster.bazookaSent = true;
+        sendHashEcosystemBazooka(symbol, cluster);
+    }
+
     saveState();
 }
+
+// Old activation links are intentionally dead now.
+function activateBazooka(symbol, source, sourceTime, sourceGroup) {
+    return;
+}
+
+// Keep scanner alive so WAKANDA can fire even if no later alert arrives.
+if (!globalThis.__HASH_ECOSYSTEM_SINGLETON_SCAN__) {
+    globalThis.__HASH_ECOSYSTEM_SINGLETON_SCAN__ = setInterval(() => {
+        try {
+            scanHashEcosystemSingletons(Date.now());
+        } catch (err) {
+            console.error("HASH ECOSYSTEM singleton scanner error:", err);
+        }
+    }, 15000);
+}
+
+
+// ==========================================================
+//  PREMIER
 
 // ==========================================================
 //  PREMIER (PERSISTENT HASH MEMORY — HASH → FIRST)
@@ -1191,131 +1247,35 @@ function processPremier(symbol, firstGroup, firstTime) {
 }
 
 // ==========================================================
-//  WAKANDA (PERSISTENT — GAMMA ↔ HASH CONFIRMATION)
-//  Modes:
-//    - Mode 1: GAMMA → HASH within 30m
-//    - Mode 2: HASH → GAMMA within 30m
-//  Bot 7
+//  WAKANDA (HASH ECOSYSTEM — exactly 1 # flavour alert in 5m)
+//  Bot 4
+//
+//  Rule:
+//    - # ecosystem only
+//    - Group must look like #1A, #1G, #2B, #3J, etc.
+//    - Same symbol
+//    - WAKANDA fires only after the full 5-minute window confirms
+//      there was exactly one # flavour alert for that symbol.
+//    - BAZOOKA handles 2+ alerts.
 // ==========================================================
 
-// wakandaState[symbol] = {
-//   source: "GAMMA",
-//   sourceTime: ts,
-//   sourceGroup: group
-// }
-
 let wakandaState = persisted.wakandaState || {};
-
-const WAKANDA_EXPIRE_MS = 30 * 60 * 1000; // 30 minutes
-
-function sendWakandaAlert(symbol, mode, sourceGroup, sourceTime, hashGroup, hashTime) {
-
-    const firstTime = sourceTime <= hashTime ? sourceTime : hashTime;
-    const secondTime = sourceTime <= hashTime ? hashTime : sourceTime;
-
-    const gapMs = secondTime - firstTime;
-    const gapMin = Math.floor(gapMs / 60000);
-    const gapSec = Math.floor((gapMs % 60000) / 1000);
-
-    sendToTelegram7(
-        `🚨 WAKANDA\n` +
-        `Mode: ${mode}\n` +
-        `Source: GAMMA\n` +
-        `Symbol: ${symbol}\n\n` +
-
-        `GAMMA Alert:\n` +
-        `Group: ${sourceGroup || "n/a"}\n` +
-        `Time: ${formatDateTime(sourceTime)}\n\n` +
-
-        `Hash Confirmation:\n` +
-        `Group: ${hashGroup}\n` +
-        `Time: ${formatDateTime(hashTime)}\n\n` +
-
-        `Gap: ${gapMin}m ${gapSec}s`
-    );
-}
-
-function activateWakanda(symbol, source, sourceTime, sourceGroup) {
-
-    if (!symbol || !source) return;
-
-    // WAKANDA is currently only for GAMMA.
-    if (source !== "GAMMA") return;
-
-    // MODE 2: HASH → GAMMA
-    // If a recent hash already happened before GAMMA, fire Mode 2 immediately.
-    const priorHash = getRecentHashBefore(symbol, sourceTime, WAKANDA_EXPIRE_MS);
-
-    if (priorHash) {
-        sendWakandaAlert(
-            symbol,
-            "HASH → GAMMA",
-            sourceGroup,
-            sourceTime,
-            priorHash.group,
-            priorHash.time
-        );
-    }
-
-    // Even if Mode 2 fired, still arm Mode 1.
-    // This allows a later hash after GAMMA to fire GAMMA → HASH as well.
-    wakandaState[symbol] = {
-        source,
-        sourceTime,
-        sourceGroup: sourceGroup || "n/a"
-    };
-
-    saveState();
-}
 
 function processWakanda(symbol, group, ts) {
 
     if (!symbol || !group) return;
+    if (!isHashFlavourGroup(group)) return;
 
-    // WAKANDA listens to the first # group after GAMMA
-    if (!group.startsWith("#")) return;
-
-    const state = wakandaState[symbol];
-
-    // Must be activated by GAMMA first
-    if (!state) return;
-
-    const gapFromSourceMs = ts - state.sourceTime;
-
-    // Expire stale GAMMA → HASH tracking after 30 minutes
-    if (gapFromSourceMs > WAKANDA_EXPIRE_MS) {
-        console.log(
-            "WAKANDA expired:",
-            symbol,
-            "source:",
-            state.source,
-            "sourceTime:",
-            formatDateTime(state.sourceTime),
-            "hash:",
-            group,
-            "hashTime:",
-            formatDateTime(ts)
-        );
-
-        delete wakandaState[symbol];
-        saveState();
-        return;
-    }
-
-    // MODE 1: GAMMA → HASH
-    sendWakandaAlert(
-        symbol,
-        "GAMMA → HASH",
-        state.sourceGroup,
-        state.sourceTime,
-        group,
-        ts
-    );
-
-    // Reset only after Mode 1 completes.
-    delete wakandaState[symbol];
-    saveState();
+    // BAZOOKA records the hash cluster.
+    // WAKANDA only scans/finalizes singleton clusters.
+    scanHashEcosystemSingletons(ts);
 }
+
+// Old activation links are intentionally dead now.
+function activateWakanda(symbol, source, sourceTime, sourceGroup) {
+    return;
+}
+
 
 // ==========================================================
 //  STRUCTURED GROUP FILTER HELPER
@@ -4000,7 +3960,7 @@ if (!isHash) {
         //processAudit(symbol, group, ts, body);
         processBababia(symbol, group, ts);
         processMAMAMIA(symbol, group, ts);
-        processZoneforge(symbol, group, ts, body);
+        // processZoneforge(symbol, group, ts, body); // disabled temporarily
         // processAnchorforge(symbol, group, ts, body); // disabled temporarily for CABAL Bot3
         //processWakanda(symbol, group, ts, body);
         processJupiter(symbol, group, ts);
@@ -4010,21 +3970,20 @@ if (!isHash) {
 
 } else {
     // 🔴 HASH ECOSYSTEM (isolated)
+    // Only # flavour groups like #1A, #1G, #2B, #3J are used by BAZOOKA/WAKANDA.
 
     recordHashEvent(symbol, group, ts);
 
     processGodzilla(symbol, group, ts);
-    // if (typeof processBazooka === "function") {
-    //     processBazooka(symbol, group, ts);
-    // } // disabled temporarily
-    // processWakanda(symbol, group, ts); // disabled temporarily
 
-    // MAMAMIA may be active if you patched the hash-pair test bot.
-    if (typeof processMAMAMIA === "function") {
-    // processMAMAMIA(symbol, group, ts); // disabled while testing INAUGURAL
+    if (typeof processBazooka === "function") {
+        processBazooka(symbol, group, ts);
+    }
+
+    if (typeof processWakanda === "function") {
+        processWakanda(symbol, group, ts);
     }
 }
-
 
         // Strong signal (unchanged)
         try {
