@@ -1530,66 +1530,50 @@ function processGamma(symbol, group, ts) {
 }
 
 // ==========================================================
-//  POT HELPERS
-//  POT 1 = main groups 27–34
-//  POT 2 = main groups 37–45
-//  Groups 35/36 and anything outside both pots are ignored.
-//  Subgroups are ignored: 31A, 31W, 31Z all count as main group 31.
+//  ONE-POT FAMILY HELPERS
+//  There is no POT 1 / POT 2 split anymore.
+//
+//  BABABIA:
+//    - Same symbol
+//    - 2 numeric-family alerts within 5 minutes
+//    - Family numbers must be consecutive
+//    - Examples: 37X + 38J, 41K + 42M
+//    - 2 slots maximum per symbol per 2-hour cycle
+//
+//  MAMAMIA:
+//    - Same symbol
+//    - 2 numeric-family alerts within 5 minutes
+//    - Family numbers must be NON-consecutive
+//    - Examples: 44K + 38G, 37X + 42K
+//    - 2 slots maximum per symbol per 2-hour cycle
+//
+//  Both send to Bot 2.
 // ==========================================================
 
-const POT_WINDOW_MS = 5 * 60 * 1000; // 5 minutes
+const ONE_POT_PAIR_WINDOW_MS = 5 * 60 * 1000;       // 5 minutes
+const ONE_POT_CYCLE_WINDOW_MS = 2 * 60 * 60 * 1000; // 2 hours
+const ONE_POT_MAX_SLOTS = 2;
 
-function getMainGroupNumber(group) {
-    const m = String(group || "").match(/^(\d+)/);
-    return m ? Number(m[1]) : null;
+// Reuse existing persisted container.
+let mamamiaHashMemory = persisted.mamamiaHashMemory || {};
+
+function parseOnePotFamilyGroup(group) {
+    const raw = String(group || "").trim().toUpperCase();
+
+    if (!raw || raw.startsWith("#")) return null;
+
+    const m = raw.match(/^(\d+)([A-Z]+)?$/);
+    if (!m) return null;
+
+    return {
+        raw,
+        family: Number(m[1]),
+        suffix: m[2] || "",
+        time: null
+    };
 }
 
-function getPotInfo(group) {
-    if (!group) return null;
-
-    // Normal ecosystem only
-    if (String(group).startsWith("#")) return null;
-
-    const main = getMainGroupNumber(group);
-    if (!main) return null;
-
-    if (main >= 27 && main <= 34) {
-        return {
-            pot: "POT 1",
-            main
-        };
-    }
-
-    if (main >= 37 && main <= 45) {
-        return {
-            pot: "POT 2",
-            main
-        };
-    }
-
-    return null;
-}
-
-function potFormatEvent(e) {
-    return String(e.rawGroup) +
-        " → main " + e.main +
-        " / " + e.pot +
-        " @ " + formatDateTime(e.time);
-}
-
-function prunePotEvents(arr, ts) {
-    const cutoff = ts - POT_WINDOW_MS;
-    return (arr || []).filter(e => e && e.time >= cutoff);
-}
-
-function upsertPotMain(arr, event) {
-    const next = (arr || []).filter(e => e.main !== event.main);
-    next.push(event);
-    next.sort((a, b) => a.time - b.time);
-    return next;
-}
-
-function getPotDetectorStore(key) {
+function getOnePotStore(key) {
     if (!mamamiaHashMemory[key] || typeof mamamiaHashMemory[key] !== "object") {
         mamamiaHashMemory[key] = {};
     }
@@ -1597,194 +1581,204 @@ function getPotDetectorStore(key) {
     return mamamiaHashMemory[key];
 }
 
-// ==========================================================
-//  BABABIA (POT SAME-POT DETECTOR)
-//  Condition:
-//    - Normal ecosystem only
-//    - Same symbol
-//    - Main group only, subgroup ignored
-//    - Any 2 DIFFERENT main groups from SAME pot
-//    - Within 5 minutes
-//  Bot 2
-// ==========================================================
+function resetOnePotSymbolState(store, symbol, ts) {
+    store[symbol] = {
+        windowStart: ts,
+        slots: [],
+        events: []
+    };
 
-let mamamiaHashMemory = persisted.mamamiaHashMemory || {};
+    return store[symbol];
+}
 
-function processBababia(symbol, group, ts) {
+function getOnePotSymbolState(store, symbol, ts) {
+    const existing = store[symbol];
+
+    if (
+        !existing ||
+        typeof existing.windowStart !== "number" ||
+        !Array.isArray(existing.slots) ||
+        !Array.isArray(existing.events) ||
+        (ts - existing.windowStart >= ONE_POT_CYCLE_WINDOW_MS)
+    ) {
+        return resetOnePotSymbolState(store, symbol, ts);
+    }
+
+    return existing;
+}
+
+function pruneOnePotEvents(events, ts) {
+    const cutoff = ts - ONE_POT_PAIR_WINDOW_MS;
+
+    return (events || [])
+        .filter(e =>
+            e &&
+            typeof e.time === "number" &&
+            e.time >= cutoff
+        )
+        .sort((a, b) => a.time - b.time);
+}
+
+function onePotFormatEvent(e) {
+    return String(e.raw) +
+        " | family " + e.family +
+        " @ " + formatDateTime(e.time);
+}
+
+function onePotSlotLines(slots) {
+    if (!Array.isArray(slots) || !slots.length) return "none";
+
+    return slots
+        .map((slot, i) =>
+            (i + 1) + ") " +
+            slot.first.raw + " + " + slot.second.raw +
+            " | gap " + slot.gapMin + "m " + slot.gapSec + "s" +
+            " | " + formatDateTime(slot.time)
+        )
+        .join("\n");
+}
+
+function addOnePotEvent(state, event) {
+    state.events = pruneOnePotEvents(state.events, event.time);
+    state.events.push(event);
+    state.events.sort((a, b) => a.time - b.time);
+}
+
+function findOnePotMatch(state, event, mode) {
+    const candidates = pruneOnePotEvents(state.events, event.time)
+        .filter(e => e.raw !== event.raw);
+
+    // Latest valid match first.
+    candidates.sort((a, b) => b.time - a.time);
+
+    for (const prior of candidates) {
+        const diff = Math.abs(Number(prior.family) - Number(event.family));
+
+        if (mode === "CONSECUTIVE" && diff === 1) {
+            return prior;
+        }
+
+        if (mode === "NON_CONSECUTIVE" && diff > 1) {
+            return prior;
+        }
+    }
+
+    return null;
+}
+
+function processOnePotTwoSlotDetector(cfg, symbol, group, ts) {
 
     if (!symbol || !group) return;
 
-    const info = getPotInfo(group);
-    if (!info) return;
+    const parsed = parseOnePotFamilyGroup(group);
+    if (!parsed) return;
 
-    const store = getPotDetectorStore("__BABABIA_POT_STATE__");
-
-    if (!store[symbol]) {
-        store[symbol] = {
-            "POT 1": [],
-            "POT 2": []
-        };
-    }
+    const store = getOnePotStore(cfg.storeKey);
+    const state = getOnePotSymbolState(store, symbol, ts);
 
     const event = {
-        rawGroup: group,
-        main: info.main,
-        pot: info.pot,
+        raw: parsed.raw,
+        family: parsed.family,
+        suffix: parsed.suffix,
         time: ts
     };
 
-    let buf = prunePotEvents(store[symbol][info.pot] || [], ts);
+    // Cycle is full. Do not track more until the 2h expiry resets it.
+    if (state.slots.length >= ONE_POT_MAX_SLOTS) {
+        return;
+    }
 
-    // Need a DIFFERENT main group from the SAME pot inside 5 minutes.
-    const match = [...buf]
-        .filter(e => e.main !== event.main)
-        .sort((a, b) => b.time - a.time)[0];
+    state.events = pruneOnePotEvents(state.events, ts);
 
-    if (match) {
+    const match = findOnePotMatch(state, event, cfg.mode);
 
-        const bababiaStructuredMatch = findStructuredGroupMatch([match.rawGroup, event.rawGroup]);
-
-        if (!bababiaStructuredMatch) {
-            store[symbol][info.pot] = upsertPotMain(buf, event);
-            saveState();
-            return;
-        }
-
-        const first = match.time <= event.time ? match : event;
-        const second = match.time <= event.time ? event : match;
-
-        const gapMs = second.time - first.time;
-        const gapMin = Math.floor(gapMs / 60000);
-        const gapSec = Math.floor((gapMs % 60000) / 1000);
-
-        sendToTelegram2(
-            "🎉 BABABIA\n" +
-            "Type: Same-pot main-group match\n" +
-            "Symbol: " + symbol + "\n" +
-            "Pot: " + info.pot + "\n" +
-            "Window: 5 minutes\n" +
-            "Structure: " + bababiaStructuredMatch.label + "\n\n" +
-            "1) " + potFormatEvent(first) + "\n" +
-            "2) " + potFormatEvent(second) + "\n" +
-            "Gap: " + gapMin + "m " + gapSec + "s"
-        );
-
-        // Reset this symbol+pot cluster, keep current event as new seed.
-        store[symbol][info.pot] = [event];
+    if (!match) {
+        addOnePotEvent(state, event);
         saveState();
         return;
     }
 
-    store[symbol][info.pot] = upsertPotMain(buf, event);
+    const first = match.time <= event.time ? match : event;
+    const second = match.time <= event.time ? event : match;
 
-    // Safety cleanup.
-    if (Object.keys(store).length > 5000) {
-        const pruneCutoff = ts - (2 * 60 * 60 * 1000);
+    const gapMs = second.time - first.time;
+    const gapMin = Math.floor(gapMs / 60000);
+    const gapSec = Math.floor((gapMs % 60000) / 1000);
 
-        for (const sym of Object.keys(store)) {
-            for (const pot of ["POT 1", "POT 2"]) {
-                store[sym][pot] = (store[sym][pot] || []).filter(e => e.time >= pruneCutoff);
-            }
+    const slotNo = state.slots.length + 1;
 
-            if (!store[sym]["POT 1"].length && !store[sym]["POT 2"].length) {
-                delete store[sym];
-            }
-        }
-    }
+    const slot = {
+        first,
+        second,
+        gapMin,
+        gapSec,
+        time: ts
+    };
+
+    state.slots.push(slot);
+
+    // Keep the current event as part of the continuing 2h cycle.
+    addOnePotEvent(state, event);
+
+    cfg.sender(
+        cfg.emoji + " " + cfg.name + "\n" +
+        "Symbol: " + symbol + "\n" +
+        "Slot: " + slotNo + "/" + ONE_POT_MAX_SLOTS + "\n" +
+        "Cycle: 2 hours\n" +
+        "Pair Window: 5 minutes\n" +
+        "Rule: " + cfg.ruleLabel + "\n\n" +
+
+        "1) " + onePotFormatEvent(first) + "\n" +
+        "2) " + onePotFormatEvent(second) + "\n" +
+        "Gap: " + gapMin + "m " + gapSec + "s\n\n" +
+
+        "Slots Used This Cycle:\n" +
+        onePotSlotLines(state.slots)
+    );
 
     saveState();
 }
 
 // ==========================================================
-//  MAMAMIA (POT CROSS-POT DETECTOR)
-//  Condition:
-//    - Normal ecosystem only
-//    - Same symbol
-//    - Main group only, subgroup ignored
-//    - One main group from POT 1 and one main group from POT 2
-//    - Within 5 minutes
+//  BABABIA — one-pot consecutive family pair
+//  Bot 2
+// ==========================================================
+
+function processBababia(symbol, group, ts) {
+    processOnePotTwoSlotDetector(
+        {
+            name: "BABABIA",
+            emoji: "🎉",
+            mode: "CONSECUTIVE",
+            ruleLabel: "family numbers must be consecutive",
+            storeKey: "__BABABIA_ONEPOT_2SLOT_STATE__",
+            sender: sendToTelegram2
+        },
+        symbol,
+        group,
+        ts
+    );
+}
+
+// ==========================================================
+//  MAMAMIA — one-pot NON-consecutive family pair
 //  Bot 2
 // ==========================================================
 
 function processMAMAMIA(symbol, group, ts) {
-
-    if (!symbol || !group) return;
-
-    const info = getPotInfo(group);
-    if (!info) return;
-
-    const store = getPotDetectorStore("__MAMAMIA_POT_STATE__");
-
-    if (!store[symbol]) {
-        store[symbol] = {
-            "POT 1": [],
-            "POT 2": []
-        };
-    }
-
-    const event = {
-        rawGroup: group,
-        main: info.main,
-        pot: info.pot,
-        time: ts
-    };
-
-    const otherPot = info.pot === "POT 1" ? "POT 2" : "POT 1";
-
-    store[symbol]["POT 1"] = prunePotEvents(store[symbol]["POT 1"] || [], ts);
-    store[symbol]["POT 2"] = prunePotEvents(store[symbol]["POT 2"] || [], ts);
-
-    const match = [...store[symbol][otherPot]]
-        .sort((a, b) => b.time - a.time)[0];
-
-    if (match) {
-        const first = match.time <= event.time ? match : event;
-        const second = match.time <= event.time ? event : match;
-
-        const gapMs = second.time - first.time;
-        const gapMin = Math.floor(gapMs / 60000);
-        const gapSec = Math.floor((gapMs % 60000) / 1000);
-
-        sendToTelegram2(
-            "🎶 MAMAMIA\n" +
-            "Type: Cross-pot main-group match\n" +
-            "Symbol: " + symbol + "\n" +
-            "Condition: POT 1 + POT 2 within 5 minutes\n\n" +
-            "1) " + potFormatEvent(first) + "\n" +
-            "2) " + potFormatEvent(second) + "\n" +
-            "Gap: " + gapMin + "m " + gapSec + "s"
-        );
-
-        // Reset this symbol cluster, keep current event as new seed only.
-        store[symbol] = {
-            "POT 1": [],
-            "POT 2": []
-        };
-
-        store[symbol][info.pot] = [event];
-
-        saveState();
-        return;
-    }
-
-    store[symbol][info.pot] = upsertPotMain(store[symbol][info.pot], event);
-
-    // Safety cleanup.
-    if (Object.keys(store).length > 5000) {
-        const pruneCutoff = ts - (2 * 60 * 60 * 1000);
-
-        for (const sym of Object.keys(store)) {
-            for (const pot of ["POT 1", "POT 2"]) {
-                store[sym][pot] = (store[sym][pot] || []).filter(e => e.time >= pruneCutoff);
-            }
-
-            if (!store[sym]["POT 1"].length && !store[sym]["POT 2"].length) {
-                delete store[sym];
-            }
-        }
-    }
-
-    saveState();
+    processOnePotTwoSlotDetector(
+        {
+            name: "MAMAMIA",
+            emoji: "🎶",
+            mode: "NON_CONSECUTIVE",
+            ruleLabel: "family numbers must be non-consecutive",
+            storeKey: "__MAMAMIA_ONEPOT_2SLOT_STATE__",
+            sender: sendToTelegram2
+        },
+        symbol,
+        group,
+        ts
+    );
 }
 
 
