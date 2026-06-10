@@ -1610,7 +1610,7 @@ function sendRangeSourceAlert(cfg, symbol, group, hitTimes, spanMs) {
         .map((t, i) => (i + 1) + ") " + formatDateTime(t))
         .join("\n");
 
-    sendToTelegram3(
+    sendToTelegram5(
         emoji + " " + cfg.source + "\n" +
         "Symbol: " + symbol + "\n" +
         "Group: " + group + "\n" +
@@ -1634,29 +1634,59 @@ function recordInauguralRangeAlert(cfg, symbol, group, ts, hitTimes, spanMs) {
     }
 
     const family = rangeFamilyFromGroup(group);
-    const current = inauguralState[cfg.alertName][symbol];
+    const bucket = inauguralState[cfg.alertName];
+
+    const current = bucket[symbol];
 
     const invalidOldFormat =
-        current &&
-        (
-            typeof current.windowStart !== "number" ||
-            !Array.isArray(current.slots)
-        );
-
-    if (
         !current ||
-        invalidOldFormat ||
-        (ts - current.windowStart >= INAUGURAL_RANGE_WINDOW_MS)
-    ) {
-        inauguralState[cfg.alertName][symbol] = {
+        typeof current !== "object" ||
+        typeof current.windowStart !== "number" ||
+        !Array.isArray(current.slots);
+
+    if (invalidOldFormat) {
+        bucket[symbol] = {
             windowStart: ts,
             slots: []
         };
     }
 
-    const state = inauguralState[cfg.alertName][symbol];
+    const state = bucket[symbol];
 
-    if (state.slots.some(e => e.family === family)) {
+    // Critical fix:
+    // Do not trust windowStart alone. Prune by each slot's actual timestamp.
+    // This prevents stale/future/bad persisted state from blocking INAUGURAL forever.
+    const cutoff = ts - INAUGURAL_RANGE_WINDOW_MS;
+    const beforeCount = state.slots.length;
+
+    state.slots = state.slots
+        .filter(e =>
+            e &&
+            typeof e.time === "number" &&
+            e.time >= cutoff &&
+            e.time <= ts + 60000 &&
+            e.family !== undefined &&
+            e.family !== null
+        )
+        .sort((a, b) => a.time - b.time);
+
+    if (state.slots.length !== beforeCount) {
+        console.log(
+            "INAUGURAL state pruned:",
+            cfg.alertName,
+            "symbol:", symbol,
+            "before:", beforeCount,
+            "after:", state.slots.length
+        );
+    }
+
+    if (!state.slots.length) {
+        state.windowStart = ts;
+    } else {
+        state.windowStart = state.slots[0].time;
+    }
+
+    if (state.slots.some(e => String(e.family) === String(family))) {
         return {
             fired: false,
             reason: "same family already used in this 2h window"
@@ -1677,6 +1707,8 @@ function recordInauguralRangeAlert(cfg, symbol, group, ts, hitTimes, spanMs) {
         time: ts
     });
 
+    state.slots.sort((a, b) => a.time - b.time);
+
     const slot = state.slots.length;
     const spanMin = Math.floor(spanMs / 60000);
     const spanSec = Math.floor((spanMs % 60000) / 1000);
@@ -1694,7 +1726,7 @@ function recordInauguralRangeAlert(cfg, symbol, group, ts, hitTimes, spanMs) {
         )
         .join("\n");
 
-    sendToTelegram3(
+    sendToTelegram1(
         "🎖 " + cfg.alertName + "\n" +
         "Source: " + cfg.source + "\n" +
         "Symbol: " + symbol + "\n" +
@@ -1717,7 +1749,6 @@ function recordInauguralRangeAlert(cfg, symbol, group, ts, hitTimes, spanMs) {
         slot
     };
 }
-
 
 // ==========================================================
 //  GAMMA RANGE ENGINE
