@@ -820,6 +820,8 @@ function sendToTelegram6(text) { enqueueTelegram(6, text); }
 function sendToTelegram7(text) { enqueueTelegram(7, text); }
 function sendToTelegram8(text) { enqueueTelegram(8, text); }
 function sendToTelegram9(text) { enqueueTelegram(9, text); }
+function sendToTelegram10(text) { enqueueTelegram(10, text); }
+console.log("🟣 MANUAL @ ECOSYSTEM LOADED — Bot10 route active");
 
 // -----------------------------
 // BOT 8 MIRROR HELPER (SPECIAL SYMBOLS)
@@ -3886,6 +3888,73 @@ function processPeterforge(symbol, group, ts, body) {
 
 
 // ==========================================================
+//  @ MANUAL REMINDER ECOSYSTEM
+//  Bot 10
+//
+//  Rule:
+//    - Any group starting with @ is manual-only.
+//    - Examples: @MANUAL, @1A, @ B, @AA
+//    - Sends to Bot10.
+//    - Must return before normal/# ecosystems.
+// ==========================================================
+
+function isManualAtGroup(group) {
+    return String(group || "").trim().startsWith("@");
+}
+
+function manualField(body, keys, fallback = "n/a") {
+    for (const key of keys) {
+        const value = body?.[key];
+
+        if (
+            value !== undefined &&
+            value !== null &&
+            String(value).trim() !== ""
+        ) {
+            return String(value).trim();
+        }
+    }
+
+    return fallback;
+}
+
+function processManualReminderBot10(symbol, group, ts, body) {
+
+    const cleanGroup = String(group || "").trim();
+    const cleanSymbol = symbol || normalizeSymbol(body?.ticker) || "n/a";
+
+    const price = manualField(body, ["price", "close", "current_price"]);
+    const target = manualField(body, ["target", "level", "manual_level", "alert_price"]);
+    const note = manualField(body, ["note", "reason", "context", "memo", "message"], "");
+    const source = manualField(body, ["source", "from", "setup", "bot_source"], "");
+    const timeframe = manualField(body, ["timeframe", "tf", "interval"], "");
+
+    let msg =
+        "📝 MANUAL REMINDER\n" +
+        "Symbol: " + cleanSymbol + "\n" +
+        "Group: " + cleanGroup + "\n" +
+        "Price: " + price + "\n" +
+        "Target: " + target + "\n" +
+        "Time: " + formatDateTime(ts);
+
+    if (timeframe && timeframe !== "n/a") {
+        msg += "\nTimeframe: " + timeframe;
+    }
+
+    if (source && source !== "n/a") {
+        msg += "\nSource: " + source;
+    }
+
+    if (note) {
+        msg += "\n\nNote:\n" + note;
+    }
+
+    console.log("🟣 manual reminder sending to Bot10:", cleanSymbol, cleanGroup);
+    sendToTelegram10(msg);
+}
+
+
+// ==========================================================
 //  WEBHOOK HANDLER
 // ==========================================================
 
@@ -3916,6 +3985,7 @@ app.post("/incoming", (req, res) => {
         const group  = (body.group || "").trim();
         const symbol = normalizeSymbol(body.symbol);
         const isHash = group.startsWith("#");
+        const isManual = group.startsWith("@");
         const isPeterPayload = isPeterForgePayload(body, group);
 
         const ts = nowMs();
@@ -3928,6 +3998,17 @@ app.post("/incoming", (req, res) => {
         if (recentHashes.has(hash)) return res.sendStatus(200);
         recentHashes.add(hash);
         setTimeout(() => recentHashes.delete(hash), 300000);
+
+
+
+        // 🟣 @ MANUAL ECOSYSTEM
+        // Manual reminders go to Bot10 only and must not enter normal/hash logic.
+        if (isManual) {
+            console.log("🟣 @ manual alert received:", symbol, group, JSON.stringify(body));
+            processManualReminderBot10(symbol, group, ts, body);
+            saveState();
+            return res.sendStatus(200);
+        }
 
         if (!symbol) return res.sendStatus(200);
         if (!group && !isPeterPayload) return res.sendStatus(200);
