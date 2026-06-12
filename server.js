@@ -821,6 +821,7 @@ function sendToTelegram7(text) { enqueueTelegram(7, text); }
 function sendToTelegram8(text) { enqueueTelegram(8, text); }
 function sendToTelegram9(text) { enqueueTelegram(9, text); }
 function sendToTelegram10(text) { enqueueTelegram(10, text); }
+function sendToTelegram11(text) { enqueueTelegram(11, text); }
 console.log("🟣 MANUAL @ ECOSYSTEM LOADED — Bot10 route active");
 
 // -----------------------------
@@ -3986,6 +3987,84 @@ function processManualReminderBot10(symbol, group, ts, body) {
 
 
 // ==========================================================
+//  ZEBRA ~ ECOSYSTEM
+//  Bot 11
+//
+//  Rule:
+//    - Any group starting with ~ belongs to ZEBRA.
+//    - Examples: ~1A, ~B, ~AA, ~37X
+//    - Sends to Bot11.
+//    - Must return before normal/# ecosystems.
+// ==========================================================
+
+function isZebraGroup(group) {
+    return String(group || "").trim().startsWith("~");
+}
+
+function zebraField(body, keys, fallback = "n/a") {
+    for (const key of keys) {
+        const value = body?.[key];
+
+        if (
+            value !== undefined &&
+            value !== null &&
+            String(value).trim() !== ""
+        ) {
+            return String(value).trim();
+        }
+    }
+
+    return fallback;
+}
+
+function processZebraEcosystem(symbol, group, ts, body) {
+
+    const cleanGroup = String(group || "").trim();
+    const cleanSymbol = symbol || normalizeSymbol(body?.ticker) || "n/a";
+
+    const price = zebraField(body, ["price", "close", "current_price"]);
+    const level = zebraField(body, ["level", "target", "alert_price", "manual_level"], "");
+    const note = zebraField(body, ["note", "reason", "context", "memo", "message"], "");
+    const source = zebraField(body, ["source", "from", "setup", "bot_source"], "");
+    const timeframe = zebraField(body, ["timeframe", "tf", "interval"], "");
+    const direction = zebraField(body, ["direction", "dir", "side", "signal"], "");
+
+    let msg =
+        "🦓 ZEBRA\n" +
+        "Mode: ~ ECOSYSTEM\n" +
+        "Symbol: " + cleanSymbol + "\n" +
+        "Group: " + cleanGroup + "\n" +
+        "Price: " + price + "\n" +
+        "Time: " + formatDateTime(ts);
+
+    if (level && level !== "n/a") {
+        msg += "\nLevel: " + level;
+    }
+
+    if (direction && direction !== "n/a") {
+        msg += "\nDirection: " + direction;
+    }
+
+    if (timeframe && timeframe !== "n/a") {
+        msg += "\nTimeframe: " + timeframe;
+    }
+
+    if (source && source !== "n/a") {
+        msg += "\nSource: " + source;
+    }
+
+    if (note && note !== "n/a") {
+        msg += "\n\nNote:\n" + note;
+    }
+
+    console.log("🦓 ZEBRA ~ ecosystem alert received:", cleanSymbol, cleanGroup, JSON.stringify(body));
+    sendToTelegram11(msg);
+}
+
+console.log("🦓 ZEBRA ~ ECOSYSTEM LOADED — Bot11 route active");
+
+
+// ==========================================================
 //  WEBHOOK HANDLER
 // ==========================================================
 
@@ -4017,6 +4096,7 @@ app.post("/incoming", (req, res) => {
         const symbol = normalizeSymbol(body.symbol);
         const isHash = group.startsWith("#");
         const isManual = group.startsWith("@");
+        const isZebra = group.startsWith("~");
         const isPeterPayload = isPeterForgePayload(body, group);
 
         const ts = nowMs();
@@ -4037,6 +4117,15 @@ app.post("/incoming", (req, res) => {
         if (isManual) {
             console.log("🟣 @ manual alert received:", symbol, group, JSON.stringify(body));
             processManualReminderBot10(symbol, group, ts, body);
+            saveState();
+            return res.sendStatus(200);
+        }
+
+
+        // 🦓 ZEBRA ~ ECOSYSTEM
+        // Separate non-manual ecosystem. Must not enter normal/hash logic.
+        if (isZebra) {
+            processZebraEcosystem(symbol, group, ts, body);
             saveState();
             return res.sendStatus(200);
         }
