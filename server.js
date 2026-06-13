@@ -822,6 +822,7 @@ function sendToTelegram8(text) { enqueueTelegram(8, text); }
 function sendToTelegram9(text) { enqueueTelegram(9, text); }
 function sendToTelegram10(text) { enqueueTelegram(10, text); }
 function sendToTelegram11(text) { enqueueTelegram(11, text); }
+function sendToTelegram12(text) { enqueueTelegram(12, text); }
 console.log("🟣 MANUAL @ ECOSYSTEM LOADED — Bot10 route active");
 
 // -----------------------------
@@ -2093,65 +2094,193 @@ function processSalsa(symbol, group, ts) {
 }
 
 // ==========================================================
-//  TANGO (FIRST per SYMBOL + GROUP FAMILY)
-//  Family = prefix (26A → 26, 43X → 43, C → C)
-//  Window: 4 hours
-//  Bot 4
+//  TANGO (NORMAL SYSTEM — 3+ DIFFERENT FAMILIES IN 20 MINUTES)
+//  Bot 12
+//
+//  Rule:
+//    - Normal ecosystem only
+//    - Same symbol
+//    - Any 3 or more DIFFERENT families inside 20 minutes
+//    - Example: 38A + 43C + 39E
+//    - More families are stronger.
+//    - Sends again only when the distinct-family count increases.
 // ==========================================================
 
-const TANGO_WINDOW_MS = 4 * 60 * 60 * 1000;
+const TANGO_WINDOW_MS = 20 * 60 * 1000;
+const TANGO_MIN_FAMILIES = 3;
 
 // PERSISTED STATE
 let tangoState = persisted.tangoState || {};
 
-
-// STC tracking state removed intentionally.
-
-// tangoState[symbol][family] = lastTimestamp
-
 function getFamily(group) {
     if (!group) return "";
 
-    // Extract numeric prefix (26A → 26)
-    const match = group.match(/^(\d+)/);
+    const raw = String(group || "").trim().toUpperCase();
+
+    // Ignore special ecosystems. TANGO is normal-system only.
+    if (
+        raw.startsWith("@") ||
+        raw.startsWith("#") ||
+        raw.startsWith("~")
+    ) {
+        return "";
+    }
+
+    // Extract numeric prefix: 38A → 38, 43C → 43, 39E → 39
+    const match = raw.match(/^(\d+)/);
     if (match) return match[1];
 
-    // Single letter groups
-    return group;
+    // Letter-only groups still form their own family if ever used.
+    return raw;
+}
+
+function getTangoSymbolState(symbol) {
+    const current = tangoState[symbol];
+
+    const invalid =
+        !current ||
+        typeof current !== "object" ||
+        !Array.isArray(current.events);
+
+    if (invalid) {
+        tangoState[symbol] = {
+            events: [],
+            lastSentCount: 0,
+            lastSentKey: ""
+        };
+    }
+
+    return tangoState[symbol];
+}
+
+function pruneTangoEvents(events, ts) {
+    const cutoff = ts - TANGO_WINDOW_MS;
+
+    return (events || [])
+        .filter(e =>
+            e &&
+            typeof e.time === "number" &&
+            e.time >= cutoff &&
+            e.time <= ts + 60000 &&
+            e.family &&
+            e.group
+        )
+        .sort((a, b) => a.time - b.time);
+}
+
+function tangoEventLines(events) {
+    return events
+        .slice()
+        .sort((a, b) => a.time - b.time)
+        .map((e, i) =>
+            (i + 1) + ") " +
+            e.group +
+            " | Family " + e.family +
+            " @ " + formatDateTime(e.time)
+        )
+        .join("\n");
 }
 
 function processTango(symbol, group, ts) {
 
     if (!symbol || !group) return;
 
-    const family = getFamily(group);
+    const rawGroup = String(group || "").trim().toUpperCase();
 
-    if (!tangoState[symbol]) {
-        tangoState[symbol] = {};
+    // Normal-system only.
+    if (
+        rawGroup.startsWith("@") ||
+        rawGroup.startsWith("#") ||
+        rawGroup.startsWith("~")
+    ) {
+        return;
     }
 
-    const last = tangoState[symbol][family];
+    const family = getFamily(rawGroup);
+    if (!family) return;
 
-    // ------------------------------------------------------
-    // 1️⃣ FIRST after 4h → FIRE
-    // ------------------------------------------------------
-    if (!last || (ts - last >= TANGO_WINDOW_MS)) {
+    const state = getTangoSymbolState(symbol);
 
-        sendToTelegram4(
-            `🟠 TANGO\n` +
-            `Symbol: ${symbol}\n` +
-            `Group: ${group}\n` +
-            `Family: ${family}\n` +
-            `Time: ${formatDateTime(ts)}`
-        );
+    // Keep one latest event per family inside the 20m window.
+    let events = pruneTangoEvents(state.events, ts)
+        .filter(e => String(e.family) !== String(family));
 
+    events.push({
+        group: rawGroup,
+        family,
+        time: ts
+    });
 
-        tangoState[symbol][family] = ts;
+    events = pruneTangoEvents(events, ts);
+
+    state.events = events;
+
+    const distinctCount = events.length;
+
+    if (distinctCount < TANGO_MIN_FAMILIES) {
+        state.lastSentCount = 0;
+        state.lastSentKey = "";
         saveState();
         return;
     }
 
-    // else → ignore
+    const familiesKey = events
+        .map(e => String(e.family))
+        .sort()
+        .join("|");
+
+    // Avoid repeat spam. Send only when the family set/count improves.
+    if (
+        state.lastSentKey === familiesKey ||
+        distinctCount <= Number(state.lastSentCount || 0)
+    ) {
+        saveState();
+        return;
+    }
+
+    const sorted = events.slice().sort((a, b) => a.time - b.time);
+    const firstTime = sorted[0].time;
+    const lastTime = sorted[sorted.length - 1].time;
+
+    const spanMs = lastTime - firstTime;
+    const spanMin = Math.floor(spanMs / 60000);
+    const spanSec = Math.floor((spanMs % 60000) / 1000);
+
+    sendToTelegram12(
+        "🟠 TANGO\n" +
+        "Symbol: " + symbol + "\n" +
+        "Families: " + distinctCount + "\n" +
+        "Window: 20 minutes\n" +
+        "Rule: 3+ different families\n" +
+        "Span: " + spanMin + "m " + spanSec + "s\n\n" +
+        "Alerts:\n" +
+        tangoEventLines(sorted)
+    );
+
+    state.lastSentCount = distinctCount;
+    state.lastSentKey = familiesKey;
+
+    // Safety cleanup
+    if (Object.keys(tangoState).length > 5000) {
+        const pruneCutoff = ts - (2 * 60 * 60 * 1000);
+
+        for (const sym of Object.keys(tangoState)) {
+            const st = tangoState[sym];
+
+            if (!st || typeof st !== "object" || !Array.isArray(st.events)) {
+                delete tangoState[sym];
+                continue;
+            }
+
+            st.events = st.events.filter(e => e && e.time >= pruneCutoff);
+
+            if (!st.events.length) {
+                delete tangoState[sym];
+            }
+        }
+    }
+
+    saveState();
 }
 
 
@@ -4031,8 +4160,7 @@ function processZebraEcosystem(symbol, group, ts, body) {
 
     let msg =
         "🦓 ZEBRA\n" +
-        "Mode: ~ ECOSYSTEM\n" +
-        "Symbol: " + cleanSymbol + "\n" +
+"Symbol: " + cleanSymbol + "\n" +
         "Group: " + cleanGroup + "\n" +
         "Price: " + price + "\n" +
         "Time: " + formatDateTime(ts);
