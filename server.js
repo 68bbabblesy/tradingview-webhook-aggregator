@@ -1487,13 +1487,18 @@ function processBlackPanther(symbol, group, ts) {
 }
 
 // ==========================================================
-//  SOURCE RANGE ENGINE FALLBACK / REPAIR
-//  SALSA   = 2 hits, 3m to 9m 59s
-//  GAMMA   = 2 hits, 10m to 14m 59s
-//  NEPTUNE = 2 hits, 15m to 2h
+//  SOURCE RANGE ENGINE — DIFFERENT FAMILY PAIRS
 //
-//  Raw source alerts go to Bot 5.
-//  INAUGURAL filter layer goes to Bot 1.
+//  SALSA   = 2 different families, 0s to 90s
+//  GAMMA   = 2 different families, 91s to 2m 59s
+//  NEPTUNE = 2 different families, 3m to 20m
+//
+//  Rules:
+//    - Same symbol
+//    - Normal ecosystem only
+//    - Different numeric/letter families
+//    - Raw source alerts go to Bot 5
+//    - INAUGURAL filter layer remains Bot 1
 // ==========================================================
 
 const INAUGURAL_RANGE_WINDOW_MS = 2 * 60 * 60 * 1000; // 2 hours
@@ -1504,57 +1509,140 @@ function rangeFamilyFromGroup(group) {
     return getFamily(group);
 }
 
+function isNormalRangeGroup(group) {
+    const raw = String(group || "").trim().toUpperCase();
+
+    if (!raw) return false;
+    if (raw.startsWith("@")) return false;
+    if (raw.startsWith("#")) return false;
+    if (raw.startsWith("~")) return false;
+
+    return !!rangeFamilyFromGroup(raw);
+}
+
+function getRangeFamilyState(memory, symbol) {
+    const current = memory[symbol];
+
+    const invalid =
+        !current ||
+        typeof current !== "object" ||
+        !Array.isArray(current.events);
+
+    if (invalid) {
+        memory[symbol] = {
+            events: []
+        };
+    }
+
+    return memory[symbol];
+}
+
+function pruneRangeFamilyEvents(events, ts, maxSpanMs) {
+    const cutoff = ts - maxSpanMs - (60 * 1000);
+
+    return (events || [])
+        .filter(e =>
+            e &&
+            typeof e.time === "number" &&
+            e.time >= cutoff &&
+            e.time <= ts + 60000 &&
+            e.group &&
+            e.family
+        )
+        .sort((a, b) => a.time - b.time);
+}
+
+function findDifferentFamilyPairEndingAtCurrent(events, current, minSpanMs, maxSpanMs) {
+    const candidates = (events || [])
+        .filter(e => e && String(e.family) !== String(current.family))
+        .map(e => ({
+            ...e,
+            spanMs: current.time - e.time
+        }))
+        .filter(e =>
+            e.spanMs >= minSpanMs &&
+            e.spanMs <= maxSpanMs
+        )
+        .sort((a, b) => b.time - a.time);
+
+    return candidates[0] || null;
+}
+
+function rangeSourceEventLine(e, index) {
+    return (
+        (index + 1) + ") " +
+        e.group +
+        " | Family " + e.family +
+        " @ " + formatDateTime(e.time)
+    );
+}
+
+function sendRangeSourceAlert(cfg, symbol, pair, spanMs) {
+
+    const spanMin = Math.floor(spanMs / 60000);
+    const spanSec = Math.floor((spanMs % 60000) / 1000);
+    const emoji = cfg.emoji || "🔔";
+
+    const sorted = pair.slice().sort((a, b) => a.time - b.time);
+
+    sendToTelegram5(
+        emoji + " " + cfg.source + "\n" +
+        "Symbol: " + symbol + "\n" +
+        "Rule: 2 different families\n" +
+        "Range: " + cfg.rangeLabel + "\n" +
+        "Span: " + spanMin + "m " + spanSec + "s\n\n" +
+        "Pair:\n" +
+        sorted.map((e, i) => rangeSourceEventLine(e, i)).join("\n")
+    );
+}
+
 function processRangeRepeatEngine(cfg, symbol, group, ts) {
 
     if (!symbol || !group) return;
+    if (!isNormalRangeGroup(group)) return;
+
+    const rawGroup = String(group || "").trim().toUpperCase();
+    const family = rangeFamilyFromGroup(rawGroup);
+    if (!family) return;
 
     const memory = cfg.memory;
+    const state = getRangeFamilyState(memory, symbol);
 
-    if (!memory[symbol]) {
-        memory[symbol] = {};
-    }
+    let events = pruneRangeFamilyEvents(state.events, ts, cfg.maxSpanMs);
 
-    if (!memory[symbol][group]) {
-        memory[symbol][group] = [];
-    }
+    const current = {
+        group: rawGroup,
+        family,
+        time: ts
+    };
 
-    memory[symbol][group].push(ts);
-
-    const cutoff = ts - cfg.maxSpanMs - (60 * 1000);
-
-    let clean = memory[symbol][group]
-        .filter(t => typeof t === "number" && t >= cutoff)
-        .sort((a, b) => a - b);
-
-    clean = [...new Set(clean)];
-    memory[symbol][group] = clean;
-
-    const picked = findRangePairEndingAtCurrent(
-        clean,
+    const match = findDifferentFamilyPairEndingAtCurrent(
+        events,
+        current,
         cfg.minSpanMs,
         cfg.maxSpanMs
     );
 
-    if (!picked) return;
+    if (!match) {
+        // Keep latest event per family.
+        events = events.filter(e => String(e.family) !== String(current.family));
+        events.push(current);
+        state.events = pruneRangeFamilyEvents(events, ts, cfg.maxSpanMs);
+        saveState();
+        return;
+    }
 
-    const firstTime = picked[0];
-    const lastTime = picked[picked.length - 1];
-    const spanMs = lastTime - firstTime;
+    const pair = [match, current].sort((a, b) => a.time - b.time);
+    const spanMs = current.time - match.time;
 
-    sendRangeSourceAlert(
-        cfg,
-        symbol,
-        group,
-        picked,
-        spanMs
-    );
+    sendRangeSourceAlert(cfg, symbol, pair, spanMs);
 
     const result = recordInauguralRangeAlert(
         cfg,
         symbol,
-        group,
+        current.group,
         ts,
-        picked,
+        pair.map(e => e.time),
         spanMs
     );
 
@@ -1563,66 +1651,43 @@ function processRangeRepeatEngine(cfg, symbol, group, ts) {
             "INAUGURAL range matched but blocked:",
             cfg.alertName,
             "symbol:", symbol,
-            "group:", group,
+            "group:", current.group,
             "reason:", result?.reason || "unknown"
         );
     }
 
-    delete memory[symbol][group];
+    // Keep current family as a possible anchor for the next different-family pair.
+    events = events
+        .filter(e =>
+            String(e.family) !== String(match.family) &&
+            String(e.family) !== String(current.family)
+        );
+
+    events.push(current);
+
+    state.events = pruneRangeFamilyEvents(events, ts, cfg.maxSpanMs);
+
+    // Safety cleanup.
+    if (Object.keys(memory).length > 5000) {
+        const pruneCutoff = ts - (2 * 60 * 60 * 1000);
+
+        for (const sym of Object.keys(memory)) {
+            const st = memory[sym];
+
+            if (!st || typeof st !== "object" || !Array.isArray(st.events)) {
+                delete memory[sym];
+                continue;
+            }
+
+            st.events = st.events.filter(e => e && e.time >= pruneCutoff);
+
+            if (!st.events.length) {
+                delete memory[sym];
+            }
+        }
+    }
 
     saveState();
-}
-
-function findRangePairEndingAtCurrent(buf, minSpanMs, maxSpanMs) {
-
-    if (!Array.isArray(buf) || buf.length < RANGE_REPEAT_MIN_HITS) {
-        return null;
-    }
-
-    const lastIndex = buf.length - 1;
-    const lastTime = buf[lastIndex];
-
-    for (let i = 0; i < lastIndex; i++) {
-
-        const firstTime = buf[i];
-        const spanMs = lastTime - firstTime;
-
-        if (spanMs > maxSpanMs) {
-            continue;
-        }
-
-        if (spanMs < minSpanMs) {
-            break;
-        }
-
-        return [firstTime, lastTime];
-    }
-
-    return null;
-}
-
-function sendRangeSourceAlert(cfg, symbol, group, hitTimes, spanMs) {
-
-    const family = rangeFamilyFromGroup(group);
-    const spanMin = Math.floor(spanMs / 60000);
-    const spanSec = Math.floor((spanMs % 60000) / 1000);
-    const emoji = cfg.emoji || "🔔";
-
-    const hitLines = hitTimes
-        .map((t, i) => (i + 1) + ") " + formatDateTime(t))
-        .join("\n");
-
-    sendToTelegram5(
-        emoji + " " + cfg.source + "\n" +
-        "Symbol: " + symbol + "\n" +
-        "Group: " + group + "\n" +
-        "Family: " + family + "\n" +
-        "Hits: " + RANGE_REPEAT_MIN_HITS + "\n" +
-        "Range: " + cfg.rangeLabel + "\n" +
-        "Span: " + spanMin + "m " + spanSec + "s\n" +
-        "Window: " + cfg.rangeLabel + "\n\n" +
-        "Times:\n" + hitLines
-    );
 }
 
 function recordInauguralRangeAlert(cfg, symbol, group, ts, hitTimes, spanMs) {
@@ -1655,9 +1720,6 @@ function recordInauguralRangeAlert(cfg, symbol, group, ts, hitTimes, spanMs) {
 
     const state = bucket[symbol];
 
-    // Critical fix:
-    // Do not trust windowStart alone. Prune by each slot's actual timestamp.
-    // This prevents stale/future/bad persisted state from blocking INAUGURAL forever.
     const cutoff = ts - INAUGURAL_RANGE_WINDOW_MS;
     const beforeCount = state.slots.length;
 
@@ -1756,17 +1818,15 @@ function recordInauguralRangeAlert(cfg, symbol, group, ts, hitTimes, spanMs) {
 //  GAMMA RANGE ENGINE
 //  Condition:
 //    - Same symbol
-//    - Exact same group/subgroup
-//    - 2 hits with span >=10m and <15m
-//    - Family independent: all families/groups are watched
-//    - Output controlled by INAUGURAL_10_TO_14 two-slot filter
+//    - 2 different families
+//    - Pair gap >=91s and <=2m 59s
 //  Bot 5
 // ==========================================================
 
-const GAMMA_MIN_SPAN_MS = 10 * 60 * 1000;
-const GAMMA_MAX_SPAN_MS = (15 * 60 * 1000) - 1;
+const GAMMA_MIN_SPAN_MS = 91 * 1000;
+const GAMMA_MAX_SPAN_MS = (3 * 60 * 1000) - 1;
 
-// gammaMemory[symbol][group] = [timestamps]
+// gammaMemory[symbol] = { events: [{ group, family, time }] }
 let gammaMemory = persisted.gammaMemory || {};
 
 function processGamma(symbol, group, ts) {
@@ -1774,8 +1834,8 @@ function processGamma(symbol, group, ts) {
         {
             source: "GAMMA",
             emoji: "🟣",
-            alertName: "INAUGURAL_10_TO_14",
-            rangeLabel: "10m to 14m 59s",
+            alertName: "INAUGURAL_91_TO_179",
+            rangeLabel: "91s to 2m 59s",
             minSpanMs: GAMMA_MIN_SPAN_MS,
             maxSpanMs: GAMMA_MAX_SPAN_MS,
             memory: gammaMemory
@@ -1785,6 +1845,9 @@ function processGamma(symbol, group, ts) {
         ts
     );
 }
+
+// ==========================================================
+//  FAMILY PAIR HELPERS
 
 // ==========================================================
 //  FAMILY PAIR HELPERS
@@ -2063,17 +2126,15 @@ function processCheck(symbol, group, ts, body) {
 //  SALSA RANGE ENGINE
 //  Condition:
 //    - Same symbol
-//    - Exact same group/subgroup
-//    - 2 hits with span >=3m and <10m
-//    - Family independent: all families/groups are watched
-//    - Output controlled by INAUGURAL_03_TO_09 two-slot filter
+//    - 2 different families
+//    - Pair gap >=0s and <=90s
 //  Bot 5
 // ==========================================================
 
-const SALSA_MIN_SPAN_MS = 3 * 60 * 1000;
-const SALSA_MAX_SPAN_MS = (10 * 60 * 1000) - 1;
+const SALSA_MIN_SPAN_MS = 0;
+const SALSA_MAX_SPAN_MS = 90 * 1000;
 
-// salsaMemory[symbol][group] = [timestamps]
+// salsaMemory[symbol] = { events: [{ group, family, time }] }
 let salsaMemory = persisted.salsaMemory || {};
 
 function processSalsa(symbol, group, ts) {
@@ -2081,8 +2142,8 @@ function processSalsa(symbol, group, ts) {
         {
             source: "SALSA",
             emoji: "💃",
-            alertName: "INAUGURAL_03_TO_09",
-            rangeLabel: "3m to 9m 59s",
+            alertName: "INAUGURAL_0_TO_90",
+            rangeLabel: "0s to 90s",
             minSpanMs: SALSA_MIN_SPAN_MS,
             maxSpanMs: SALSA_MAX_SPAN_MS,
             memory: salsaMemory
@@ -2092,6 +2153,9 @@ function processSalsa(symbol, group, ts) {
         ts
     );
 }
+
+// ==========================================================
+//  TANGO
 
 // ==========================================================
 //  TANGO (NORMAL SYSTEM — 3+ DIFFERENT FAMILIES IN 20 MINUTES)
@@ -2288,17 +2352,15 @@ function processTango(symbol, group, ts) {
 //  NEPTUNE RANGE ENGINE
 //  Condition:
 //    - Same symbol
-//    - Exact same group/subgroup
-//    - 2 hits with span >=15m and <=35m
-//    - Family independent: all families/groups are watched
-//    - Output controlled by INAUGURAL_15_TO_60 two-slot filter
+//    - 2 different families
+//    - Pair gap >=3m and <=20m
 //  Bot 5
 // ==========================================================
 
-const NEPTUNE_MIN_SPAN_MS = 15 * 60 * 1000;
-const NEPTUNE_MAX_SPAN_MS = 2 * 60 * 60 * 1000;
+const NEPTUNE_MIN_SPAN_MS = 3 * 60 * 1000;
+const NEPTUNE_MAX_SPAN_MS = 20 * 60 * 1000;
 
-// neptuneMemory[symbol][group] = [timestamps]
+// neptuneMemory[symbol] = { events: [{ group, family, time }] }
 let neptuneMemory = persisted.neptuneMemory || {};
 
 function processNeptune(symbol, group, ts) {
@@ -2306,8 +2368,8 @@ function processNeptune(symbol, group, ts) {
         {
             source: "NEPTUNE",
             emoji: "🌊",
-            alertName: "INAUGURAL_15_TO_60",
-            rangeLabel: "15m to 2h",
+            alertName: "INAUGURAL_3_TO_20",
+            rangeLabel: "3m to 20m",
             minSpanMs: NEPTUNE_MIN_SPAN_MS,
             maxSpanMs: NEPTUNE_MAX_SPAN_MS,
             memory: neptuneMemory
@@ -2317,6 +2379,9 @@ function processNeptune(symbol, group, ts) {
         ts
     );
 }
+
+// ==========================================================
+//  ZULU
 
 // ==========================================================
 //  ZULU (Subgroup Pair Detector — SAME FAMILY)
