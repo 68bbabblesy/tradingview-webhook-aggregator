@@ -2155,9 +2155,6 @@ function processSalsa(symbol, group, ts) {
 }
 
 // ==========================================================
-//  TANGO
-
-// ==========================================================
 //  TANGO (NORMAL SYSTEM — 3+ DIFFERENT FAMILIES IN 20 MINUTES)
 //  Bot 12
 //
@@ -2165,15 +2162,13 @@ function processSalsa(symbol, group, ts) {
 //    - Normal ecosystem only
 //    - Same symbol
 //    - Any 3 or more DIFFERENT families inside 20 minutes
-//    - Example: 38A + 43C + 39E
-//    - More families are stronger.
-//    - Sends again only when the distinct-family count increases.
+//    - Example: 37O + 38S + 39C
+//    - Sends when the family set is different from the last sent set.
 // ==========================================================
 
 const TANGO_WINDOW_MS = 20 * 60 * 1000;
 const TANGO_MIN_FAMILIES = 3;
 
-// PERSISTED STATE
 let tangoState = persisted.tangoState || {};
 
 function getFamily(group) {
@@ -2181,7 +2176,6 @@ function getFamily(group) {
 
     const raw = String(group || "").trim().toUpperCase();
 
-    // Ignore special ecosystems. TANGO is normal-system only.
     if (
         raw.startsWith("@") ||
         raw.startsWith("#") ||
@@ -2190,11 +2184,9 @@ function getFamily(group) {
         return "";
     }
 
-    // Extract numeric prefix: 38A → 38, 43C → 43, 39E → 39
     const match = raw.match(/^(\d+)/);
     if (match) return match[1];
 
-    // Letter-only groups still form their own family if ever used.
     return raw;
 }
 
@@ -2209,7 +2201,6 @@ function getTangoSymbolState(symbol) {
     if (invalid) {
         tangoState[symbol] = {
             events: [],
-            lastSentCount: 0,
             lastSentKey: ""
         };
     }
@@ -2251,7 +2242,6 @@ function processTango(symbol, group, ts) {
 
     const rawGroup = String(group || "").trim().toUpperCase();
 
-    // Normal-system only.
     if (
         rawGroup.startsWith("@") ||
         rawGroup.startsWith("#") ||
@@ -2265,9 +2255,10 @@ function processTango(symbol, group, ts) {
 
     const state = getTangoSymbolState(symbol);
 
-    // Keep one latest event per family inside the 20m window.
-    let events = pruneTangoEvents(state.events, ts)
-        .filter(e => String(e.family) !== String(family));
+    let events = pruneTangoEvents(state.events, ts);
+
+    // Keep latest alert per family inside the 20m window.
+    events = events.filter(e => String(e.family) !== String(family));
 
     events.push({
         group: rawGroup,
@@ -2276,14 +2267,9 @@ function processTango(symbol, group, ts) {
     });
 
     events = pruneTangoEvents(events, ts);
-
     state.events = events;
 
-    const distinctCount = events.length;
-
-    if (distinctCount < TANGO_MIN_FAMILIES) {
-        state.lastSentCount = 0;
-        state.lastSentKey = "";
+    if (events.length < TANGO_MIN_FAMILIES) {
         saveState();
         return;
     }
@@ -2293,11 +2279,8 @@ function processTango(symbol, group, ts) {
         .sort()
         .join("|");
 
-    // Avoid repeat spam. Send only when the family set/count improves.
-    if (
-        state.lastSentKey === familiesKey ||
-        distinctCount <= Number(state.lastSentCount || 0)
-    ) {
+    // Avoid exact duplicate family-set spam, but allow a new 3-family set.
+    if (state.lastSentKey === familiesKey) {
         saveState();
         return;
     }
@@ -2313,7 +2296,7 @@ function processTango(symbol, group, ts) {
     sendToTelegram12(
         "🟠 TANGO\n" +
         "Symbol: " + symbol + "\n" +
-        "Families: " + distinctCount + "\n" +
+        "Families: " + events.length + "\n" +
         "Window: 20 minutes\n" +
         "Rule: 3+ different families\n" +
         "Span: " + spanMin + "m " + spanSec + "s\n\n" +
@@ -2321,32 +2304,13 @@ function processTango(symbol, group, ts) {
         tangoEventLines(sorted)
     );
 
-    state.lastSentCount = distinctCount;
     state.lastSentKey = familiesKey;
-
-    // Safety cleanup
-    if (Object.keys(tangoState).length > 5000) {
-        const pruneCutoff = ts - (2 * 60 * 60 * 1000);
-
-        for (const sym of Object.keys(tangoState)) {
-            const st = tangoState[sym];
-
-            if (!st || typeof st !== "object" || !Array.isArray(st.events)) {
-                delete tangoState[sym];
-                continue;
-            }
-
-            st.events = st.events.filter(e => e && e.time >= pruneCutoff);
-
-            if (!st.events.length) {
-                delete tangoState[sym];
-            }
-        }
-    }
 
     saveState();
 }
 
+// ==========================================================
+//  NEPTUNE
 
 // ==========================================================
 //  NEPTUNE RANGE ENGINE
@@ -4360,7 +4324,7 @@ if (!isHash) {
         processGamma(symbol, group, ts);
         processYaba(symbol, group, ts);
         processSalsa(symbol, group, ts);
-        // processTango(symbol, group, ts); // disabled temporarily
+        processTango(symbol, group, ts);
         processCobra(symbol, group, ts);
         processNeptune(symbol, group, ts);
         processZulu(symbol, group, ts);
