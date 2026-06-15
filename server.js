@@ -2155,18 +2155,18 @@ function processSalsa(symbol, group, ts) {
 }
 
 // ==========================================================
-//  TANGO (NORMAL SYSTEM — 3+ DIFFERENT FAMILIES IN 20 MINUTES)
+//  TANGO (NORMAL SYSTEM — 3+ DIFFERENT FAMILIES IN 29 MINUTES)
 //  Bot 12
 //
 //  Rule:
 //    - Normal ecosystem only
 //    - Same symbol
-//    - Any 3 or more DIFFERENT families inside 20 minutes
+//    - Any 3 or more DIFFERENT families inside 29 minutes
 //    - Example: 37O + 38S + 39C
 //    - Sends when the family set is different from the last sent set.
 // ==========================================================
 
-const TANGO_WINDOW_MS = 20 * 60 * 1000;
+const TANGO_WINDOW_MS = 29 * 60 * 1000;
 const TANGO_MIN_FAMILIES = 3;
 
 let tangoState = persisted.tangoState || {};
@@ -2297,7 +2297,7 @@ function processTango(symbol, group, ts) {
         "🟠 TANGO\n" +
         "Symbol: " + symbol + "\n" +
         "Families: " + events.length + "\n" +
-        "Window: 20 minutes\n" +
+        "Window: 29 minutes\n" +
         "Rule: 3+ different families\n" +
         "Span: " + spanMin + "m " + spanSec + "s\n\n" +
         "Alerts:\n" +
@@ -4213,12 +4213,9 @@ function processZebraEcosystem(symbol, group, ts, body) {
     if (note && note !== "n/a") {
         msg += "\n\nNote:\n" + note;
     }
-
-    console.log("🦓 ZEBRA ~ ecosystem alert received:", cleanSymbol, cleanGroup, JSON.stringify(body));
     sendToTelegram11(msg);
 }
 
-console.log("🦓 ZEBRA ~ ECOSYSTEM LOADED — Bot11 route active");
 
 
 // ==========================================================
