@@ -823,6 +823,7 @@ function sendToTelegram9(text) { enqueueTelegram(9, text); }
 function sendToTelegram10(text) { enqueueTelegram(10, text); }
 function sendToTelegram11(text) { enqueueTelegram(11, text); }
 function sendToTelegram12(text) { enqueueTelegram(12, text); }
+function sendToTelegram13(text) { enqueueTelegram(13, text); }
 console.log("🟣 MANUAL @ ECOSYSTEM LOADED — Bot10 route active");
 
 // -----------------------------
@@ -2972,149 +2973,222 @@ function sendCabalSlotAlert(symbol, state, candidate, slotNo) {
 
 
 // ==========================================================
-//  BOOM (Single-letter group pair detector)
-//  Condition:
+//  BOOM (ECOSYSTEM CORRELATION ENGINE)
+//  Bot 13
+//
+//  Rule:
 //    - Same symbol
-//    - Single-letter alphabet groups only: A-Z
-//    - Different groups
-//    - Within 20 minutes
-//    - Max 2 alerts per same symbol+pair within 2 hours
-//  Bot 8
+//    - Any 2 or 3 eligible ecosystems within 1 hour
+//    - NORMAL = normal group, e.g. 37A, 42E, A, B
+//    - HASH   = group starts with #
+//    - ZEBRA  = group starts with ~
+//    - @ manual ecosystem is excluded
+//    - Fires again when a stronger 3-way correlation appears
+//      or when the same ecosystem set qualifies again after 1 hour.
 // ==========================================================
 
-const BOOM_WINDOW_MS = 20 * 60 * 1000; // 20 minutes
-const BOOM_PAIR_LIMIT_WINDOW_MS = 2 * 60 * 60 * 1000; // 2 hours
-const BOOM_PAIR_MAX_ALERTS = 2;
+const BOOM_WINDOW_MS = 60 * 60 * 1000; // 1 hour
+const BOOM_FIRE_COOLDOWN_MS = 60 * 60 * 1000; // 1 hour per ecosystem set
 
-// boomMemory[symbol] = [{ group, time }]
+// boomMemory[symbol] = { events: [{ ecosystem, group, time }] }
 let boomMemory = persisted.boomMemory || {};
 
-// boomPairState[symbol][pairKey] = [fireTimestamps]
+// boomPairState[symbol][ecosystemKey] = [fireTimestamps]
 let boomPairState = persisted.boomPairState || {};
 
-function isSingleLetterGroup(group) {
-    return /^[A-Z]$/.test(group);
+function boomEcosystemFromGroup(group) {
+    const raw = String(group || "").trim().toUpperCase();
+
+    if (!raw) return "";
+    if (raw.startsWith("@")) return "";       // manual excluded
+    if (raw.startsWith("#")) return "HASH";
+    if (raw.startsWith("~")) return "ZEBRA";
+
+    return "NORMAL";
 }
 
-function boomPairKey(g1, g2) {
-    return [g1, g2].sort().join("+");
+function getBoomSymbolState(symbol) {
+    const current = boomMemory[symbol];
+
+    const invalid =
+        !current ||
+        typeof current !== "object" ||
+        !Array.isArray(current.events);
+
+    if (invalid) {
+        boomMemory[symbol] = {
+            events: []
+        };
+    }
+
+    return boomMemory[symbol];
 }
 
-function canFireBoomPair(symbol, pairKey, ts) {
+function pruneBoomEvents(events, ts) {
+    const cutoff = ts - BOOM_WINDOW_MS;
 
+    return (events || [])
+        .filter(e =>
+            e &&
+            typeof e.time === "number" &&
+            e.time >= cutoff &&
+            e.time <= ts + 60000 &&
+            e.ecosystem &&
+            e.group
+        )
+        .sort((a, b) => a.time - b.time);
+}
+
+function boomLatestByEcosystem(events) {
+    const map = new Map();
+
+    for (const e of events || []) {
+        const prior = map.get(e.ecosystem);
+
+        if (!prior || e.time >= prior.time) {
+            map.set(e.ecosystem, e);
+        }
+    }
+
+    return Array.from(map.values()).sort((a, b) => a.time - b.time);
+}
+
+function boomEcosystemKey(events) {
+    return events
+        .map(e => e.ecosystem)
+        .sort()
+        .join("+");
+}
+
+function canFireBoomEcosystem(symbol, key, ts) {
     if (!boomPairState[symbol]) {
         boomPairState[symbol] = {};
     }
 
-    if (!boomPairState[symbol][pairKey]) {
-        boomPairState[symbol][pairKey] = [];
+    if (!boomPairState[symbol][key]) {
+        boomPairState[symbol][key] = [];
     }
 
-    const cutoff = ts - BOOM_PAIR_LIMIT_WINDOW_MS;
+    const cutoff = ts - BOOM_FIRE_COOLDOWN_MS;
 
-    boomPairState[symbol][pairKey] = boomPairState[symbol][pairKey]
-        .filter(t => t >= cutoff);
+    boomPairState[symbol][key] = boomPairState[symbol][key]
+        .filter(t => typeof t === "number" && t >= cutoff);
 
-    return boomPairState[symbol][pairKey].length < BOOM_PAIR_MAX_ALERTS;
+    return boomPairState[symbol][key].length === 0;
 }
 
-function recordBoomPairFire(symbol, pairKey, ts) {
-
+function recordBoomEcosystemFire(symbol, key, ts) {
     if (!boomPairState[symbol]) {
         boomPairState[symbol] = {};
     }
 
-    if (!boomPairState[symbol][pairKey]) {
-        boomPairState[symbol][pairKey] = [];
+    if (!boomPairState[symbol][key]) {
+        boomPairState[symbol][key] = [];
     }
 
-    boomPairState[symbol][pairKey].push(ts);
-    saveState();
+    boomPairState[symbol][key].push(ts);
+}
+
+function boomEventLines(events) {
+    return events
+        .slice()
+        .sort((a, b) => a.time - b.time)
+        .map((e, i) =>
+            (i + 1) + ") " +
+            e.ecosystem +
+            " | " + e.group +
+            " @ " + formatDateTime(e.time)
+        )
+        .join("\n");
 }
 
 function processBoom(symbol, group, ts) {
 
     if (!symbol || !group) return;
-    if (!isSingleLetterGroup(group)) return;
 
-    if (!boomMemory[symbol]) {
-        boomMemory[symbol] = [];
-    }
+    const rawGroup = String(group || "").trim().toUpperCase();
+    const ecosystem = boomEcosystemFromGroup(rawGroup);
 
-    let buf = boomMemory[symbol];
+    // Excludes @ manual and blank groups.
+    if (!ecosystem) return;
 
-    // Keep only last 20 minutes
-    const cutoff = ts - BOOM_WINDOW_MS;
-    buf = buf.filter(e => e.time >= cutoff);
+    const state = getBoomSymbolState(symbol);
 
-    // Look for a DIFFERENT single-letter group inside the window
-    const match = buf.find(e => e.group !== group);
+    let events = pruneBoomEvents(state.events, ts);
 
-    if (match) {
+    // Keep latest event per ecosystem.
+    events = events.filter(e => e.ecosystem !== ecosystem);
 
-        const pairKey = boomPairKey(match.group, group);
+    events.push({
+        ecosystem,
+        group: rawGroup,
+        time: ts
+    });
 
-        const firstTime = match.time <= ts ? match.time : ts;
-        const secondTime = match.time <= ts ? ts : match.time;
+    events = pruneBoomEvents(events, ts);
+    state.events = events;
 
-        const firstGroup = match.time <= ts ? match.group : group;
-        const secondGroup = match.time <= ts ? group : match.group;
+    const latest = boomLatestByEcosystem(events);
 
-        const diffMs = secondTime - firstTime;
-        const diffMin = Math.floor(diffMs / 60000);
-        const diffSec = Math.floor((diffMs % 60000) / 1000);
-
-        if (canFireBoomPair(symbol, pairKey, ts)) {
-
-            sendToTelegram8(
-                `💥 BOOM\n` +
-                `Symbol: ${symbol}\n` +
-                `Pair: ${pairKey}\n` +
-                `Condition: Different single-letter groups within 20m\n` +
-                `Pair cap: max 2 alerts per 2h\n\n` +
-                `1) ${firstGroup} @ ${formatDateTime(firstTime)}\n` +
-                `2) ${secondGroup} @ ${formatDateTime(secondTime)}\n` +
-                `Gap: ${diffMin}m ${diffSec}s`
-            );
-
-            recordBoomPairFire(symbol, pairKey, ts);
-        }
-
-        // Reset cluster but keep current group as fresh seed for future pairs
-        boomMemory[symbol] = [
-            {
-                group,
-                time: ts
-            }
-        ];
-
+    if (latest.length < 2) {
+        saveState();
         return;
     }
 
-    // Avoid stacking exact same group repeatedly; refresh timestamp instead
-    const sameIndex = buf.findIndex(e => e.group === group);
+    const key = boomEcosystemKey(latest);
 
-    if (sameIndex !== -1) {
-        buf[sameIndex] = { group, time: ts };
-    } else {
-        buf.push({ group, time: ts });
+    if (!canFireBoomEcosystem(symbol, key, ts)) {
+        saveState();
+        return;
     }
 
-    boomMemory[symbol] = buf;
+    const firstTime = latest[0].time;
+    const lastTime = latest[latest.length - 1].time;
 
-    // Safety cleanup
+    const spanMs = lastTime - firstTime;
+    const spanMin = Math.floor(spanMs / 60000);
+    const spanSec = Math.floor((spanMs % 60000) / 1000);
+
+    sendToTelegram13(
+        "💥 BOOM\n" +
+        "Symbol: " + symbol + "\n" +
+        "Ecosystems: " + key + "\n" +
+        "Count: " + latest.length + "/3\n" +
+        "Window: 1 hour\n" +
+        "Rule: any 2+ ecosystems within 1 hour\n" +
+        "Span: " + spanMin + "m " + spanSec + "s\n\n" +
+        "Alerts:\n" +
+        boomEventLines(latest)
+    );
+
+    recordBoomEcosystemFire(symbol, key, ts);
+
+    // Safety cleanup.
     if (Object.keys(boomMemory).length > 5000) {
         const pruneCutoff = ts - (2 * 60 * 60 * 1000);
 
         for (const sym of Object.keys(boomMemory)) {
-            boomMemory[sym] = boomMemory[sym].filter(e => e.time >= pruneCutoff);
+            const st = boomMemory[sym];
 
-            if (!boomMemory[sym].length) {
+            if (!st || typeof st !== "object" || !Array.isArray(st.events)) {
+                delete boomMemory[sym];
+                continue;
+            }
+
+            st.events = st.events.filter(e => e && e.time >= pruneCutoff);
+
+            if (!st.events.length) {
                 delete boomMemory[sym];
             }
         }
     }
+
+    saveState();
 }
+
+
+// ==========================================================
+//  KOOKY
 
 // ==========================================================
 //  KOOKY (PERSISTENT — single-letter combo repeat)
@@ -4279,6 +4353,7 @@ app.post("/incoming", (req, res) => {
         // 🦓 ZEBRA ~ ECOSYSTEM
         // Separate non-manual ecosystem. Must not enter normal/hash logic.
         if (isZebra) {
+            processBoom(symbol, group, ts);
             processZebraEcosystem(symbol, group, ts, body);
             saveState();
             return res.sendStatus(200);
@@ -4348,6 +4423,8 @@ if (!isHash) {
     // Only # flavour groups like #1A, #1G, #2B, #3J are used by BAZOOKA/WAKANDA.
 
     recordHashEvent(symbol, group, ts);
+
+    processBoom(symbol, group, ts);
 
     processGodzilla(symbol, group, ts);
 
