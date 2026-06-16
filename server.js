@@ -824,6 +824,7 @@ function sendToTelegram10(text) { enqueueTelegram(10, text); }
 function sendToTelegram11(text) { enqueueTelegram(11, text); }
 function sendToTelegram12(text) { enqueueTelegram(12, text); }
 function sendToTelegram13(text) { enqueueTelegram(13, text); }
+function sendToTelegram14(text) { enqueueTelegram(14, text); }
 console.log("🟣 MANUAL @ ECOSYSTEM LOADED — Bot10 route active");
 
 // -----------------------------
@@ -4293,6 +4294,81 @@ function processZebraEcosystem(symbol, group, ts, body) {
 
 
 // ==========================================================
+//  KANGAROO ^ ECOSYSTEM
+//  Bot 14
+//
+//  Rule:
+//    - Any group starting with ^ belongs to KANGAROO.
+//    - Examples: ^A, ^1A, ^AA, ^37X
+//    - Sends to Bot14 only.
+//    - Does NOT feed BOOM.
+//    - Does NOT enter normal, hash, ZEBRA, or manual logic.
+// ==========================================================
+
+function isKangarooGroup(group) {
+    return String(group || "").trim().startsWith("^");
+}
+
+function kangarooField(body, keys, fallback = "n/a") {
+    for (const key of keys) {
+        const value = body?.[key];
+
+        if (
+            value !== undefined &&
+            value !== null &&
+            String(value).trim() !== ""
+        ) {
+            return String(value).trim();
+        }
+    }
+
+    return fallback;
+}
+
+function processKangarooEcosystem(symbol, group, ts, body) {
+
+    const cleanGroup = String(group || "").trim();
+    const cleanSymbol = symbol || normalizeSymbol(body?.ticker) || "n/a";
+
+    const price = kangarooField(body, ["price", "close", "current_price"]);
+    const level = kangarooField(body, ["level", "target", "alert_price", "manual_level"], "");
+    const note = kangarooField(body, ["note", "reason", "context", "memo", "message"], "");
+    const source = kangarooField(body, ["source", "from", "setup", "bot_source"], "");
+    const timeframe = kangarooField(body, ["timeframe", "tf", "interval"], "");
+    const direction = kangarooField(body, ["direction", "dir", "side", "signal"], "");
+
+    let msg =
+        "🦘 KANGAROO\n" +
+        "Symbol: " + cleanSymbol + "\n" +
+        "Group: " + cleanGroup + "\n" +
+        "Price: " + price + "\n" +
+        "Time: " + formatDateTime(ts);
+
+    if (level && level !== "n/a") {
+        msg += "\nLevel: " + level;
+    }
+
+    if (direction && direction !== "n/a") {
+        msg += "\nDirection: " + direction;
+    }
+
+    if (timeframe && timeframe !== "n/a") {
+        msg += "\nTimeframe: " + timeframe;
+    }
+
+    if (source && source !== "n/a") {
+        msg += "\nSource: " + source;
+    }
+
+    if (note && note !== "n/a") {
+        msg += "\n\nNote:\n" + note;
+    }
+
+    sendToTelegram14(msg);
+}
+
+
+// ==========================================================
 //  WEBHOOK HANDLER
 // ==========================================================
 
@@ -4325,6 +4401,7 @@ app.post("/incoming", (req, res) => {
         const isHash = group.startsWith("#");
         const isManual = group.startsWith("@");
         const isZebra = group.startsWith("~");
+        const isKangaroo = group.startsWith("^");
         const isPeterPayload = isPeterForgePayload(body, group);
 
         const ts = nowMs();
@@ -4345,6 +4422,16 @@ app.post("/incoming", (req, res) => {
         if (isManual) {
             console.log("🟣 @ manual alert received:", symbol, group, JSON.stringify(body));
             processManualReminderBot10(symbol, group, ts, body);
+            saveState();
+            return res.sendStatus(200);
+        }
+
+
+
+        // 🦘 KANGAROO ^ ECOSYSTEM
+        // Fully isolated. Does not feed BOOM or any other ecosystem.
+        if (isKangaroo) {
+            processKangarooEcosystem(symbol, group, ts, body);
             saveState();
             return res.sendStatus(200);
         }
