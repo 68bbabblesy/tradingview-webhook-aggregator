@@ -2063,7 +2063,7 @@ function processFamilyPairTwoSlotDetector(cfg, symbol, group, ts) {
 
 // ==========================================================
 //  BABABIA — consecutive family pair
-//  Bot 2
+//  Bot 15
 // ==========================================================
 
 function processBababia(symbol, group, ts) {
@@ -2084,7 +2084,7 @@ function processBababia(symbol, group, ts) {
 
 // ==========================================================
 //  MAMAMIA — NON-consecutive family pair
-//  Bot 2
+//  Bot 15
 // ==========================================================
 
 function processMAMAMIA(symbol, group, ts) {
@@ -2095,7 +2095,7 @@ function processMAMAMIA(symbol, group, ts) {
             mode: "NON_CONSECUTIVE",
             ruleLabel: "family numbers must be non-consecutive",
             storeKey: "__MAMAMIA_FAMILY_PAIR_2SLOT_STATE__",
-            sender: sendToTelegram2
+            sender: sendToTelegram15
         },
         symbol,
         group,
@@ -3666,7 +3666,7 @@ function processBundle(symbol, group, ts) {
 //  Condition: 6+ alerts of ANY group
 //  Window: 5 minutes
 //  Batch delay: 5 minutes
-//  Bot 9
+//  Bot 15
 // ==========================================================
 
 const MINTA_WINDOW_MS = 5 * 60 * 1000;
@@ -3703,7 +3703,7 @@ function processMinta(symbol, group, ts) {
                     )
                     .join("\n");
 
-                sendToTelegram9(
+                sendToTelegram15(
                     `🍃 MINTA\n` +
                     `Symbol: ${symbol}\n` +
                     `Count: ${events.length}\n` +
