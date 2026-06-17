@@ -37,6 +37,7 @@ function loadState() {
                 lastAlert: parsed.lastAlert || {},
                 cooldownUntil: parsed.cooldownUntil || {},
                 tangoState: parsed.tangoState || {},
+                gandoState: parsed.gandoState || {},
                 scoreState: parsed.scoreState || {},
                 lastSeenState: parsed.lastSeenState || {},
                 godzillaState: parsed.godzillaState || {},
@@ -98,6 +99,7 @@ function loadState() {
         lastAlert: {},
         cooldownUntil: {},
         tangoState: {},
+        gandoState: {},
         scoreState: {},
         lastSeenState: {},
         godzillaState: {},
@@ -165,6 +167,7 @@ function buildStateSnapshot() {
         lastAlert,
         cooldownUntil,
         tangoState,
+        gandoState,
         scoreState,
         lastSeenState,
         godzillaState,
@@ -825,6 +828,7 @@ function sendToTelegram11(text) { enqueueTelegram(11, text); }
 function sendToTelegram12(text) { enqueueTelegram(12, text); }
 function sendToTelegram13(text) { enqueueTelegram(13, text); }
 function sendToTelegram14(text) { enqueueTelegram(14, text); }
+function sendToTelegram15(text) { enqueueTelegram(15, text); }
 console.log("🟣 MANUAL @ ECOSYSTEM LOADED — Bot10 route active");
 
 // -----------------------------
@@ -2172,6 +2176,8 @@ const TANGO_WINDOW_MS = 29 * 60 * 1000;
 const TANGO_MIN_FAMILIES = 3;
 
 let tangoState = persisted.tangoState || {};
+
+let gandoState = persisted.gandoState || {};
 
 function getFamily(group) {
     if (!group) return "";
@@ -4369,6 +4375,215 @@ function processKangarooEcosystem(symbol, group, ts, body) {
 
 
 // ==========================================================
+//  GANDO (NORMAL ECOSYSTEM FAMILY SUBGROUP BURST)
+//  Bot 15
+//
+//  Rule:
+//    - Normal ecosystem only
+//    - Same symbol
+//    - Same numeric family
+//    - 6 or more DISTINCT subgroups within 15 minutes
+//    - Duplicate subgroup does not count twice.
+//      Example: 38A + 38A still counts as 1 subgroup.
+// ==========================================================
+
+const GANDO_WINDOW_MS = 15 * 60 * 1000;
+const GANDO_MIN_SUBGROUPS = 6;
+
+// gandoState[symbol][family] = {
+//   events: [{ group, family, subgroup, time }],
+//   lastSentKey: "",
+//   lastSentAt: 0
+// }
+
+function parseGandoNormalGroup(group) {
+    const raw = String(group || "").trim().toUpperCase();
+
+    if (!raw) return null;
+
+    // Normal ecosystem only. Exclude all special-character lanes.
+    if (
+        raw.startsWith("@") ||
+        raw.startsWith("#") ||
+        raw.startsWith("~") ||
+        raw.startsWith("^")
+    ) {
+        return null;
+    }
+
+    const m = raw.match(/^(\d+)([A-Z]+)$/);
+    if (!m) return null;
+
+    return {
+        raw,
+        family: m[1],
+        subgroup: raw
+    };
+}
+
+function getGandoFamilyState(symbol, family) {
+    if (!gandoState[symbol] || typeof gandoState[symbol] !== "object") {
+        gandoState[symbol] = {};
+    }
+
+    if (
+        !gandoState[symbol][family] ||
+        typeof gandoState[symbol][family] !== "object" ||
+        !Array.isArray(gandoState[symbol][family].events)
+    ) {
+        gandoState[symbol][family] = {
+            events: [],
+            lastSentKey: "",
+            lastSentAt: 0
+        };
+    }
+
+    return gandoState[symbol][family];
+}
+
+function pruneGandoEvents(events, ts) {
+    const cutoff = ts - GANDO_WINDOW_MS;
+
+    return (events || [])
+        .filter(e =>
+            e &&
+            typeof e.time === "number" &&
+            e.time >= cutoff &&
+            e.time <= ts + 60000 &&
+            e.group &&
+            e.family &&
+            e.subgroup
+        )
+        .sort((a, b) => a.time - b.time);
+}
+
+function gandoSubgroupKey(events) {
+    return events
+        .map(e => String(e.subgroup))
+        .sort()
+        .join("|");
+}
+
+function gandoEventLines(events) {
+    return events
+        .slice()
+        .sort((a, b) => a.time - b.time)
+        .map((e, i) =>
+            (i + 1) + ") " +
+            e.group +
+            " @ " + formatDateTime(e.time)
+        )
+        .join("\n");
+}
+
+function processGando(symbol, group, ts) {
+
+    if (!symbol || !group) return;
+
+    const parsed = parseGandoNormalGroup(group);
+    if (!parsed) return;
+
+    const state = getGandoFamilyState(symbol, parsed.family);
+
+    let events = pruneGandoEvents(state.events, ts);
+
+    // Keep only one latest record per exact subgroup.
+    // So 38A repeated refreshes 38A but does not count as 2.
+    events = events.filter(e => e.subgroup !== parsed.subgroup);
+
+    events.push({
+        group: parsed.raw,
+        family: parsed.family,
+        subgroup: parsed.subgroup,
+        time: ts
+    });
+
+    events = pruneGandoEvents(events, ts);
+    state.events = events;
+
+    if (events.length < GANDO_MIN_SUBGROUPS) {
+        saveState();
+        return;
+    }
+
+    const key = gandoSubgroupKey(events);
+
+    // Avoid duplicate spam for the exact same subgroup set.
+    // Allow the same set again after the 15-minute window has rolled.
+    if (
+        state.lastSentKey === key &&
+        Number(state.lastSentAt || 0) &&
+        ts - Number(state.lastSentAt || 0) < GANDO_WINDOW_MS
+    ) {
+        saveState();
+        return;
+    }
+
+    const sorted = events.slice().sort((a, b) => a.time - b.time);
+    const firstTime = sorted[0].time;
+    const lastTime = sorted[sorted.length - 1].time;
+
+    const spanMs = lastTime - firstTime;
+    const spanMin = Math.floor(spanMs / 60000);
+    const spanSec = Math.floor((spanMs % 60000) / 1000);
+
+    sendToTelegram15(
+        "🦘 GANDO\n" +
+        "Symbol: " + symbol + "\n" +
+        "Family: " + parsed.family + "\n" +
+        "Subgroups: " + events.length + "\n" +
+        "Window: 15 minutes\n" +
+        "Rule: 6+ distinct subgroups in same family\n" +
+        "Span: " + spanMin + "m " + spanSec + "s\n\n" +
+        "Alerts:\n" +
+        gandoEventLines(sorted)
+    );
+
+    state.lastSentKey = key;
+    state.lastSentAt = ts;
+
+    // Safety cleanup.
+    if (Object.keys(gandoState).length > 5000) {
+        const pruneCutoff = ts - (2 * 60 * 60 * 1000);
+
+        for (const sym of Object.keys(gandoState)) {
+            const families = gandoState[sym];
+
+            if (!families || typeof families !== "object") {
+                delete gandoState[sym];
+                continue;
+            }
+
+            for (const fam of Object.keys(families)) {
+                const famState = families[fam];
+
+                if (
+                    !famState ||
+                    typeof famState !== "object" ||
+                    !Array.isArray(famState.events)
+                ) {
+                    delete families[fam];
+                    continue;
+                }
+
+                famState.events = famState.events.filter(e => e && e.time >= pruneCutoff);
+
+                if (!famState.events.length) {
+                    delete families[fam];
+                }
+            }
+
+            if (!Object.keys(families).length) {
+                delete gandoState[sym];
+            }
+        }
+    }
+
+    saveState();
+}
+
+
+// ==========================================================
 //  WEBHOOK HANDLER
 // ==========================================================
 
@@ -4479,6 +4694,7 @@ if (!isHash) {
         //processBazooka(symbol, group, ts, body);
 
         processBlackPanther(symbol, group, ts);
+        processGando(symbol, group, ts);
         processSideFlip(symbol, group, ts);
         processGamma(symbol, group, ts);
         processYaba(symbol, group, ts);
