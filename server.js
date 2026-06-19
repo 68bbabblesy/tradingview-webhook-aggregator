@@ -1071,7 +1071,7 @@ function getRecentHashBefore(symbol, ts, windowMs) {
 //    - Group must look like #1A, #1G, #2B, #3J, etc.
 //    - Same symbol
 //    - 2 or more # flavour alerts inside 5 minutes
-//    - Fires once per 5-minute cluster
+//    - Fires once after the full 5-minute cluster completes
 //
 //  Old YABA/GAMMA activation links are disabled by no-op activators.
 // ==========================================================
@@ -1148,7 +1148,25 @@ function finalizeExpiredHashEcosystemCluster(symbol, cluster, ts) {
 
     if (!expired) return false;
 
-    if (cluster.events.length === 1 && !cluster.wakandaSent && !cluster.bazookaSent) {
+    cluster.events = (cluster.events || [])
+        .filter(e =>
+            e &&
+            typeof e.time === "number" &&
+            e.time >= Number(cluster.windowStart || 0)
+        )
+        .sort((a, b) => a.time - b.time);
+
+    // TRUE FINAL BAZOOKA:
+    // Wait until the full 5-minute window is complete,
+    // then send the real total count for the whole cluster.
+    if (cluster.events.length >= 2 && !cluster.bazookaSent) {
+        sendHashEcosystemBazooka(symbol, cluster);
+        cluster.bazookaSent = true;
+        return true;
+    }
+
+    // WAKANDA remains the single-hash final result.
+    if (cluster.events.length === 1 && !cluster.wakandaSent) {
         const only = cluster.events[0];
 
         sendToTelegram4(
@@ -1163,10 +1181,13 @@ function finalizeExpiredHashEcosystemCluster(symbol, cluster, ts) {
         );
 
         cluster.wakandaSent = true;
+        return true;
     }
 
     return true;
 }
+
+function scanHashEcosystemSingletons(ts = Date.now()) {
 
 function scanHashEcosystemSingletons(ts = Date.now()) {
     const store = getHashEcosystemStore();
@@ -1214,10 +1235,9 @@ function processBazooka(symbol, group, ts) {
         .filter(e => e && typeof e.time === "number" && e.time >= cluster.windowStart)
         .sort((a, b) => a.time - b.time);
 
-    if (cluster.events.length >= 2 && !cluster.bazookaSent) {
-        cluster.bazookaSent = true;
-        sendHashEcosystemBazooka(symbol, cluster);
-    }
+    // BAZOOKA is no longer sent early at count 2.
+    // It is finalized after the full 5-minute cluster window
+    // so the Telegram message reflects the true total count.
 
     saveState();
 }
@@ -1290,7 +1310,7 @@ function processPremier(symbol, firstGroup, firstTime) {
 //    - Same symbol
 //    - WAKANDA fires only after the full 5-minute window confirms
 //      there was exactly one # flavour alert for that symbol.
-//    - BAZOOKA handles 2+ alerts.
+//    - BAZOOKA handles 2+ alerts after the full 5-minute window.
 // ==========================================================
 
 let wakandaState = persisted.wakandaState || {};
