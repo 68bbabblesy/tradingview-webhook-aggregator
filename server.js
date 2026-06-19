@@ -1188,8 +1188,6 @@ function finalizeExpiredHashEcosystemCluster(symbol, cluster, ts) {
 }
 
 function scanHashEcosystemSingletons(ts = Date.now()) {
-
-function scanHashEcosystemSingletons(ts = Date.now()) {
     const store = getHashEcosystemStore();
 
     for (const symbol of Object.keys(store)) {
