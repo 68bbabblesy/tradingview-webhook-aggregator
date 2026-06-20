@@ -2092,7 +2092,7 @@ function processBababia(symbol, group, ts) {
             mode: "CONSECUTIVE",
             ruleLabel: "family numbers must be consecutive",
             storeKey: "__BABABIA_FAMILY_PAIR_2SLOT_STATE__",
-            sender: sendToTelegram2
+            sender: sendToTelegram15
         },
         symbol,
         group,
@@ -4245,12 +4245,12 @@ function processManualReminderBot10(symbol, group, ts, body) {
 
 // ==========================================================
 //  ZEBRA ~ ECOSYSTEM
-//  Bot 11
+//  Bot 2
 //
 //  Rule:
 //    - Any group starting with ~ belongs to ZEBRA.
 //    - Examples: ~1A, ~B, ~AA, ~37X
-//    - Sends to Bot11.
+//    - Sends to Bot2.
 //    - Must return before normal/# ecosystems.
 // ==========================================================
 
@@ -4312,7 +4312,7 @@ function processZebraEcosystem(symbol, group, ts, body) {
     if (note && note !== "n/a") {
         msg += "\n\nNote:\n" + note;
     }
-    sendToTelegram11(msg);
+    sendToTelegram2(msg);
 }
 
 
