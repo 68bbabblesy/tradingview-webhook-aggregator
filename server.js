@@ -1407,98 +1407,191 @@ function passesStructuredGroupFilter(groups) {
 
 
 // ==========================================================
-//  BLACK_PANTHER (Family subgroup burst detector)
-//  Condition:
+//  BLACK_PANTHER (Same-family follow-up detector)
+//  Bot 3
+//
+//  Rule:
+//    - Normal ecosystem only
 //    - Same symbol
-//    - Same family: 16A/16B/16C => family 16
-//    - 3 DISTINCT subgroups within 1 minute
-// Bot 3
+//    - Same numeric family
+//    - Same exact subgroup is allowed
+//    - If another same-family alert arrives 20 seconds or more
+//      after the latest same-family alert/cluster, fire.
+//    - Alerts within 0-19 seconds are treated as the same cluster.
+//    - Different family does not count.
 // ==========================================================
 
-const BLACK_PANTHER_WINDOW_MS = 60 * 1000; // 1 minute
+const BLACK_PANTHER_MIN_GAP_MS = 20 * 1000; // 20 seconds
+const BLACK_PANTHER_CLUSTER_GAP_MS = 19 * 1000; // 0-19s = same cluster
+const BLACK_PANTHER_MEMORY_KEEP_MS = 2 * 60 * 60 * 1000; // safety cleanup
 
-// blackPantherMemory[symbol][family] = [{ group, time }]
+// blackPantherMemory[symbol][family] = {
+//   clusterStart: number,
+//   clusterLast: number,
+//   clusterGroups: [{ group, time }],
+//   lastFireAt: number
+// }
 let blackPantherMemory = persisted.blackPantherMemory || {};
+
+function parseBlackPantherNormalGroup(group) {
+    const raw = String(group || "").trim().toUpperCase();
+
+    if (!raw) return null;
+
+    // Normal ecosystem only.
+    if (
+        raw.startsWith("@") ||
+        raw.startsWith("#") ||
+        raw.startsWith("~") ||
+        raw.startsWith("^")
+    ) {
+        return null;
+    }
+
+    const m = raw.match(/^(\d+)([A-Z]+)$/);
+    if (!m) return null;
+
+    return {
+        raw,
+        family: m[1]
+    };
+}
+
+function getBlackPantherFamilyState(symbol, family) {
+    if (!blackPantherMemory[symbol] || typeof blackPantherMemory[symbol] !== "object") {
+        blackPantherMemory[symbol] = {};
+    }
+
+    const current = blackPantherMemory[symbol][family];
+
+    const invalid =
+        !current ||
+        typeof current !== "object" ||
+        typeof current.clusterStart !== "number" ||
+        typeof current.clusterLast !== "number" ||
+        !Array.isArray(current.clusterGroups);
+
+    if (invalid) {
+        blackPantherMemory[symbol][family] = {
+            clusterStart: 0,
+            clusterLast: 0,
+            clusterGroups: [],
+            lastFireAt: 0
+        };
+    }
+
+    return blackPantherMemory[symbol][family];
+}
+
+function blackPantherClusterLines(items) {
+    if (!Array.isArray(items) || !items.length) return "n/a";
+
+    return items
+        .slice()
+        .sort((a, b) => a.time - b.time)
+        .map((e, i) =>
+            (i + 1) + ") " + e.group + " @ " + formatDateTime(e.time)
+        )
+        .join("\n");
+}
 
 function processBlackPanther(symbol, group, ts) {
 
     if (!symbol || !group) return;
 
-    const family = getFamily(group);
-    if (!family) return;
+    const parsed = parseBlackPantherNormalGroup(group);
+    if (!parsed) return;
 
-    if (!blackPantherMemory[symbol]) {
-        blackPantherMemory[symbol] = {};
-    }
+    const state = getBlackPantherFamilyState(symbol, parsed.family);
 
-    if (!blackPantherMemory[symbol][family]) {
-        blackPantherMemory[symbol][family] = [];
-    }
+    const currentEvent = {
+        group: parsed.raw,
+        time: ts
+    };
 
-    const buf = blackPantherMemory[symbol][family];
-
-    // Keep only last 1 minute
-    const cutoff = ts - BLACK_PANTHER_WINDOW_MS;
-    while (buf.length && buf[0].time < cutoff) {
-        buf.shift();
-    }
-
-    // Keep groups distinct: if same subgroup repeats, refresh its timestamp
-    const existingIndex = buf.findIndex(e => e.group === group);
-    if (existingIndex !== -1) {
-        buf.splice(existingIndex, 1);
-    }
-
-    buf.push({ group, time: ts });
-
-    // Need 3 distinct subgroups
-    if (buf.length < 3) return;
-
-    const picked = buf
-        .slice()
-        .sort((a, b) => a.time - b.time)
-        .slice(-3);
-
-    const firstTime = picked[0].time;
-    const lastTime  = picked[picked.length - 1].time;
-
-    const gapMs  = lastTime - firstTime;
-    const gapSec = Math.floor(gapMs / 1000);
-
-    const blackPantherStructuredMatch = findStructuredGroupMatch(
-        picked.map(e => e.group)
-    );
-
-    if (!blackPantherStructuredMatch) {
+    // First event for this symbol+family starts memory only.
+    if (!state.clusterLast) {
+        state.clusterStart = ts;
+        state.clusterLast = ts;
+        state.clusterGroups = [currentEvent];
+        saveState();
         return;
     }
 
+    // If stale, start fresh. This avoids very old overnight matches.
+    if (ts - state.clusterLast > BLACK_PANTHER_MEMORY_KEEP_MS) {
+        state.clusterStart = ts;
+        state.clusterLast = ts;
+        state.clusterGroups = [currentEvent];
+        state.lastFireAt = 0;
+        saveState();
+        return;
+    }
+
+    const gapMs = ts - state.clusterLast;
+
+    // Same-time / near-time burst: 0-19s belongs to the same cluster.
+    // No alert yet.
+    if (gapMs <= BLACK_PANTHER_CLUSTER_GAP_MS) {
+        state.clusterGroups.push(currentEvent);
+        state.clusterGroups = state.clusterGroups
+            .filter(e => e && typeof e.time === "number" && e.time >= ts - BLACK_PANTHER_MEMORY_KEEP_MS)
+            .sort((a, b) => a.time - b.time);
+
+        state.clusterLast = ts;
+        saveState();
+        return;
+    }
+
+    // 20s+ after previous same-family alert/cluster = trigger.
+    const previousCluster = (state.clusterGroups || []).slice().sort((a, b) => a.time - b.time);
+
+    const gapSec = Math.floor(gapMs / 1000);
+    const prevStart = state.clusterStart || (previousCluster[0]?.time || state.clusterLast);
+    const prevLast = state.clusterLast;
+
     sendToTelegram3(
-        `🖤 BLACK_PANTHER\n` +
-        `Symbol: ${symbol}\n` +
-        `Family: ${family}\n` +
-        `Subgroups: ${picked.map(e => e.group).join(" → ")}\n` +
-        `Structure: ${blackPantherStructuredMatch.label}\n` +
-        `Window: ${gapSec}s\n\n` +
-        `Times:\n` +
-        picked.map((e, i) =>
-            `${i + 1}) ${e.group} @ ${formatDateTime(e.time)}`
-        ).join("\n")
+        "🖤 BLACK_PANTHER\n" +
+        "Symbol: " + symbol + "\n" +
+        "Family: " + parsed.family + "\n" +
+        "Rule: same-family follow-up after 20s+\n" +
+        "Gap From Previous: " + gapSec + "s\n\n" +
+
+        "Previous Cluster:\n" +
+        blackPantherClusterLines(previousCluster) + "\n\n" +
+
+        "Current Alert:\n" +
+        "1) " + currentEvent.group + " @ " + formatDateTime(currentEvent.time) + "\n\n" +
+
+        "Previous Cluster Start: " + formatDateTime(prevStart) + "\n" +
+        "Previous Cluster Last: " + formatDateTime(prevLast)
     );
 
-    // Reset this symbol+family after firing to avoid spam
-    delete blackPantherMemory[symbol][family];
+    state.lastFireAt = ts;
 
-    // Safety cleanup
+    // Start a fresh cluster from the current alert.
+    // If more same-family alerts come within 0-19s after this one,
+    // they will join this new cluster and not fire again.
+    state.clusterStart = ts;
+    state.clusterLast = ts;
+    state.clusterGroups = [currentEvent];
+
+    // Safety cleanup.
     if (Object.keys(blackPantherMemory).length > 5000) {
-        const pruneCutoff = ts - (2 * 60 * 60 * 1000);
+        const pruneCutoff = ts - BLACK_PANTHER_MEMORY_KEEP_MS;
 
         for (const sym of Object.keys(blackPantherMemory)) {
             const families = blackPantherMemory[sym];
 
+            if (!families || typeof families !== "object") {
+                delete blackPantherMemory[sym];
+                continue;
+            }
+
             for (const fam of Object.keys(families)) {
-                const arr = families[fam];
-                if (!arr.length || arr[arr.length - 1].time < pruneCutoff) {
+                const st = families[fam];
+
+                if (!st || typeof st.clusterLast !== "number" || st.clusterLast < pruneCutoff) {
                     delete families[fam];
                 }
             }
@@ -1508,7 +1601,12 @@ function processBlackPanther(symbol, group, ts) {
             }
         }
     }
+
+    saveState();
 }
+
+// ==========================================================
+//  SOURCE RANGE ENGINE
 
 // ==========================================================
 //  SOURCE RANGE ENGINE — DIFFERENT FAMILY PAIRS
@@ -4720,7 +4818,7 @@ if (!isHash) {
         processTango(symbol, group, ts);
         processCobra(symbol, group, ts);
         processNeptune(symbol, group, ts);
-        processZulu(symbol, group, ts);
+        // processZulu(symbol, group, ts); // disabled by request
         processMinta(symbol, group, ts);
         processMamba(symbol, group, ts);
         processSpesh(symbol, group, ts);
