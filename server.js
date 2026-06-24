@@ -3598,115 +3598,253 @@ function registerTrinity(symbol, type) {
 }
 
 // ==========================================================
-//  YABA (Family cross detector — 3 distinct subgroups)
-//  Condition:
-//    - Same symbol
-//    - SAME family, e.g. 16A/16B/16C => family 16
-//    - 3 DISTINCT subgroups
-//    - Within 90 seconds
+//  YABA (G/H/I/J only, delayed family-window detector)
 //  Bot 9
+//
+//  Rule:
+//    - Normal ecosystem only
+//    - Same symbol
+//    - Same numeric family
+//    - Full 5-minute delayed window
+//    - Qualifies if ALL distinct subgroups in that family window
+//      are G/H/I/J.
+//    - 1, 2, 3, or 4 G/H/I/J subgroups can qualify.
+//    - If any other letter appears in that family window, no alert.
 // ==========================================================
 
-const YABA_WINDOW_MS = 90 * 1000; // 90 seconds
-const YABA_MIN_DISTINCT = 3;
+const YABA_WINDOW_MS = 5 * 60 * 1000;
+const YABA_ALLOWED_LETTERS = new Set(["G", "H", "I", "J"]);
 
-// yabaMemory[symbol][family] = [{ group, time }]
+// yabaMemory[symbol][family] = {
+//   windowStart: number,
+//   events: [{ group, letter, time }],
+//   invalid: boolean,
+//   invalidGroups: [{ group, letter, time }]
+// }
 let yabaMemory = persisted.yabaMemory || {};
+
+function parseYabaNormalGroup(group) {
+    const raw = String(group || "").trim().toUpperCase();
+
+    if (!raw) return null;
+
+    // Normal ecosystem only.
+    if (
+        raw.startsWith("@") ||
+        raw.startsWith("#") ||
+        raw.startsWith("~") ||
+        raw.startsWith("^")
+    ) {
+        return null;
+    }
+
+    const m = raw.match(/^(\d+)([A-Z])$/);
+    if (!m) return null;
+
+    return {
+        raw,
+        family: m[1],
+        letter: m[2]
+    };
+}
+
+function getYabaFamilyStore(symbol, family) {
+    if (!yabaMemory[symbol] || typeof yabaMemory[symbol] !== "object") {
+        yabaMemory[symbol] = {};
+    }
+
+    const current = yabaMemory[symbol][family];
+
+    const invalid =
+        !current ||
+        typeof current !== "object" ||
+        typeof current.windowStart !== "number" ||
+        !Array.isArray(current.events) ||
+        !Array.isArray(current.invalidGroups);
+
+    if (invalid) {
+        yabaMemory[symbol][family] = {
+            windowStart: 0,
+            events: [],
+            invalid: false,
+            invalidGroups: []
+        };
+    }
+
+    return yabaMemory[symbol][family];
+}
+
+function addYabaEventToState(state, parsed, ts) {
+    if (!parsed) return;
+
+    const item = {
+        group: parsed.raw,
+        letter: parsed.letter,
+        time: ts
+    };
+
+    if (!YABA_ALLOWED_LETTERS.has(parsed.letter)) {
+        state.invalid = true;
+
+        const existingBadIndex = state.invalidGroups.findIndex(e => e.group === parsed.raw);
+        if (existingBadIndex !== -1) {
+            state.invalidGroups[existingBadIndex] = item;
+        } else {
+            state.invalidGroups.push(item);
+        }
+
+        state.invalidGroups.sort((a, b) => a.time - b.time);
+        return;
+    }
+
+    // Keep distinct subgroup only. Same subgroup repeat refreshes time.
+    const existingIndex = state.events.findIndex(e => e.group === parsed.raw);
+
+    if (existingIndex !== -1) {
+        state.events[existingIndex] = item;
+    } else {
+        state.events.push(item);
+    }
+
+    state.events.sort((a, b) => a.time - b.time);
+}
+
+function startYabaWindow(symbol, family, parsed, ts) {
+    const state = getYabaFamilyStore(symbol, family);
+
+    state.windowStart = ts;
+    state.events = [];
+    state.invalid = false;
+    state.invalidGroups = [];
+
+    addYabaEventToState(state, parsed, ts);
+
+    return state;
+}
+
+function yabaEventLines(events) {
+    if (!Array.isArray(events) || !events.length) return "n/a";
+
+    return events
+        .slice()
+        .sort((a, b) => a.time - b.time)
+        .map((e, i) =>
+            (i + 1) + ") " + e.group + " @ " + formatDateTime(e.time)
+        )
+        .join("\n");
+}
+
+function finalizeYabaWindow(symbol, family, state, ts) {
+    if (!state || typeof state.windowStart !== "number" || !state.windowStart) return false;
+
+    const expired = ts - state.windowStart >= YABA_WINDOW_MS;
+    if (!expired) return false;
+
+    const goodEvents = (state.events || [])
+        .filter(e => e && e.group && YABA_ALLOWED_LETTERS.has(e.letter))
+        .sort((a, b) => a.time - b.time);
+
+    const distinctCount = goodEvents.length;
+
+    const qualifies =
+        !state.invalid &&
+        distinctCount >= 1;
+
+    if (qualifies) {
+        const firstTime = goodEvents[0].time;
+        const lastTime = goodEvents[goodEvents.length - 1].time;
+        const spanMs = Math.max(0, lastTime - firstTime);
+        const spanMin = Math.floor(spanMs / 60000);
+        const spanSec = Math.floor((spanMs % 60000) / 1000);
+
+        sendToTelegram9(
+            "🟢 YABA\n" +
+            "Symbol: " + symbol + "\n" +
+            "Family: " + family + "\n" +
+            "Subgroups: " + distinctCount + "\n" +
+            "Allowed Letters: G/H/I/J only\n" +
+            "Window: 5 minutes delayed\n" +
+            "Rule: all subgroups in family window must be G/H/I/J\n" +
+            "Span: " + spanMin + "m " + spanSec + "s\n" +
+            "Window Start: " + formatDateTime(state.windowStart) + "\n" +
+            "Window End: " + formatDateTime(state.windowStart + YABA_WINDOW_MS) + "\n\n" +
+            "Alerts:\n" +
+            yabaEventLines(goodEvents)
+        );
+    }
+
+    return true;
+}
 
 function processYaba(symbol, group, ts) {
 
     if (!symbol || !group) return;
 
-    const family = getFamily(group);
-    if (!family) return;
+    const parsed = parseYabaNormalGroup(group);
+    if (!parsed) return;
 
-    if (!yabaMemory[symbol]) {
-        yabaMemory[symbol] = {};
+    const state = getYabaFamilyStore(symbol, parsed.family);
+
+    // If the old window has expired, finalize it first,
+    // then start a fresh 5-minute window with this new alert.
+    if (state.windowStart && ts - state.windowStart >= YABA_WINDOW_MS) {
+        finalizeYabaWindow(symbol, parsed.family, state, ts);
+
+        state.windowStart = 0;
+        state.events = [];
+        state.invalid = false;
+        state.invalidGroups = [];
     }
 
-    if (!yabaMemory[symbol][family]) {
-        yabaMemory[symbol][family] = [];
-    }
-
-    let buf = yabaMemory[symbol][family];
-
-    // Keep only last 90 seconds
-    const cutoff = ts - YABA_WINDOW_MS;
-    buf = buf.filter(e => e.time >= cutoff);
-
-    // Keep distinct subgroups. If same subgroup repeats, refresh timestamp.
-    const existingIndex = buf.findIndex(e => e.group === group);
-
-    if (existingIndex !== -1) {
-        buf[existingIndex] = {
-            group,
-            time: ts
-        };
-    } else {
-        buf.push({
-            group,
-            time: ts
-        });
-    }
-
-    buf.sort((a, b) => a.time - b.time);
-    yabaMemory[symbol][family] = buf;
-
-    // Need 3 distinct subgroups inside 90 seconds
-    if (buf.length >= YABA_MIN_DISTINCT) {
-
-        const picked = buf.slice(-YABA_MIN_DISTINCT);
-
-        const firstTime = picked[0].time;
-        const lastTime = picked[picked.length - 1].time;
-
-        const diffMs = lastTime - firstTime;
-        const diffSec = Math.floor(diffMs / 1000);
-
-        const groupSequence = picked.map(e => e.group).join(" → ");
-
-        const lines = picked
-            .map((e, i) =>
-                `${i + 1}) ${e.group} @ ${formatDateTime(e.time)}`
-            )
-            .join("\n");
-
-        sendToTelegram9(
-            `🟢 YABA\n` +
-            `Symbol: ${symbol}\n` +
-            `Family: ${family}\n` +
-            `Subgroups: ${groupSequence}\n` +
-            `Window: ${diffSec}s / 90s\n\n` +
-            `Times:\n${lines}`
-        );
-        // activateBazooka(symbol, "YABA", ts, groupSequence); // BAZOOKA disabled temporarily
-
-        // Reset after firing to avoid spam from 4th/5th subgroup
-        delete yabaMemory[symbol][family];
+    if (!state.windowStart) {
+        startYabaWindow(symbol, parsed.family, parsed, ts);
+        saveState();
         return;
     }
 
-    // Safety cleanup
-    if (Object.keys(yabaMemory).length > 5000) {
-        const pruneCutoff = ts - (2 * 60 * 60 * 1000);
+    addYabaEventToState(state, parsed, ts);
 
-        for (const sym of Object.keys(yabaMemory)) {
-            const families = yabaMemory[sym];
+    saveState();
+}
 
-            for (const fam of Object.keys(families)) {
-                families[fam] = families[fam].filter(e => e.time >= pruneCutoff);
+function scanYabaWindows(ts = Date.now()) {
+    if (!yabaMemory || typeof yabaMemory !== "object") return;
 
-                if (!families[fam].length) {
-                    delete families[fam];
-                }
-            }
+    for (const symbol of Object.keys(yabaMemory)) {
+        const families = yabaMemory[symbol];
 
-            if (!Object.keys(families).length) {
-                delete yabaMemory[sym];
+        if (!families || typeof families !== "object") {
+            delete yabaMemory[symbol];
+            continue;
+        }
+
+        for (const family of Object.keys(families)) {
+            const state = families[family];
+
+            if (finalizeYabaWindow(symbol, family, state, ts)) {
+                delete families[family];
             }
         }
+
+        if (!Object.keys(families).length) {
+            delete yabaMemory[symbol];
+        }
     }
+
+    saveState();
 }
+
+// Keep scanner alive so YABA can fire after 5 minutes even if no later alert arrives.
+if (!globalThis.__YABA_GHIJ_SCAN__) {
+    globalThis.__YABA_GHIJ_SCAN__ = setInterval(() => {
+        try {
+            scanYabaWindows(Date.now());
+        } catch (err) {
+            console.error("YABA GHIJ scanner error:", err);
+        }
+    }, 15000);
+}
+
 
 // ==========================================================
 //  BUNDLE (ACSWU / BDXTV burst collector)
