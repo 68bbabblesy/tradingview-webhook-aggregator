@@ -3096,133 +3096,64 @@ function sendCabalSlotAlert(symbol, state, candidate, slotNo) {
 
 
 // ==========================================================
-//  BOOM (ECOSYSTEM CORRELATION ENGINE)
+//  BOOM (ZEBRA-1 → NORMAL SEQUENCE TRACKER)
 //  Bot 13
 //
 //  Rule:
 //    - Same symbol
-//    - Any 2 or 3 eligible ecosystems within 1 hour
-//    - NORMAL = normal group, e.g. 37A, 42E, A, B
-//    - HASH   = group starts with #
-//    - ZEBRA  = group starts with ~
-//    - @ manual ecosystem is excluded
-//    - Fires again when a stronger 3-way correlation appears
-//      or when the same ecosystem set qualifies again after 1 hour.
+//    - Sequence must be:
+//        1) ZEBRA seed first: ~1__TOP or ~1__BOTTOM
+//        2) NORMAL ecosystem alert after it
+//    - Max span: 2 hours
+//    - If normal arrives after 2 hours, tracking resets/no alert
+//    - Other ~ flavours do NOT count:
+//        ~2__TOP, ~TOP_MAX, ~A, etc. are ignored by BOOM.
+//    - Hash, manual, and kangaroo are ignored.
 // ==========================================================
 
-const BOOM_WINDOW_MS = 60 * 60 * 1000; // 1 hour
-const BOOM_FIRE_COOLDOWN_MS = 60 * 60 * 1000; // 1 hour per ecosystem set
+const BOOM_TRACK_WINDOW_MS = 2 * 60 * 60 * 1000; // 2 hours
+const BOOM_VALID_ZEBRA_SEEDS = new Set(["~1__TOP", "~1__BOTTOM"]);
 
-// boomMemory[symbol] = { events: [{ ecosystem, group, time }] }
+// boomMemory[symbol] = {
+//   seed: { group, time }
+// }
 let boomMemory = persisted.boomMemory || {};
 
-// boomPairState[symbol][ecosystemKey] = [fireTimestamps]
+// kept for persistence compatibility; no longer used for BOOM throttling
 let boomPairState = persisted.boomPairState || {};
 
-function boomEcosystemFromGroup(group) {
+function isBoomZebraSeed(group) {
     const raw = String(group || "").trim().toUpperCase();
-
-    if (!raw) return "";
-    if (raw.startsWith("@")) return "";       // manual excluded
-    if (raw.startsWith("#")) return "HASH";
-    if (raw.startsWith("~")) return "ZEBRA";
-
-    return "NORMAL";
+    return BOOM_VALID_ZEBRA_SEEDS.has(raw);
 }
 
-function getBoomSymbolState(symbol) {
+function isBoomNormalGroup(group) {
+    const raw = String(group || "").trim().toUpperCase();
+
+    if (!raw) return false;
+    if (raw.startsWith("@")) return false;
+    if (raw.startsWith("#")) return false;
+    if (raw.startsWith("~")) return false;
+    if (raw.startsWith("^")) return false;
+
+    return true;
+}
+
+function getBoomState(symbol) {
     const current = boomMemory[symbol];
 
     const invalid =
         !current ||
         typeof current !== "object" ||
-        !Array.isArray(current.events);
+        Array.isArray(current);
 
     if (invalid) {
         boomMemory[symbol] = {
-            events: []
+            seed: null
         };
     }
 
     return boomMemory[symbol];
-}
-
-function pruneBoomEvents(events, ts) {
-    const cutoff = ts - BOOM_WINDOW_MS;
-
-    return (events || [])
-        .filter(e =>
-            e &&
-            typeof e.time === "number" &&
-            e.time >= cutoff &&
-            e.time <= ts + 60000 &&
-            e.ecosystem &&
-            e.group
-        )
-        .sort((a, b) => a.time - b.time);
-}
-
-function boomLatestByEcosystem(events) {
-    const map = new Map();
-
-    for (const e of events || []) {
-        const prior = map.get(e.ecosystem);
-
-        if (!prior || e.time >= prior.time) {
-            map.set(e.ecosystem, e);
-        }
-    }
-
-    return Array.from(map.values()).sort((a, b) => a.time - b.time);
-}
-
-function boomEcosystemKey(events) {
-    return events
-        .map(e => e.ecosystem)
-        .sort()
-        .join("+");
-}
-
-function canFireBoomEcosystem(symbol, key, ts) {
-    if (!boomPairState[symbol]) {
-        boomPairState[symbol] = {};
-    }
-
-    if (!boomPairState[symbol][key]) {
-        boomPairState[symbol][key] = [];
-    }
-
-    const cutoff = ts - BOOM_FIRE_COOLDOWN_MS;
-
-    boomPairState[symbol][key] = boomPairState[symbol][key]
-        .filter(t => typeof t === "number" && t >= cutoff);
-
-    return boomPairState[symbol][key].length === 0;
-}
-
-function recordBoomEcosystemFire(symbol, key, ts) {
-    if (!boomPairState[symbol]) {
-        boomPairState[symbol] = {};
-    }
-
-    if (!boomPairState[symbol][key]) {
-        boomPairState[symbol][key] = [];
-    }
-
-    boomPairState[symbol][key].push(ts);
-}
-
-function boomEventLines(events) {
-    return events
-        .slice()
-        .sort((a, b) => a.time - b.time)
-        .map((e, i) =>
-            (i + 1) + ") " +
-            e.ecosystem +
-            " | " + e.group +
-            " @ " + formatDateTime(e.time)
-        )
-        .join("\n");
 }
 
 function processBoom(symbol, group, ts) {
@@ -3230,77 +3161,82 @@ function processBoom(symbol, group, ts) {
     if (!symbol || !group) return;
 
     const rawGroup = String(group || "").trim().toUpperCase();
-    const ecosystem = boomEcosystemFromGroup(rawGroup);
 
-    // Excludes @ manual and blank groups.
-    if (!ecosystem) return;
+    // Step 1: exact ZEBRA seed starts/restarts tracking.
+    if (isBoomZebraSeed(rawGroup)) {
+        const state = getBoomState(symbol);
 
-    const state = getBoomSymbolState(symbol);
+        state.seed = {
+            group: rawGroup,
+            time: ts
+        };
 
-    let events = pruneBoomEvents(state.events, ts);
-
-    // Keep latest event per ecosystem.
-    events = events.filter(e => e.ecosystem !== ecosystem);
-
-    events.push({
-        ecosystem,
-        group: rawGroup,
-        time: ts
-    });
-
-    events = pruneBoomEvents(events, ts);
-    state.events = events;
-
-    const latest = boomLatestByEcosystem(events);
-
-    if (latest.length < 2) {
         saveState();
         return;
     }
 
-    const key = boomEcosystemKey(latest);
+    // Ignore every other ~ flavour and all non-normal ecosystems.
+    if (!isBoomNormalGroup(rawGroup)) {
+        return;
+    }
 
-    if (!canFireBoomEcosystem(symbol, key, ts)) {
+    // Step 2: normal alert can only confirm an existing seed.
+    const state = getBoomState(symbol);
+    const seed = state.seed;
+
+    if (!seed || typeof seed.time !== "number") {
         saveState();
         return;
     }
 
-    const firstTime = latest[0].time;
-    const lastTime = latest[latest.length - 1].time;
+    const spanMs = ts - seed.time;
 
-    const spanMs = lastTime - firstTime;
+    // Wrong sequence / bad timestamp safety.
+    if (spanMs < 0) {
+        state.seed = null;
+        saveState();
+        return;
+    }
+
+    // Over 2 hours: restart/clear tracking, no alert.
+    if (spanMs > BOOM_TRACK_WINDOW_MS) {
+        state.seed = null;
+        saveState();
+        return;
+    }
+
     const spanMin = Math.floor(spanMs / 60000);
     const spanSec = Math.floor((spanMs % 60000) / 1000);
 
     sendToTelegram13(
         "💥 BOOM\n" +
         "Symbol: " + symbol + "\n" +
-        "Ecosystems: " + key + "\n" +
-        "Count: " + latest.length + "/3\n" +
-        "Window: 1 hour\n" +
-        "Rule: any 2+ ecosystems within 1 hour\n" +
+        "Sequence: ZEBRA-1 → NORMAL\n" +
+        "Window: 2 hours max\n" +
+        "Rule: ~1__TOP or ~1__BOTTOM must come before normal ecosystem\n" +
         "Span: " + spanMin + "m " + spanSec + "s\n\n" +
         "Alerts:\n" +
-        boomEventLines(latest)
+        "1) ZEBRA | " + seed.group + " @ " + formatDateTime(seed.time) + "\n" +
+        "2) NORMAL | " + rawGroup + " @ " + formatDateTime(ts)
     );
 
-    recordBoomEcosystemFire(symbol, key, ts);
+    // Reset after fire. A new ~1__TOP/~1__BOTTOM is needed for the next BOOM.
+    state.seed = null;
 
     // Safety cleanup.
     if (Object.keys(boomMemory).length > 5000) {
-        const pruneCutoff = ts - (2 * 60 * 60 * 1000);
+        const cutoff = ts - BOOM_TRACK_WINDOW_MS;
 
         for (const sym of Object.keys(boomMemory)) {
             const st = boomMemory[sym];
 
-            if (!st || typeof st !== "object" || !Array.isArray(st.events)) {
-                delete boomMemory[sym];
-                continue;
-            }
-
-            st.events = st.events.filter(e => e && e.time >= pruneCutoff);
-
-            if (!st.events.length) {
+            if (
+                !st ||
+                typeof st !== "object" ||
+                !st.seed ||
+                typeof st.seed.time !== "number" ||
+                st.seed.time < cutoff
+            ) {
                 delete boomMemory[sym];
             }
         }
@@ -3309,6 +3245,8 @@ function processBoom(symbol, group, ts) {
     saveState();
 }
 
+// ==========================================================
+//  KOOKY
 
 // ==========================================================
 //  KOOKY
