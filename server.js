@@ -1063,199 +1063,94 @@ function getRecentHashBefore(symbol, ts, windowMs) {
 }
 
 // ==========================================================
-//  BAZOOKA (HASH ECOSYSTEM — 2+ # flavour alerts in 5m)
+//  BAZOOKA (BASIC HASH REPORTER)
 //  Bot 4
 //
 //  Rule:
-//    - # ecosystem only
-//    - Group must look like #1A, #1G, #2B, #3J, etc.
-//    - Same symbol
-//    - 2 or more # flavour alerts inside 5 minutes
-//    - Fires once after the full 5-minute cluster completes
-//
-//  Old YABA/GAMMA activation links are disabled by no-op activators.
+//    - Any group starting with #
+//    - Same alert reports immediately
+//    - No 5-minute cluster
+//    - No count logic
+//    - No WAKANDA scanner
 // ==========================================================
 
+// Kept for persistence compatibility only.
 let bazookaState = persisted.bazookaState || {};
 
-const HASH_ECOSYSTEM_WINDOW_MS = 5 * 60 * 1000;
-const HASH_ECOSYSTEM_STORE_KEY = "__HASH_ECOSYSTEM_CLUSTER__";
-
-function isHashFlavourGroup(group) {
-    return /^#\d+[A-Z]+$/i.test(String(group || "").trim());
+function isBazookaHashGroup(group) {
+    return String(group || "").trim().startsWith("#");
 }
 
-function getHashEcosystemStore() {
-    if (!bazookaState[HASH_ECOSYSTEM_STORE_KEY] || typeof bazookaState[HASH_ECOSYSTEM_STORE_KEY] !== "object") {
-        bazookaState[HASH_ECOSYSTEM_STORE_KEY] = {};
-    }
+function bazookaField(body, keys, fallback = "n/a") {
+    for (const key of keys) {
+        const value = body?.[key];
 
-    return bazookaState[HASH_ECOSYSTEM_STORE_KEY];
-}
-
-function createHashEcosystemCluster(group, ts) {
-    return {
-        windowStart: ts,
-        events: [
-            {
-                group,
-                time: ts
-            }
-        ],
-        bazookaSent: false,
-        wakandaSent: false
-    };
-}
-
-function hashEcoFormatEvents(events) {
-    return (events || [])
-        .slice()
-        .sort((a, b) => a.time - b.time)
-        .map((e, i) =>
-            (i + 1) + ") " + e.group + " @ " + formatDateTime(e.time)
-        )
-        .join("\n");
-}
-
-function sendHashEcosystemBazooka(symbol, cluster) {
-    const events = (cluster.events || []).slice().sort((a, b) => a.time - b.time);
-
-    if (events.length < 2) return;
-
-    const first = events[0];
-    const last = events[events.length - 1];
-
-    const spanMs = last.time - first.time;
-    const spanMin = Math.floor(spanMs / 60000);
-    const spanSec = Math.floor((spanMs % 60000) / 1000);
-
-    sendToTelegram4(
-        "💥 BAZOOKA\n" +
-        "Mode: HASH ECOSYSTEM\n" +
-        "Symbol: " + symbol + "\n" +
-        "Condition: 2+ # flavour alerts inside 5 minutes\n" +
-        "Count: " + events.length + "\n" +
-        "Span: " + spanMin + "m " + spanSec + "s\n" +
-        "Window Start: " + formatDateTime(cluster.windowStart) + "\n\n" +
-        "Alerts:\n" + hashEcoFormatEvents(events)
-    );
-}
-
-function finalizeExpiredHashEcosystemCluster(symbol, cluster, ts) {
-    if (!cluster || !Array.isArray(cluster.events)) return false;
-
-    const expired = ts - Number(cluster.windowStart || 0) >= HASH_ECOSYSTEM_WINDOW_MS;
-
-    if (!expired) return false;
-
-    cluster.events = (cluster.events || [])
-        .filter(e =>
-            e &&
-            typeof e.time === "number" &&
-            e.time >= Number(cluster.windowStart || 0)
-        )
-        .sort((a, b) => a.time - b.time);
-
-    // TRUE FINAL BAZOOKA:
-    // Wait until the full 5-minute window is complete,
-    // then send the real total count for the whole cluster.
-    if (cluster.events.length >= 2 && !cluster.bazookaSent) {
-        sendHashEcosystemBazooka(symbol, cluster);
-        cluster.bazookaSent = true;
-        return true;
-    }
-
-    // WAKANDA remains the single-hash final result.
-    if (cluster.events.length === 1 && !cluster.wakandaSent) {
-        const only = cluster.events[0];
-
-        sendToTelegram4(
-            "🚨 WAKANDA\n" +
-            "Mode: HASH ECOSYSTEM\n" +
-            "Symbol: " + symbol + "\n" +
-            "Condition: exactly 1 # flavour alert in 5 minutes\n" +
-            "Group: " + only.group + "\n" +
-            "Time: " + formatDateTime(only.time) + "\n" +
-            "Window Start: " + formatDateTime(cluster.windowStart) + "\n" +
-            "Window End: " + formatDateTime(Number(cluster.windowStart || 0) + HASH_ECOSYSTEM_WINDOW_MS)
-        );
-
-        cluster.wakandaSent = true;
-        return true;
-    }
-
-    return true;
-}
-
-function scanHashEcosystemSingletons(ts = Date.now()) {
-    const store = getHashEcosystemStore();
-
-    for (const symbol of Object.keys(store)) {
-        const cluster = store[symbol];
-
-        if (finalizeExpiredHashEcosystemCluster(symbol, cluster, ts)) {
-            delete store[symbol];
+        if (
+            value !== undefined &&
+            value !== null &&
+            String(value).trim() !== ""
+        ) {
+            return String(value).trim();
         }
     }
 
-    saveState();
+    return fallback;
 }
 
-function processBazooka(symbol, group, ts) {
+function processBazooka(symbol, group, ts, body = {}) {
 
     if (!symbol || !group) return;
-    if (!isHashFlavourGroup(group)) return;
+    if (!isBazookaHashGroup(group)) return;
 
-    const g = String(group).trim().toUpperCase();
-    const store = getHashEcosystemStore();
+    const cleanGroup = String(group || "").trim().toUpperCase();
+    const cleanSymbol = symbol || normalizeSymbol(body?.symbol) || normalizeSymbol(body?.ticker) || "n/a";
 
-    const existing = store[symbol];
+    const price = bazookaField(body, ["price", "close", "current_price"]);
+    const kind = bazookaField(body, ["kind", "type", "signal"], "");
+    const range = bazookaField(body, ["range"], "");
+    const windowName = bazookaField(body, ["window"], "");
+    const layer = bazookaField(body, ["layer"], "");
+    const note = bazookaField(body, ["note", "message", "reason", "context"], "");
 
-    if (existing && (ts - Number(existing.windowStart || 0) >= HASH_ECOSYSTEM_WINDOW_MS)) {
-        finalizeExpiredHashEcosystemCluster(symbol, existing, ts);
-        delete store[symbol];
+    let msg =
+        "💥 BAZOOKA\n" +
+        "Mode: BASIC HASH REPORT\n" +
+        "Symbol: " + cleanSymbol + "\n" +
+        "Group: " + cleanGroup + "\n" +
+        "Price: " + price + "\n" +
+        "Time: " + formatDateTime(ts);
+
+    if (kind && kind !== "n/a") {
+        msg += "\nKind: " + kind;
     }
 
-    if (!store[symbol]) {
-        store[symbol] = createHashEcosystemCluster(g, ts);
-        saveState();
-        return;
+    if (range && range !== "n/a") {
+        msg += "\nRange: " + range;
     }
 
-    const cluster = store[symbol];
+    if (windowName && windowName !== "n/a") {
+        msg += "\nWindow: " + windowName;
+    }
 
-    cluster.events.push({
-        group: g,
-        time: ts
-    });
+    if (layer && layer !== "n/a") {
+        msg += "\nLayer: " + layer;
+    }
 
-    cluster.events = cluster.events
-        .filter(e => e && typeof e.time === "number" && e.time >= cluster.windowStart)
-        .sort((a, b) => a.time - b.time);
+    if (note && note !== "n/a") {
+        msg += "\n\nNote:\n" + note;
+    }
 
-    // BAZOOKA is no longer sent early at count 2.
-    // It is finalized after the full 5-minute cluster window
-    // so the Telegram message reflects the true total count.
-
+    sendToTelegram4(msg);
     saveState();
 }
 
-// Old activation links are intentionally dead now.
+// Old activation link remains dead.
 function activateBazooka(symbol, source, sourceTime, sourceGroup) {
     return;
 }
 
-// Keep scanner alive so WAKANDA can fire even if no later alert arrives.
-if (!globalThis.__HASH_ECOSYSTEM_SINGLETON_SCAN__) {
-    globalThis.__HASH_ECOSYSTEM_SINGLETON_SCAN__ = setInterval(() => {
-        try {
-            scanHashEcosystemSingletons(Date.now());
-        } catch (err) {
-            console.error("HASH ECOSYSTEM singleton scanner error:", err);
-        }
-    }, 15000);
-}
-
+// ==========================================================
+//  PREMIER
 
 // ==========================================================
 //  PREMIER
@@ -1299,35 +1194,24 @@ function processPremier(symbol, firstGroup, firstTime) {
 }
 
 // ==========================================================
-//  WAKANDA (HASH ECOSYSTEM — exactly 1 # flavour alert in 5m)
-//  Bot 4
+//  WAKANDA DISABLED
 //
-//  Rule:
-//    - # ecosystem only
-//    - Group must look like #1A, #1G, #2B, #3J, etc.
-//    - Same symbol
-//    - WAKANDA fires only after the full 5-minute window confirms
-//      there was exactly one # flavour alert for that symbol.
-//    - BAZOOKA handles 2+ alerts after the full 5-minute window.
+//  Disabled by request.
+//  BAZOOKA now handles every # alert as a basic report.
 // ==========================================================
 
 let wakandaState = persisted.wakandaState || {};
 
 function processWakanda(symbol, group, ts) {
-
-    if (!symbol || !group) return;
-    if (!isHashFlavourGroup(group)) return;
-
-    // BAZOOKA records the hash cluster.
-    // WAKANDA only scans/finalizes singleton clusters.
-    scanHashEcosystemSingletons(ts);
+    return;
 }
 
-// Old activation links are intentionally dead now.
 function activateWakanda(symbol, source, sourceTime, sourceGroup) {
     return;
 }
 
+// ==========================================================
+//  STRUCTURED GROUP FILTER HELPER
 
 // ==========================================================
 //  STRUCTURED GROUP FILTER HELPER
@@ -4915,7 +4799,7 @@ if (!isHash) {
 
 } else {
     // 🔴 HASH ECOSYSTEM (isolated)
-    // Only # flavour groups like #1A, #1G, #2B, #3J are used by BAZOOKA/WAKANDA.
+    // Any # group is reported by BAZOOKA. WAKANDA is disabled.
 
     recordHashEvent(symbol, group, ts);
 
@@ -4924,12 +4808,13 @@ if (!isHash) {
     processGodzilla(symbol, group, ts);
 
     if (typeof processBazooka === "function") {
-        processBazooka(symbol, group, ts);
+        processBazooka(symbol, group, ts, body);
     }
 
-    if (typeof processWakanda === "function") {
-        processWakanda(symbol, group, ts);
-    }
+    // WAKANDA disabled by request. BAZOOKA now reports every # alert.
+    // if (typeof processWakanda === "function") {
+    //     processWakanda(symbol, group, ts);
+    // }
 }
 
         // Strong signal (unchanged)
