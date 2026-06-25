@@ -1821,36 +1821,20 @@ function recordInauguralRangeAlert(cfg, symbol, group, ts, hitTimes, spanMs) {
 }
 
 // ==========================================================
-//  GAMMA RANGE ENGINE
-//  Condition:
-//    - Same symbol
-//    - 2 different families
-//    - Pair gap >=91s and <=2m 59s
-//  Bot 5
+//  GAMMA DISABLED
+//
+//  Disabled by request.
+//  Old SALSA/GAMMA/INAUGURAL range setup retired.
 // ==========================================================
 
-const GAMMA_MIN_SPAN_MS = 91 * 1000;
-const GAMMA_MAX_SPAN_MS = (3 * 60 * 1000) - 1;
-
-// gammaMemory[symbol] = { events: [{ group, family, time }] }
 let gammaMemory = persisted.gammaMemory || {};
 
 function processGamma(symbol, group, ts) {
-    processRangeRepeatEngine(
-        {
-            source: "GAMMA",
-            emoji: "🟣",
-            alertName: "INAUGURAL_91_TO_179",
-            rangeLabel: "91s to 2m 59s",
-            minSpanMs: GAMMA_MIN_SPAN_MS,
-            maxSpanMs: GAMMA_MAX_SPAN_MS,
-            memory: gammaMemory
-        },
-        symbol,
-        group,
-        ts
-    );
+    return;
 }
+
+// ==========================================================
+//  FAMILY PAIR HELPERS
 
 // ==========================================================
 //  FAMILY PAIR HELPERS
@@ -2129,36 +2113,20 @@ function processCheck(symbol, group, ts, body) {
 }
 
 // ==========================================================
-//  SALSA RANGE ENGINE
-//  Condition:
-//    - Same symbol
-//    - 2 different families
-//    - Pair gap >=0s and <=90s
-//  Bot 5
+//  SALSA DISABLED
+//
+//  Disabled by request.
+//  Old SALSA/GAMMA/INAUGURAL range setup retired.
 // ==========================================================
 
-const SALSA_MIN_SPAN_MS = 0;
-const SALSA_MAX_SPAN_MS = 90 * 1000;
-
-// salsaMemory[symbol] = { events: [{ group, family, time }] }
 let salsaMemory = persisted.salsaMemory || {};
 
 function processSalsa(symbol, group, ts) {
-    processRangeRepeatEngine(
-        {
-            source: "SALSA",
-            emoji: "💃",
-            alertName: "INAUGURAL_0_TO_90",
-            rangeLabel: "0s to 90s",
-            minSpanMs: SALSA_MIN_SPAN_MS,
-            maxSpanMs: SALSA_MAX_SPAN_MS,
-            memory: salsaMemory
-        },
-        symbol,
-        group,
-        ts
-    );
+    return;
 }
+
+// ==========================================================
+//  TANGO
 
 // ==========================================================
 //  TANGO (NORMAL SYSTEM — 3+ DIFFERENT FAMILIES IN 29 MINUTES)
@@ -2318,39 +2286,156 @@ function processTango(symbol, group, ts) {
 }
 
 // ==========================================================
-//  NEPTUNE
-
-// ==========================================================
-//  NEPTUNE RANGE ENGINE
-//  Condition:
-//    - Same symbol
-//    - 2 different families
-//    - Pair gap >=3m and <=20m
+//  NEPTUNE (NORMAL + HASH CROSS-ECOSYSTEM CORRELATION)
 //  Bot 5
+//
+//  Rule:
+//    - Same symbol
+//    - NORMAL ecosystem alert + # ecosystem alert
+//    - Either one can come first
+//    - Must be within 30 minutes
+//    - SALSA/GAMMA/INAUGURAL dependency removed
 // ==========================================================
 
-const NEPTUNE_MIN_SPAN_MS = 3 * 60 * 1000;
-const NEPTUNE_MAX_SPAN_MS = 20 * 60 * 1000;
+const NEPTUNE_CROSS_WINDOW_MS = 30 * 60 * 1000; // 30 minutes
 
-// neptuneMemory[symbol] = { events: [{ group, family, time }] }
+// neptuneMemory[symbol] = {
+//   lastNormal: { group, time } | null,
+//   lastHash: { group, time } | null,
+//   lastSentKey: string
+// }
 let neptuneMemory = persisted.neptuneMemory || {};
 
-function processNeptune(symbol, group, ts) {
-    processRangeRepeatEngine(
-        {
-            source: "NEPTUNE",
-            emoji: "🌊",
-            alertName: "INAUGURAL_3_TO_20",
-            rangeLabel: "3m to 20m",
-            minSpanMs: NEPTUNE_MIN_SPAN_MS,
-            maxSpanMs: NEPTUNE_MAX_SPAN_MS,
-            memory: neptuneMemory
-        },
-        symbol,
-        group,
-        ts
+function neptuneKindFromGroup(group) {
+    const raw = String(group || "").trim().toUpperCase();
+
+    if (!raw) return "";
+    if (raw.startsWith("#")) return "HASH";
+    if (raw.startsWith("@")) return "";
+    if (raw.startsWith("~")) return "";
+    if (raw.startsWith("^")) return "";
+
+    return "NORMAL";
+}
+
+function getNeptuneState(symbol) {
+    const current = neptuneMemory[symbol];
+
+    const invalid =
+        !current ||
+        typeof current !== "object" ||
+        Array.isArray(current) ||
+        (
+            !Object.prototype.hasOwnProperty.call(current, "lastNormal") &&
+            !Object.prototype.hasOwnProperty.call(current, "lastHash")
+        );
+
+    if (invalid) {
+        neptuneMemory[symbol] = {
+            lastNormal: null,
+            lastHash: null,
+            lastSentKey: ""
+        };
+    }
+
+    return neptuneMemory[symbol];
+}
+
+function neptunePairKey(a, b) {
+    return [
+        a.kind + ":" + a.group + ":" + a.time,
+        b.kind + ":" + b.group + ":" + b.time
+    ].sort().join("|");
+}
+
+function neptuneEventLine(e, index) {
+    return (
+        (index + 1) + ") " +
+        e.kind +
+        " | " + e.group +
+        " @ " + formatDateTime(e.time)
     );
 }
+
+function processNeptune(symbol, group, ts) {
+
+    if (!symbol || !group) return;
+
+    const rawGroup = String(group || "").trim().toUpperCase();
+    const kind = neptuneKindFromGroup(rawGroup);
+
+    if (!kind) return;
+
+    const state = getNeptuneState(symbol);
+
+    const current = {
+        kind,
+        group: rawGroup,
+        time: ts
+    };
+
+    const oppositeKey = kind === "HASH" ? "lastNormal" : "lastHash";
+    const ownKey = kind === "HASH" ? "lastHash" : "lastNormal";
+
+    const prior = state[oppositeKey];
+
+    if (prior && typeof prior.time === "number") {
+        const gapMs = Math.abs(ts - prior.time);
+
+        if (gapMs <= NEPTUNE_CROSS_WINDOW_MS) {
+            const first = prior.time <= current.time ? prior : current;
+            const second = prior.time <= current.time ? current : prior;
+
+            const pairKey = neptunePairKey(first, second);
+
+            if (state.lastSentKey !== pairKey) {
+                const gapMin = Math.floor(gapMs / 60000);
+                const gapSec = Math.floor((gapMs % 60000) / 1000);
+
+                sendToTelegram5(
+                    "🌊 NEPTUNE\n" +
+                    "Symbol: " + symbol + "\n" +
+                    "Rule: NORMAL + HASH within 30 minutes\n" +
+                    "Span: " + gapMin + "m " + gapSec + "s\n\n" +
+                    "Alerts:\n" +
+                    neptuneEventLine(first, 0) + "\n" +
+                    neptuneEventLine(second, 1)
+                );
+
+                state.lastSentKey = pairKey;
+            }
+        }
+    }
+
+    // Always store latest alert from this ecosystem.
+    state[ownKey] = current;
+
+    // Safety cleanup.
+    if (Object.keys(neptuneMemory).length > 5000) {
+        const cutoff = ts - (2 * 60 * 60 * 1000);
+
+        for (const sym of Object.keys(neptuneMemory)) {
+            const st = neptuneMemory[sym];
+
+            if (!st || typeof st !== "object") {
+                delete neptuneMemory[sym];
+                continue;
+            }
+
+            const n = st.lastNormal?.time || 0;
+            const h = st.lastHash?.time || 0;
+
+            if (Math.max(n, h) < cutoff) {
+                delete neptuneMemory[sym];
+            }
+        }
+    }
+
+    saveState();
+}
+
+// ==========================================================
+//  ZULU
 
 // ==========================================================
 //  ZULU
@@ -4772,9 +4857,9 @@ if (!isHash) {
         processBlackPanther(symbol, group, ts);
         processGando(symbol, group, ts);
         processSideFlip(symbol, group, ts);
-        processGamma(symbol, group, ts);
+        // processGamma(symbol, group, ts); // disabled by request
         processYaba(symbol, group, ts);
-        processSalsa(symbol, group, ts);
+        // processSalsa(symbol, group, ts); // disabled by request
         processTango(symbol, group, ts);
         processCobra(symbol, group, ts);
         processNeptune(symbol, group, ts);
@@ -4802,6 +4887,8 @@ if (!isHash) {
     // Any # group is reported by BAZOOKA. WAKANDA is disabled.
 
     recordHashEvent(symbol, group, ts);
+
+    processNeptune(symbol, group, ts);
 
     processBoom(symbol, group, ts);
 
