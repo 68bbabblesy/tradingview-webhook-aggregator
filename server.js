@@ -1796,7 +1796,7 @@ function recordInauguralRangeAlert(cfg, symbol, group, ts, hitTimes, spanMs) {
         )
         .join("\n");
 
-    sendToTelegram1(
+    sendToTelegram13(
         "🎖 " + cfg.alertName + "\n" +
         "Source: " + cfg.source + "\n" +
         "Symbol: " + symbol + "\n" +
@@ -2125,7 +2125,7 @@ function processCheck(symbol, group, ts, body) {
         `Time: ${formatDateTime(ts)}\n` +
         `Raw:\n${JSON.stringify(body)}`;
 
-    sendToTelegram1(msg);
+    sendToTelegram13(msg);
 }
 
 // ==========================================================
@@ -3092,7 +3092,7 @@ function processBoom(symbol, group, ts) {
     const spanMin = Math.floor(spanMs / 60000);
     const spanSec = Math.floor((spanMs % 60000) / 1000);
 
-    sendToTelegram13(
+    sendToTelegram1(
         "💥 BOOM\n" +
         "Symbol: " + symbol + "\n" +
         "Sequence: ZEBRA-1 → NORMAL\n" +
@@ -4877,7 +4877,7 @@ setInterval(async () => {
                 });
             }
 
-            await sendToTelegram1(lines.join("\n"));
+            await sendToTelegram13(lines.join("\n"));
 
 // STAGING FIX: do NOT clear buffers (prevents starvation)
 if (process.env.ENV !== "staging") {
