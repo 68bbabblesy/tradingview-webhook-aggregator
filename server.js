@@ -1189,226 +1189,29 @@ function passesStructuredGroupFilter(groups) {
 
 
 // ==========================================================
-//  BLACK_PANTHER (Same-family follow-up detector)
-//  Bot 3
+//  LEGACY PLACEHOLDERS — PHASE 2 CLEANED
 //
-//  Rule:
-//    - Normal ecosystem only
-//    - Same symbol
-//    - Same numeric family
-//    - Same exact subgroup is allowed
-//    - If another same-family alert arrives 20 seconds or more
-//      after the latest same-family alert/cluster, fire.
-//    - Alerts within 0-19 seconds are treated as the same cluster.
-//    - Different family does not count.
+//  Old BLACK_PANTHER / SOURCE RANGE / GAMMA logic removed.
+//  Names kept only so we can reuse them later.
 // ==========================================================
 
-const BLACK_PANTHER_MIN_GAP_MS = 20 * 1000; // 20 seconds
-const BLACK_PANTHER_CLUSTER_GAP_MS = 19 * 1000; // 0-19s = same cluster
-const BLACK_PANTHER_MEMORY_KEEP_MS = 2 * 60 * 60 * 1000; // safety cleanup
-
-// blackPantherMemory[symbol][family] = {
-//   clusterStart: number,
-//   clusterLast: number,
-//   clusterGroups: [{ group, time }],
-//   lastFireAt: number
-// }
 let blackPantherMemory = persisted.blackPantherMemory || {};
-
-function parseBlackPantherNormalGroup(group) {
-    const raw = String(group || "").trim().toUpperCase();
-
-    if (!raw) return null;
-
-    // Normal ecosystem only.
-    if (
-        raw.startsWith("@") ||
-        raw.startsWith("#") ||
-        raw.startsWith("~") ||
-        raw.startsWith("^")
-    ) {
-        return null;
-    }
-
-    const m = raw.match(/^(\d+)([A-Z]+)$/);
-    if (!m) return null;
-
-    return {
-        raw,
-        family: m[1]
-    };
-}
-
-function getBlackPantherFamilyState(symbol, family) {
-    if (!blackPantherMemory[symbol] || typeof blackPantherMemory[symbol] !== "object") {
-        blackPantherMemory[symbol] = {};
-    }
-
-    const current = blackPantherMemory[symbol][family];
-
-    const invalid =
-        !current ||
-        typeof current !== "object" ||
-        typeof current.clusterStart !== "number" ||
-        typeof current.clusterLast !== "number" ||
-        !Array.isArray(current.clusterGroups);
-
-    if (invalid) {
-        blackPantherMemory[symbol][family] = {
-            clusterStart: 0,
-            clusterLast: 0,
-            clusterGroups: [],
-            lastFireAt: 0
-        };
-    }
-
-    return blackPantherMemory[symbol][family];
-}
-
-function blackPantherClusterLines(items) {
-    if (!Array.isArray(items) || !items.length) return "n/a";
-
-    return items
-        .slice()
-        .sort((a, b) => a.time - b.time)
-        .map((e, i) =>
-            (i + 1) + ") " + e.group + " @ " + formatDateTime(e.time)
-        )
-        .join("\n");
-}
+let gammaMemory = persisted.gammaMemory || {};
 
 function processBlackPanther(symbol, group, ts, body) {
     return;
 }
 
-// ==========================================================
-//  SOURCE RANGE ENGINE
-
-// ==========================================================
-//  SOURCE RANGE ENGINE — DIFFERENT FAMILY PAIRS
-//
-//  SALSA   = 2 different families, 0s to 90s
-//  GAMMA   = 2 different families, 91s to 2m 59s
-//  NEPTUNE = 2 different families, 3m to 20m
-//
-//  Rules:
-//    - Same symbol
-//    - Normal ecosystem only
-//    - Different numeric/letter families
-//    - Raw source alerts go to Bot 5
-// ==========================================================
-
-
-const RANGE_REPEAT_MIN_HITS = 2;
-
-function rangeFamilyFromGroup(group) {
-    return getFamily(group);
-}
-
-function isNormalRangeGroup(group) {
-    const raw = String(group || "").trim().toUpperCase();
-
-    if (!raw) return false;
-    if (raw.startsWith("@")) return false;
-    if (raw.startsWith("#")) return false;
-    if (raw.startsWith("~")) return false;
-
-    return !!rangeFamilyFromGroup(raw);
-}
-
-function getRangeFamilyState(memory, symbol) {
-    const current = memory[symbol];
-
-    const invalid =
-        !current ||
-        typeof current !== "object" ||
-        !Array.isArray(current.events);
-
-    if (invalid) {
-        memory[symbol] = {
-            events: []
-        };
-    }
-
-    return memory[symbol];
-}
-
-function pruneRangeFamilyEvents(events, ts, maxSpanMs) {
-    const cutoff = ts - maxSpanMs - (60 * 1000);
-
-    return (events || [])
-        .filter(e =>
-            e &&
-            typeof e.time === "number" &&
-            e.time >= cutoff &&
-            e.time <= ts + 60000 &&
-            e.group &&
-            e.family
-        )
-        .sort((a, b) => a.time - b.time);
-}
-
-function findDifferentFamilyPairEndingAtCurrent(events, current, minSpanMs, maxSpanMs) {
-    const candidates = (events || [])
-        .filter(e => e && String(e.family) !== String(current.family))
-        .map(e => ({
-            ...e,
-            spanMs: current.time - e.time
-        }))
-        .filter(e =>
-            e.spanMs >= minSpanMs &&
-            e.spanMs <= maxSpanMs
-        )
-        .sort((a, b) => b.time - a.time);
-
-    return candidates[0] || null;
-}
-
-function rangeSourceEventLine(e, index) {
-    return (
-        (index + 1) + ") " +
-        e.group +
-        " | Family " + e.family +
-        " @ " + formatDateTime(e.time)
-    );
-}
-
-function sendRangeSourceAlert(cfg, symbol, pair, spanMs) {
-
-    const spanMin = Math.floor(spanMs / 60000);
-    const spanSec = Math.floor((spanMs % 60000) / 1000);
-    const emoji = cfg.emoji || "🔔";
-
-    const sorted = pair.slice().sort((a, b) => a.time - b.time);
-
-    sendToTelegram5(
-        emoji + " " + cfg.source + "\n" +
-        "Symbol: " + symbol + "\n" +
-        "Rule: 2 different families\n" +
-        "Range: " + cfg.rangeLabel + "\n" +
-        "Span: " + spanMin + "m " + spanSec + "s\n\n" +
-        "Pair:\n" +
-        sorted.map((e, i) => rangeSourceEventLine(e, i)).join("\n")
-    );
+function processGamma(symbol, group, ts, body) {
+    return;
 }
 
 function processRangeRepeatEngine(...args) {
     return;
 }
 
-
-
 // ==========================================================
-//  GAMMA DISABLED
-//
-//  Disabled by request.
-// ==========================================================
-
-let gammaMemory = persisted.gammaMemory || {};
-
-function processGamma(symbol, group, ts, body) {
-    return;
-}
+//  FAMILY PAIR HELPERS
 
 // ==========================================================
 //  FAMILY PAIR HELPERS
@@ -1690,39 +1493,17 @@ function processCheck(symbol, group, ts, body) {
 }
 
 // ==========================================================
-//  SALSA DISABLED
+//  LEGACY PLACEHOLDERS — PHASE 2 CLEANED
 //
-//  Disabled by request.
+//  Old SALSA / TANGO logic removed.
+//  Names kept only so we can reuse them later.
 // ==========================================================
 
 let salsaMemory = persisted.salsaMemory || {};
-
-function processSalsa(symbol, group, ts, body) {
-    return;
-}
-
-// ==========================================================
-//  TANGO
-
-// ==========================================================
-//  TANGO (NORMAL SYSTEM — 3+ DIFFERENT FAMILIES IN 29 MINUTES)
-//  Bot 12
-//
-//  Rule:
-//    - Normal ecosystem only
-//    - Same symbol
-//    - Any 3 or more DIFFERENT families inside 29 minutes
-//    - Example: 37O + 38S + 39C
-//    - Sends when the family set is different from the last sent set.
-// ==========================================================
-
-const TANGO_WINDOW_MS = 29 * 60 * 1000;
-const TANGO_MIN_FAMILIES = 3;
-
 let tangoState = persisted.tangoState || {};
-
 let gandoState = persisted.gandoState || {};
 
+// Shared helper still needed by live engines such as ZULU.
 function getFamily(group) {
     if (!group) return "";
 
@@ -1731,7 +1512,8 @@ function getFamily(group) {
     if (
         raw.startsWith("@") ||
         raw.startsWith("#") ||
-        raw.startsWith("~")
+        raw.startsWith("~") ||
+        raw.startsWith("^")
     ) {
         return "";
     }
@@ -1742,55 +1524,16 @@ function getFamily(group) {
     return raw;
 }
 
-function getTangoSymbolState(symbol) {
-    const current = tangoState[symbol];
-
-    const invalid =
-        !current ||
-        typeof current !== "object" ||
-        !Array.isArray(current.events);
-
-    if (invalid) {
-        tangoState[symbol] = {
-            events: [],
-            lastSentKey: ""
-        };
-    }
-
-    return tangoState[symbol];
-}
-
-function pruneTangoEvents(events, ts) {
-    const cutoff = ts - TANGO_WINDOW_MS;
-
-    return (events || [])
-        .filter(e =>
-            e &&
-            typeof e.time === "number" &&
-            e.time >= cutoff &&
-            e.time <= ts + 60000 &&
-            e.family &&
-            e.group
-        )
-        .sort((a, b) => a.time - b.time);
-}
-
-function tangoEventLines(events) {
-    return events
-        .slice()
-        .sort((a, b) => a.time - b.time)
-        .map((e, i) =>
-            (i + 1) + ") " +
-            e.group +
-            " | Family " + e.family +
-            " @ " + formatDateTime(e.time)
-        )
-        .join("\n");
+function processSalsa(symbol, group, ts, body) {
+    return;
 }
 
 function processTango(symbol, group, ts, body) {
     return;
 }
+
+// ==========================================================
+//  NEPTUNE (NORMAL + HASH CROSS-ECOSYSTEM CORRELATION)
 
 // ==========================================================
 //  NEPTUNE (NORMAL + HASH CROSS-ECOSYSTEM CORRELATION)
