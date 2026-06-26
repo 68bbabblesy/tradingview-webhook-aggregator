@@ -45,7 +45,7 @@ function loadState() {
                 hashMemory: parsed.hashMemory || {},
                 wakandaState: parsed.wakandaState || {},
                 boomPairState: parsed.boomPairState || {},
-                inauguralState: parsed.inauguralState || {},
+
                 kookyMemory: parsed.kookyMemory || {},
                 speshMemory: parsed.speshMemory || {},
                 kookyComboState: parsed.kookyComboState || {},
@@ -107,7 +107,7 @@ function loadState() {
         hashMemory: {},
         wakandaState: {},
         boomPairState: {},
-        inauguralState: {},
+
         kookyMemory: {},
         speshMemory: {},
         kookyComboState: {},
@@ -175,7 +175,7 @@ function buildStateSnapshot() {
         hashMemory,
         wakandaState,
         boomPairState,
-        inauguralState,
+
         kookyMemory,
         speshMemory,
         kookyComboState,
@@ -359,12 +359,6 @@ process.on("SIGINT", () => {
 
 let scoreState = persisted.scoreState || {};
 let lastSeenState = persisted.lastSeenState || {};
-
-let inauguralState = persisted.inauguralState || {};
-
-
-
-
 
 let speshMemory = persisted.speshMemory || {};
 let kookyMemory = persisted.kookyMemory || {};
@@ -876,7 +870,6 @@ function maxWindowMs() {
 // ==========================================================
 
 // ==========================================================
-// FIRST ENGINE (PER SYMBOL 4H COOLDOWN)
 // ==========================================================
 
 // ❌ Removed old firstState — now using global lastSeenState
@@ -915,16 +908,12 @@ function biasFromGroup(group) {
 
 
 // ==========================================================
-//  GODZILLA (PERSISTENT — FIRST → FIRST HASH CONFIRMATION)
 //  Source:
-//    - FIRST fires first
-//    - Then same symbol must receive the FIRST # group of any kind
 //    - Any group starting with # is accepted
 //  Bot 3
 // ==========================================================
 
 // godzillaState[symbol] = {
-//   source: "FIRST",
 //   sourceTime: ts,
 //   sourceGroup: group
 // }
@@ -934,73 +923,11 @@ let godzillaState = persisted.godzillaState || {};
 const GODZILLA_EXPIRE_MS = 2 * 60 * 60 * 1000; // 2 hours
 
 function activateGodzilla(symbol, source, sourceTime, sourceGroup) {
-
-    if (!symbol || !source) return;
-
-    godzillaState[symbol] = {
-        source,
-        sourceTime,
-        sourceGroup: sourceGroup || "n/a"
-    };
-
-    saveState();
+    return;
 }
 
 function processGodzilla(symbol, group, ts) {
-
-    if (!symbol || !group) return;
-
-    // GODZILLA listens to the first # group after FIRST
-    if (!group.startsWith("#")) return;
-
-    const state = godzillaState[symbol];
-
-    // Must be activated by FIRST first
-    if (!state) return;
-
-    const gapFromSourceMs = ts - state.sourceTime;
-
-    // Expire stale FIRST → # tracking after 2 hours
-    if (gapFromSourceMs > GODZILLA_EXPIRE_MS) {
-        console.log(
-            "GODZILLA expired:",
-            symbol,
-            "source:",
-            state.source,
-            "sourceTime:",
-            formatDateTime(state.sourceTime),
-            "hash:",
-            group,
-            "hashTime:",
-            formatDateTime(ts)
-        );
-
-        delete godzillaState[symbol];
-        saveState();
-        return;
-    }
-    const gapMin = Math.floor(gapFromSourceMs / 60000);
-    const gapSec = Math.floor((gapFromSourceMs % 60000) / 1000);
-
-    sendToTelegram3(
-        `🦖 GODZILLA\n` +
-        `Source: ${state.source}\n` +
-        `Symbol: ${symbol}\n\n` +
-
-        `${state.source} Alert:\n` +
-        `Group: ${state.sourceGroup || "n/a"}\n` +
-        `Time: ${formatDateTime(state.sourceTime)}\n\n` +
-
-        `Hash Confirmation:\n` +
-        `Group: ${group}\n` +
-        `Time: ${formatDateTime(ts)}\n\n` +
-
-        `Gap from ${state.source}: ${gapMin}m ${gapSec}s`
-    );
-
-    // Reset after first hash confirmation
-    delete godzillaState[symbol];
-    saveState();
+    return;
 }
 // ==========================================================
 // STC setup removed intentionally.
@@ -1009,7 +936,6 @@ function processGodzilla(symbol, group, ts) {
 //  HASH MEMORY (PERSISTENT — used by BAZOOKA + PREMIER)
 //  Stores recent # alerts so reverse-mode setups can fire:
 //    - HASH → YABA  = BAZOOKA Mode 2
-//    - HASH → FIRST = PREMIER
 // ==========================================================
 
 let hashMemory = persisted.hashMemory || {};
@@ -1156,41 +1082,13 @@ function activateBazooka(symbol, source, sourceTime, sourceGroup) {
 //  PREMIER
 
 // ==========================================================
-//  PREMIER (PERSISTENT HASH MEMORY — HASH → FIRST)
 //  Mode-2 version of GODZILLA:
 //    - # comes first
-//    - FIRST fires within 30m after #
 //  Bot 2
 // ==========================================================
 
-function processPremier(symbol, firstGroup, firstTime) {
-
-    if (!symbol) return;
-
-    const priorHash = getRecentHashBefore(symbol, firstTime, HASH_LOOKBACK_MS);
-
-    if (!priorHash) return;
-
-    const gapMs = firstTime - priorHash.time;
-    const gapMin = Math.floor(gapMs / 60000);
-    const gapSec = Math.floor((gapMs % 60000) / 1000);
-
-    sendToTelegram6(
-        `🏆 PREMIER\n` +
-        `Mode: HASH → FIRST\n` +
-        `Source: FIRST\n` +
-        `Symbol: ${symbol}\n\n` +
-
-        `Hash Confirmation:\n` +
-        `Group: ${priorHash.group}\n` +
-        `Time: ${formatDateTime(priorHash.time)}\n\n` +
-
-        `FIRST Alert:\n` +
-        `Group: ${firstGroup || "n/a"}\n` +
-        `Time: ${formatDateTime(firstTime)}\n\n` +
-
-        `Gap: ${gapMin}m ${gapSec}s`
-    );
+function processPremier(symbol, group, ts) {
+    return;
 }
 
 // ==========================================================
@@ -1379,114 +1277,8 @@ function blackPantherClusterLines(items) {
         .join("\n");
 }
 
-function processBlackPanther(symbol, group, ts) {
-
-    if (!symbol || !group) return;
-
-    const parsed = parseBlackPantherNormalGroup(group);
-    if (!parsed) return;
-
-    const state = getBlackPantherFamilyState(symbol, parsed.family);
-
-    const currentEvent = {
-        group: parsed.raw,
-        time: ts
-    };
-
-    // First event for this symbol+family starts memory only.
-    if (!state.clusterLast) {
-        state.clusterStart = ts;
-        state.clusterLast = ts;
-        state.clusterGroups = [currentEvent];
-        saveState();
-        return;
-    }
-
-    // If stale, start fresh. This avoids very old overnight matches.
-    if (ts - state.clusterLast > BLACK_PANTHER_MEMORY_KEEP_MS) {
-        state.clusterStart = ts;
-        state.clusterLast = ts;
-        state.clusterGroups = [currentEvent];
-        state.lastFireAt = 0;
-        saveState();
-        return;
-    }
-
-    const gapMs = ts - state.clusterLast;
-
-    // Same-time / near-time burst: 0-19s belongs to the same cluster.
-    // No alert yet.
-    if (gapMs <= BLACK_PANTHER_CLUSTER_GAP_MS) {
-        state.clusterGroups.push(currentEvent);
-        state.clusterGroups = state.clusterGroups
-            .filter(e => e && typeof e.time === "number" && e.time >= ts - BLACK_PANTHER_MEMORY_KEEP_MS)
-            .sort((a, b) => a.time - b.time);
-
-        state.clusterLast = ts;
-        saveState();
-        return;
-    }
-
-    // 20s+ after previous same-family alert/cluster = trigger.
-    const previousCluster = (state.clusterGroups || []).slice().sort((a, b) => a.time - b.time);
-
-    const gapSec = Math.floor(gapMs / 1000);
-    const prevStart = state.clusterStart || (previousCluster[0]?.time || state.clusterLast);
-    const prevLast = state.clusterLast;
-
-    sendToTelegram3(
-        "🖤 BLACK_PANTHER\n" +
-        "Symbol: " + symbol + "\n" +
-        "Family: " + parsed.family + "\n" +
-        "Rule: same-family follow-up after 20s+\n" +
-        "Gap From Previous: " + gapSec + "s\n\n" +
-
-        "Previous Cluster:\n" +
-        blackPantherClusterLines(previousCluster) + "\n\n" +
-
-        "Current Alert:\n" +
-        "1) " + currentEvent.group + " @ " + formatDateTime(currentEvent.time) + "\n\n" +
-
-        "Previous Cluster Start: " + formatDateTime(prevStart) + "\n" +
-        "Previous Cluster Last: " + formatDateTime(prevLast)
-    );
-
-    state.lastFireAt = ts;
-
-    // Start a fresh cluster from the current alert.
-    // If more same-family alerts come within 0-19s after this one,
-    // they will join this new cluster and not fire again.
-    state.clusterStart = ts;
-    state.clusterLast = ts;
-    state.clusterGroups = [currentEvent];
-
-    // Safety cleanup.
-    if (Object.keys(blackPantherMemory).length > 5000) {
-        const pruneCutoff = ts - BLACK_PANTHER_MEMORY_KEEP_MS;
-
-        for (const sym of Object.keys(blackPantherMemory)) {
-            const families = blackPantherMemory[sym];
-
-            if (!families || typeof families !== "object") {
-                delete blackPantherMemory[sym];
-                continue;
-            }
-
-            for (const fam of Object.keys(families)) {
-                const st = families[fam];
-
-                if (!st || typeof st.clusterLast !== "number" || st.clusterLast < pruneCutoff) {
-                    delete families[fam];
-                }
-            }
-
-            if (!Object.keys(families).length) {
-                delete blackPantherMemory[sym];
-            }
-        }
-    }
-
-    saveState();
+function processBlackPanther(symbol, group, ts, body) {
+    return;
 }
 
 // ==========================================================
@@ -1504,11 +1296,9 @@ function processBlackPanther(symbol, group, ts) {
 //    - Normal ecosystem only
 //    - Different numeric/letter families
 //    - Raw source alerts go to Bot 5
-//    - INAUGURAL filter layer remains Bot 1
 // ==========================================================
 
-const INAUGURAL_RANGE_WINDOW_MS = 2 * 60 * 60 * 1000; // 2 hours
-const INAUGURAL_RANGE_MAX_SLOTS = 2;
+
 const RANGE_REPEAT_MIN_HITS = 2;
 
 function rangeFamilyFromGroup(group) {
@@ -1602,234 +1392,21 @@ function sendRangeSourceAlert(cfg, symbol, pair, spanMs) {
     );
 }
 
-function processRangeRepeatEngine(cfg, symbol, group, ts) {
-
-    if (!symbol || !group) return;
-    if (!isNormalRangeGroup(group)) return;
-
-    const rawGroup = String(group || "").trim().toUpperCase();
-    const family = rangeFamilyFromGroup(rawGroup);
-    if (!family) return;
-
-    const memory = cfg.memory;
-    const state = getRangeFamilyState(memory, symbol);
-
-    let events = pruneRangeFamilyEvents(state.events, ts, cfg.maxSpanMs);
-
-    const current = {
-        group: rawGroup,
-        family,
-        time: ts
-    };
-
-    const match = findDifferentFamilyPairEndingAtCurrent(
-        events,
-        current,
-        cfg.minSpanMs,
-        cfg.maxSpanMs
-    );
-
-    if (!match) {
-        // Keep latest event per family.
-        events = events.filter(e => String(e.family) !== String(current.family));
-        events.push(current);
-        state.events = pruneRangeFamilyEvents(events, ts, cfg.maxSpanMs);
-        saveState();
-        return;
-    }
-
-    const pair = [match, current].sort((a, b) => a.time - b.time);
-    const spanMs = current.time - match.time;
-
-    sendRangeSourceAlert(cfg, symbol, pair, spanMs);
-
-    const result = recordInauguralRangeAlert(
-        cfg,
-        symbol,
-        current.group,
-        ts,
-        pair.map(e => e.time),
-        spanMs
-    );
-
-    if (!result || !result.fired) {
-        console.log(
-            "INAUGURAL range matched but blocked:",
-            cfg.alertName,
-            "symbol:", symbol,
-            "group:", current.group,
-            "reason:", result?.reason || "unknown"
-        );
-    }
-
-    // Keep current family as a possible anchor for the next different-family pair.
-    events = events
-        .filter(e =>
-            String(e.family) !== String(match.family) &&
-            String(e.family) !== String(current.family)
-        );
-
-    events.push(current);
-
-    state.events = pruneRangeFamilyEvents(events, ts, cfg.maxSpanMs);
-
-    // Safety cleanup.
-    if (Object.keys(memory).length > 5000) {
-        const pruneCutoff = ts - (2 * 60 * 60 * 1000);
-
-        for (const sym of Object.keys(memory)) {
-            const st = memory[sym];
-
-            if (!st || typeof st !== "object" || !Array.isArray(st.events)) {
-                delete memory[sym];
-                continue;
-            }
-
-            st.events = st.events.filter(e => e && e.time >= pruneCutoff);
-
-            if (!st.events.length) {
-                delete memory[sym];
-            }
-        }
-    }
-
-    saveState();
+function processRangeRepeatEngine(...args) {
+    return;
 }
 
-function recordInauguralRangeAlert(cfg, symbol, group, ts, hitTimes, spanMs) {
 
-    if (!inauguralState || typeof inauguralState !== "object") {
-        inauguralState = {};
-    }
-
-    if (!inauguralState[cfg.alertName] || typeof inauguralState[cfg.alertName] !== "object") {
-        inauguralState[cfg.alertName] = {};
-    }
-
-    const family = rangeFamilyFromGroup(group);
-    const bucket = inauguralState[cfg.alertName];
-
-    const current = bucket[symbol];
-
-    const invalidOldFormat =
-        !current ||
-        typeof current !== "object" ||
-        typeof current.windowStart !== "number" ||
-        !Array.isArray(current.slots);
-
-    if (invalidOldFormat) {
-        bucket[symbol] = {
-            windowStart: ts,
-            slots: []
-        };
-    }
-
-    const state = bucket[symbol];
-
-    const cutoff = ts - INAUGURAL_RANGE_WINDOW_MS;
-    const beforeCount = state.slots.length;
-
-    state.slots = state.slots
-        .filter(e =>
-            e &&
-            typeof e.time === "number" &&
-            e.time >= cutoff &&
-            e.time <= ts + 60000 &&
-            e.family !== undefined &&
-            e.family !== null
-        )
-        .sort((a, b) => a.time - b.time);
-
-    if (state.slots.length !== beforeCount) {
-        console.log(
-            "INAUGURAL state pruned:",
-            cfg.alertName,
-            "symbol:", symbol,
-            "before:", beforeCount,
-            "after:", state.slots.length
-        );
-    }
-
-    if (!state.slots.length) {
-        state.windowStart = ts;
-    } else {
-        state.windowStart = state.slots[0].time;
-    }
-
-    if (state.slots.some(e => String(e.family) === String(family))) {
-        return {
-            fired: false,
-            reason: "same family already used in this 2h window"
-        };
-    }
-
-    if (state.slots.length >= INAUGURAL_RANGE_MAX_SLOTS) {
-        return {
-            fired: false,
-            reason: "2 slots already used in this 2h window"
-        };
-    }
-
-    state.slots.push({
-        source: cfg.source,
-        family,
-        group,
-        time: ts
-    });
-
-    state.slots.sort((a, b) => a.time - b.time);
-
-    const slot = state.slots.length;
-    const spanMin = Math.floor(spanMs / 60000);
-    const spanSec = Math.floor((spanMs % 60000) / 1000);
-
-    const hitLines = hitTimes
-        .map((t, i) => (i + 1) + ") " + formatDateTime(t))
-        .join("\n");
-
-    const priorSlots = state.slots
-        .map((e, i) =>
-            (i + 1) +
-            ") Family " + e.family +
-            " | Group " + e.group +
-            " | " + formatDateTime(e.time)
-        )
-        .join("\n");
-
-    sendToTelegram13(
-        "🎖 " + cfg.alertName + "\n" +
-        "Source: " + cfg.source + "\n" +
-        "Symbol: " + symbol + "\n" +
-        "Group: " + group + "\n" +
-        "Family: " + family + "\n" +
-        "Slot: " + slot + "/" + INAUGURAL_RANGE_MAX_SLOTS + "\n" +
-        "Rule: First 2 different families in 2 hours\n" +
-        "Range: " + cfg.rangeLabel + "\n" +
-        "Span: " + spanMin + "m " + spanSec + "s\n" +
-        "Window Start: " + formatDateTime(state.windowStart) + "\n\n" +
-        "2 Hits:\n" + hitLines + "\n\n" +
-        "Slots Used:\n" + priorSlots
-    );
-
-    saveState();
-
-    return {
-        fired: true,
-        reason: "sent",
-        slot
-    };
-}
 
 // ==========================================================
 //  GAMMA DISABLED
 //
 //  Disabled by request.
-//  Old SALSA/GAMMA/INAUGURAL range setup retired.
 // ==========================================================
 
 let gammaMemory = persisted.gammaMemory || {};
 
-function processGamma(symbol, group, ts) {
+function processGamma(symbol, group, ts, body) {
     return;
 }
 
@@ -2116,12 +1693,11 @@ function processCheck(symbol, group, ts, body) {
 //  SALSA DISABLED
 //
 //  Disabled by request.
-//  Old SALSA/GAMMA/INAUGURAL range setup retired.
 // ==========================================================
 
 let salsaMemory = persisted.salsaMemory || {};
 
-function processSalsa(symbol, group, ts) {
+function processSalsa(symbol, group, ts, body) {
     return;
 }
 
@@ -2212,77 +1788,8 @@ function tangoEventLines(events) {
         .join("\n");
 }
 
-function processTango(symbol, group, ts) {
-
-    if (!symbol || !group) return;
-
-    const rawGroup = String(group || "").trim().toUpperCase();
-
-    if (
-        rawGroup.startsWith("@") ||
-        rawGroup.startsWith("#") ||
-        rawGroup.startsWith("~")
-    ) {
-        return;
-    }
-
-    const family = getFamily(rawGroup);
-    if (!family) return;
-
-    const state = getTangoSymbolState(symbol);
-
-    let events = pruneTangoEvents(state.events, ts);
-
-    // Keep latest alert per family inside the 20m window.
-    events = events.filter(e => String(e.family) !== String(family));
-
-    events.push({
-        group: rawGroup,
-        family,
-        time: ts
-    });
-
-    events = pruneTangoEvents(events, ts);
-    state.events = events;
-
-    if (events.length < TANGO_MIN_FAMILIES) {
-        saveState();
-        return;
-    }
-
-    const familiesKey = events
-        .map(e => String(e.family))
-        .sort()
-        .join("|");
-
-    // Avoid exact duplicate family-set spam, but allow a new 3-family set.
-    if (state.lastSentKey === familiesKey) {
-        saveState();
-        return;
-    }
-
-    const sorted = events.slice().sort((a, b) => a.time - b.time);
-    const firstTime = sorted[0].time;
-    const lastTime = sorted[sorted.length - 1].time;
-
-    const spanMs = lastTime - firstTime;
-    const spanMin = Math.floor(spanMs / 60000);
-    const spanSec = Math.floor((spanMs % 60000) / 1000);
-
-    sendToTelegram12(
-        "🟠 TANGO\n" +
-        "Symbol: " + symbol + "\n" +
-        "Families: " + events.length + "\n" +
-        "Window: 29 minutes\n" +
-        "Rule: 3+ different families\n" +
-        "Span: " + spanMin + "m " + spanSec + "s\n\n" +
-        "Alerts:\n" +
-        tangoEventLines(sorted)
-    );
-
-    state.lastSentKey = familiesKey;
-
-    saveState();
+function processTango(symbol, group, ts, body) {
+    return;
 }
 
 // ==========================================================
@@ -2294,7 +1801,6 @@ function processTango(symbol, group, ts) {
 //    - NORMAL ecosystem alert + # ecosystem alert
 //    - Either one can come first
 //    - Must be within 30 minutes
-//    - SALSA/GAMMA/INAUGURAL dependency removed
 // ==========================================================
 
 const NEPTUNE_CROSS_WINDOW_MS = 30 * 60 * 1000; // 30 minutes
@@ -2452,7 +1958,7 @@ function processNeptune(symbol, group, ts) {
 // Bot 3
 // ==========================================================
 
-const ZULU_FIRST_WINDOW_MS = 4 * 60 * 60 * 1000;  // 4 hours
+const ZULU_ANCHOR_WINDOW_MS = 4 * 60 * 60 * 1000;  // 4 hours
 const ZULU_PAIR_WINDOW_MS  = 10 * 60 * 1000;      // 10 minutes
 
 // zuluState[symbol][family] = {
@@ -2481,9 +1987,8 @@ function processZulu(symbol, group, ts) {
     const state = zuluState[symbol][family];
 
     // ========================
-    // FIRST HIT (per 4h window)
     // ========================
-    if (!state.first || (ts - state.first.time > ZULU_FIRST_WINDOW_MS)) {
+    if (!state.first || (ts - state.first.time > ZULU_ANCHOR_WINDOW_MS)) {
         state.first = { group, time: ts };
         return;
     }
@@ -2710,7 +2215,7 @@ function processSideFlip(symbol, group, ts) {
 // ==========================================================
 
 const MAMBA_PAIR_WINDOW_MS = 90 * 1000; // 90 seconds
-const MAMBA_FIRST_WINDOW_MS = 2 * 60 * 60 * 1000; // 2 hours
+const MAMBA_ANCHOR_WINDOW_MS = 2 * 60 * 60 * 1000; // 2 hours
 
 // mambaMemory[symbol][family] = { group, time }
 let mambaMemory = persisted.mambaMemory || {};
@@ -2723,101 +2228,8 @@ function getMambaFamily(group) {
     return match ? match[1] : "";
 }
 
-function processMamba(symbol, group, ts) {
-
-    if (!symbol || !group) return;
-
-    const family = getMambaFamily(group);
-    if (!family) return;
-
-    if (!mambaMemory[symbol]) {
-        mambaMemory[symbol] = {};
-    }
-
-    if (!mambaFirstState[symbol]) {
-        mambaFirstState[symbol] = {};
-    }
-
-    const lastSeen = mambaMemory[symbol][family];
-    const lastFire = mambaFirstState[symbol][family] || null;
-
-    // If already fired for this symbol+family inside 2h, only refresh memory and ignore alert.
-    const stillInsideFirstWindow =
-        lastFire && (ts - lastFire < MAMBA_FIRST_WINDOW_MS);
-
-    if (
-        lastSeen &&
-        lastSeen.group !== group &&
-        (ts - lastSeen.time <= MAMBA_PAIR_WINDOW_MS)
-    ) {
-
-        const mambaStructuredMatch = findStructuredGroupMatch([lastSeen.group, group]);
-
-        if (!mambaStructuredMatch) {
-            mambaMemory[symbol][family] = {
-                group,
-                time: ts
-            };
-            return;
-        }
-
-        if (!stillInsideFirstWindow) {
-
-            const diffMs = ts - lastSeen.time;
-            const diffSec = Math.floor(diffMs / 1000);
-
-            sendToTelegram6(
-                `🐍 MAMBA\n` +
-                `Symbol: ${symbol}\n` +
-                `Family: ${family}\n` +
-                `Rule: First family cross in 2 hours\n` +
-                `Condition: Different same-family subgroups within 90s\n\n` +
-                `1) ${lastSeen.group} @ ${formatDateTime(lastSeen.time)}\n` +
-                `2) ${group} @ ${formatDateTime(ts)}\n` +
-                `Gap: ${diffSec}s\n` +
-                `Structure: ${mambaStructuredMatch.label}\n` +
-                `Last MAMBA: ${lastFire ? formatDateTime(lastFire) : "none"}`
-            );
-
-            mambaFirstState[symbol][family] = ts;
-            saveState();
-        }
-
-        // Reset family memory after a valid cross attempt, but keep current subgroup as fresh seed.
-        mambaMemory[symbol][family] = {
-            group,
-            time: ts
-        };
-
-        return;
-    }
-
-    // Always update latest subgroup seen for this symbol+family.
-    mambaMemory[symbol][family] = {
-        group,
-        time: ts
-    };
-
-    // Safety cleanup for persisted first-fire state.
-    if (Object.keys(mambaFirstState).length > 5000) {
-        const pruneCutoff = ts - (4 * 60 * 60 * 1000);
-
-        for (const sym of Object.keys(mambaFirstState)) {
-            const families = mambaFirstState[sym];
-
-            for (const fam of Object.keys(families)) {
-                if (families[fam] < pruneCutoff) {
-                    delete families[fam];
-                }
-            }
-
-            if (!Object.keys(families).length) {
-                delete mambaFirstState[sym];
-            }
-        }
-
-        saveState();
-    }
+function processMamba(symbol, group, ts, body) {
+    return;
 }
 
 // ==========================================================
@@ -2835,22 +2247,8 @@ function processMamba(symbol, group, ts) {
 let speshComboState = persisted.speshComboState || {};
 const speshComboRuntime = {};
 
-function processSpesh(symbol, group, ts) {
-    processComboRepeatEngine(
-        {
-            name: "SPESH",
-            emoji: "🟢",
-            description: "Number-letter subgroup combo repeat",
-            state: speshComboState,
-            runtime: speshComboRuntime,
-            
-            repeatWindowMs: COMBO_REPEAT_WINDOW_SPESH_COBRA_MS,
-            repeatLabel: "16m",isValidGroup: isComboNumberLetter
-        },
-        symbol,
-        group,
-        ts
-    );
+function processSpesh(symbol, group, ts, body) {
+    return;
 }
 
 // ==========================================================
@@ -2880,9 +2278,7 @@ const CABAL_DUPLICATE_CLUSTER_MS = 60 * 1000; // collapse SPESH/COBRA duplicates
 // }
 let cabalState = persisted.cabalState || {};
 
-function processCabal(symbol, group, ts) {
-    // CABAL is now driven by SPESH/COBRA repeat events inside processComboRepeatEngine.
-    // This route hook is intentionally kept as a no-op so CABAL can remain enabled safely.
+function processCabal(symbol, group, ts, body) {
     return;
 }
 
@@ -3329,7 +2725,6 @@ function processTesting(symbol, group, ts) {
 }
 
 // ==========================================================
-//  JUPITER (STRICT FIRST-OF-4H + PAIR WITHIN 20M)
 //  Bucket 1: C/D
 //  Bucket 2: M/N
 //  Condition:
@@ -3340,7 +2735,7 @@ function processTesting(symbol, group, ts) {
 //  Bot 4
 // ==========================================================
 
-const JUPITER_FIRST_WINDOW_MS = 4 * 60 * 60 * 1000;  // 4 hours
+const JUPITER_ANCHOR_WINDOW_MS = 4 * 60 * 60 * 1000;  // 4 hours
 const JUPITER_PAIR_WINDOW_MS  = 20 * 60 * 1000;      // 20 minutes
 
 const JUPITER_CD = new Set(["C", "D"]);
@@ -3374,8 +2769,7 @@ function processJupiter(symbol, group, ts) {
     // ========================
     if (isCD) {
 
-        // Only accept if FIRST in 4h
-        if (!state.cdTime || (ts - state.cdTime > JUPITER_FIRST_WINDOW_MS)) {
+        if (!state.cdTime || (ts - state.cdTime > JUPITER_ANCHOR_WINDOW_MS)) {
             state.cdTime = ts;
         } else {
             return; // ignore non-first
@@ -3387,8 +2781,7 @@ function processJupiter(symbol, group, ts) {
     // ========================
     if (isMN) {
 
-        // Only accept if FIRST in 4h
-        if (!state.mnTime || (ts - state.mnTime > JUPITER_FIRST_WINDOW_MS)) {
+        if (!state.mnTime || (ts - state.mnTime > JUPITER_ANCHOR_WINDOW_MS)) {
             state.mnTime = ts;
         } else {
             return; // ignore non-first
@@ -3683,62 +3076,12 @@ function finalizeYabaWindow(symbol, family, state, ts) {
     return true;
 }
 
-function processYaba(symbol, group, ts) {
-
-    if (!symbol || !group) return;
-
-    const parsed = parseYabaNormalGroup(group);
-    if (!parsed) return;
-
-    const state = getYabaFamilyStore(symbol, parsed.family);
-
-    // If the old window has expired, finalize it first,
-    // then start a fresh 5-minute window with this new alert.
-    if (state.windowStart && ts - state.windowStart >= YABA_WINDOW_MS) {
-        finalizeYabaWindow(symbol, parsed.family, state, ts);
-
-        state.windowStart = 0;
-        state.events = [];
-        state.invalid = false;
-        state.invalidGroups = [];
-    }
-
-    if (!state.windowStart) {
-        startYabaWindow(symbol, parsed.family, parsed, ts);
-        saveState();
-        return;
-    }
-
-    addYabaEventToState(state, parsed, ts);
-
-    saveState();
+function processYaba(symbol, group, ts, body) {
+    return;
 }
 
-function scanYabaWindows(ts = Date.now()) {
-    if (!yabaMemory || typeof yabaMemory !== "object") return;
-
-    for (const symbol of Object.keys(yabaMemory)) {
-        const families = yabaMemory[symbol];
-
-        if (!families || typeof families !== "object") {
-            delete yabaMemory[symbol];
-            continue;
-        }
-
-        for (const family of Object.keys(families)) {
-            const state = families[family];
-
-            if (finalizeYabaWindow(symbol, family, state, ts)) {
-                delete families[family];
-            }
-        }
-
-        if (!Object.keys(families).length) {
-            delete yabaMemory[symbol];
-        }
-    }
-
-    saveState();
+function scanYabaWindows(...args) {
+    return;
 }
 
 // Keep scanner alive so YABA can fire after 5 minutes even if no later alert arrives.
@@ -3837,53 +3180,8 @@ const mintaState = {};
 
 // mintaState[symbol] = { events: [], timer }
 
-function processMinta(symbol, group, ts) {
-
-    if (!mintaState[symbol]) {
-
-        mintaState[symbol] = {
-            events: [],
-            timer: null
-        };
-
-        mintaState[symbol].timer = setTimeout(() => {
-
-            const state = mintaState[symbol];
-            const events = state.events;
-
-            const mintaStructuredMatch = findStructuredGroupMatch(
-                    events.map(e => e.group)
-                );
-
-            if (events.length >= MINTA_MIN_COUNT && mintaStructuredMatch) {
-
-                const lines = events
-                    .sort((a,b)=>a.time-b.time)
-                    .map(e =>
-                        `• ${e.group} @ ${formatTime(e.time)}`
-                    )
-                    .join("\n");
-
-                sendToTelegram15(
-                    `🍃 MINTA\n` +
-                    `Symbol: ${symbol}\n` +
-                    `Count: ${events.length}\n` +
-                    `Window: 5m\n` +
-                    `Structure: ${mintaStructuredMatch.label}\n` +
-                    `Alerts:\n${lines}`
-                );
-				registerTrinity(symbol, "MINTA");
-            }
-
-            delete mintaState[symbol];
-
-        }, MINTA_WINDOW_MS);
-    }
-
-    mintaState[symbol].events.push({
-        group,
-        time: ts
-    });
+function processMinta(symbol, group, ts, body) {
+    return;
 }
 
 // ==========================================================
@@ -3962,129 +3260,8 @@ function pruneComboState(state, ts, windowMs = COMBO_REPEAT_WINDOW_MS) {
     }
 }
 
-function processComboRepeatEngine(cfg, symbol, group, ts) {
-
-    if (!symbol || !group) return;
-    if (!cfg.isValidGroup(group)) return;
-
-    if (!cfg.runtime[symbol]) {
-        cfg.runtime[symbol] = {
-            events: [],
-            firedCombos: {}
-        };
-    }
-
-    const rt = cfg.runtime[symbol];
-
-    const cutoff = ts - COMBO_BUILD_WINDOW_MS;
-    rt.events = rt.events.filter(e => e.time >= cutoff);
-
-    // If old cluster expired fully, reset fired combo memory for this live cluster.
-    if (!rt.events.length) {
-        rt.firedCombos = {};
-    }
-
-    // Keep one live event per group in the 20s cluster; refresh repeated group timestamp.
-    const existingIndex = rt.events.findIndex(e => e.group === group);
-
-    if (existingIndex !== -1) {
-        rt.events[existingIndex] = {
-            group,
-            time: ts
-        };
-    } else {
-        rt.events.push({
-            group,
-            time: ts
-        });
-    }
-
-    rt.events.sort((a, b) => a.time - b.time);
-
-    const liveGroups = rt.events.map(e => e.group);
-    const liveSubsets = comboGroupSubsets(liveGroups);
-
-    if (!cfg.state[symbol]) {
-        cfg.state[symbol] = {};
-    }
-
-    const repeatWindowMs = Number(cfg.repeatWindowMs || COMBO_REPEAT_WINDOW_MS);
-    const repeatLabel = cfg.repeatLabel || "2h";
-
-    const repeated = [];
-
-    for (const subset of liveSubsets) {
-        const key = comboKeyFromGroups(subset);
-        const previous = cfg.state[symbol][key];
-
-        if (!previous) continue;
-
-        const previousTime = typeof previous === "number" ? previous : previous.time;
-        const gapMs = ts - previousTime;
-
-        const isNotSameLiveCluster = gapMs > COMBO_BUILD_WINDOW_MS;
-        const isWithinRepeatWindow = gapMs <= repeatWindowMs;
-        const notAlreadyFiredInCluster = !rt.firedCombos[key];
-
-        if (isNotSameLiveCluster && isWithinRepeatWindow && notAlreadyFiredInCluster) {
-            repeated.push({
-                key,
-                groups: subset,
-                previousTime,
-                gapMs
-            });
-
-            rt.firedCombos[key] = true;
-        }
-    }
-
-    const needsStructuredComboFilter =
-        cfg.name === "SPESH" ||
-        cfg.name === "COBRA";
-
-    const comboStructuredMatch = needsStructuredComboFilter
-        ? findStructuredGroupMatch(liveGroups)
-        : null;
-
-    if (repeated.length && (!needsStructuredComboFilter || comboStructuredMatch)) {
-
-        const lines = repeated
-            .sort((a, b) => a.groups.length - b.groups.length || a.key.localeCompare(b.key))
-            .map((x, i) => {
-                const gapMin = Math.floor(x.gapMs / 60000);
-                const gapSec = Math.floor((x.gapMs % 60000) / 1000);
-
-                return (
-                    `${i + 1}) ${x.groups.length}-group combo: ${comboFormatGroups(x.groups)}\n` +
-                    `   Previous: ${formatDateTime(x.previousTime)}\n` +
-                    `   Current: ${formatDateTime(ts)}\n` +
-                    `   Gap: ${gapMin}m ${gapSec}s`
-                );
-            })
-            .join("\n\n");
-
-        sendToTelegram7(
-            `${cfg.emoji} ${cfg.name}\n` +
-            `Symbol: ${symbol}\n` +
-            `Type: ${cfg.description}\n` +
-            `Live Cluster: ${comboFormatGroups(liveGroups)}\n` +
-            `Structure: ${comboStructuredMatch ? comboStructuredMatch.label : "n/a"}\n` +
-            `Matched Combos: ${repeated.length}\n` +
-            `Window: repeat within ${repeatLabel} after 20s cluster\n\n` +
-            lines
-        );
-        registerCabalFromComboRepeat(cfg, symbol, ts, liveGroups, repeated);
-    }
-
-    // Store/refresh ALL subset combos from this live cluster.
-    for (const subset of liveSubsets) {
-        const key = comboKeyFromGroups(subset);
-
-        cfg.state[symbol][key] = ts;
-    }
-
-    pruneComboState(cfg.state, ts, repeatWindowMs);
-    saveState();
+function processComboRepeatEngine(...args) {
+    return;
 }
 
 // ==========================================================
@@ -4102,26 +3279,11 @@ function processComboRepeatEngine(cfg, symbol, group, ts) {
 let cobraComboState = persisted.cobraComboState || {};
 const cobraComboRuntime = {};
 
-function processCobra(symbol, group, ts) {
-    processComboRepeatEngine(
-        {
-            name: "COBRA",
-            emoji: "🐍",
-            description: "Single-letter + number-letter combo repeat",
-            state: cobraComboState,
-            runtime: cobraComboRuntime,
-            
-            repeatWindowMs: COMBO_REPEAT_WINDOW_SPESH_COBRA_MS,
-            repeatLabel: "16m",isValidGroup: g => isComboSingleLetter(g) || isComboNumberLetter(g)
-        },
-        symbol,
-        group,
-        ts
-    );
+function processCobra(symbol, group, ts, body) {
+    return;
 }
 
 // ==========================================================
-// FIRST (PERSISTENT — restartable first different pair per symbol)
 // Bot 8
 //
 // Rule:
@@ -4131,7 +3293,6 @@ function processCobra(symbol, group, ts) {
 //   - Any later alert with a DIFFERENT exact group completes the pair
 //   - Same exact group is ignored
 //   - If 1h expires with no different exact group, cycle restarts
-//   - Once FIRST fires, symbol is locked for 2h from the first alert of that fired pair
 //
 // Valid:
 //   40L then 40M
@@ -4144,107 +3305,20 @@ function processCobra(symbol, group, ts) {
 //   39A then 39A
 //
 // Persistence:
-//   - Stored inside lastSeenState.__FIRST_BOT8_RESTARTABLE_STATE__
+
 //   - lastSeenState is already persisted in state.json
 // ==========================================================
 
-const FIRST_WINDOW_MS = 2 * 60 * 60 * 1000; // 2 hours after a fired pair
-const FIRST_PAIR_SPAN_MS = 60 * 60 * 1000;  // 1 hour to find matching different group
-const FIRST_STATE_KEY = "__FIRST_BOT8_RESTARTABLE_STATE__";
 
-function normalizeFirstGroup(group) {
-    return String(group || "").trim().toUpperCase();
-}
 
-function getFirstBot8Store() {
-    if (!lastSeenState[FIRST_STATE_KEY] || typeof lastSeenState[FIRST_STATE_KEY] !== "object") {
-        lastSeenState[FIRST_STATE_KEY] = {};
-    }
 
-    return lastSeenState[FIRST_STATE_KEY];
-}
 
-function resetFirstBot8Cycle(store, symbol, group, ts) {
-    store[symbol] = {
-        first: {
-            group,
-            time: ts
-        },
-        firedPair: null,
-        lockedUntil: 0
-    };
-}
 
-function processFirst(symbol, group, ts) {
 
-    if (!symbol || !group) return;
 
-    const g = normalizeFirstGroup(group);
-    if (!g) return;
 
-    const store = getFirstBot8Store();
-    let state = store[symbol];
 
-    // If a valid FIRST already fired, suppress this symbol until its 2h lock expires.
-    if (
-        state &&
-        Number(state.lockedUntil || 0) &&
-        ts < Number(state.lockedUntil || 0)
-    ) {
-        return;
-    }
 
-    // Start fresh if no state, invalid state, or previous lock has expired.
-    if (!state || !state.first || typeof state.first.time !== "number") {
-        resetFirstBot8Cycle(store, symbol, g, ts);
-        saveState();
-        return;
-    }
-
-    const first = state.first;
-    const gapMs = ts - first.time;
-
-    // If 1h has expired without a matching different group, restart cycle from this alert.
-    if (gapMs > FIRST_PAIR_SPAN_MS) {
-        resetFirstBot8Cycle(store, symbol, g, ts);
-        saveState();
-        return;
-    }
-
-    // Same exact group does NOT complete the pair.
-    // Keep waiting until 1h expires.
-    if (first.group === g) {
-        saveState();
-        return;
-    }
-
-    // Different exact group inside 1h completes FIRST.
-    const gapMin = Math.floor(gapMs / 60000);
-    const gapSec = Math.floor((gapMs % 60000) / 1000);
-    const lockedUntil = first.time + FIRST_WINDOW_MS;
-
-    state.firedPair = {
-        firstGroup: first.group,
-        firstTime: first.time,
-        secondGroup: g,
-        secondTime: ts
-    };
-
-    state.lockedUntil = lockedUntil;
-
-    sendToTelegram8(
-        "🥇 FIRST\n" +
-        "Symbol: " + symbol + "\n" +
-        "Rule: first different-group pair, restart after 1h if incomplete\n" +
-        "Condition: exact groups must be different\n\n" +
-        "1) " + first.group + " @ " + formatDateTime(first.time) + "\n" +
-        "2) " + g + " @ " + formatDateTime(ts) + "\n" +
-        "Gap: " + gapMin + "m " + gapSec + "s\n" +
-        "Locked Until: " + formatDateTime(lockedUntil)
-    );
-
-    saveState();
-}
 
 
 // ==========================================================
@@ -4745,6 +3819,14 @@ function processGando(symbol, group, ts) {
 
 
 // ==========================================================
+//  LEGACY ENGINE PLACEHOLDERS — LOGIC CLEARED
+//
+//  These names are intentionally kept for future reuse:
+//  MAMBA, BLACK_PANTHER, CABAL, SPESH, COBRA,
+//  YABA, SALSA, GAMMA, MINTA, TANGO.
+// ==========================================================
+
+// ==========================================================
 //  WEBHOOK HANDLER
 // ==========================================================
 
@@ -4835,12 +3917,6 @@ app.post("/incoming", (req, res) => {
 
         //processCheck(symbol, group, ts, body);
 		
-        // ✅ FIX: FIRST must IGNORE # groups and group-less Peter_o payloads
-        if (group && !isHash) {
-            processFirst(symbol, group, ts);
-            // processInaugural(symbol, group, ts); // disabled: now range-engine driven
-        }
-
 // ==========================================
 // 🧠 SPLIT PIPELINE
 // ==========================================
