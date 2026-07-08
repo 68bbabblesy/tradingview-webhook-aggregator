@@ -3022,8 +3022,81 @@ function processComboRepeatEngine(...args) {
 let cobraComboState = persisted.cobraComboState || {};
 const cobraComboRuntime = {};
 
-function processCobra(symbol, group, ts, body) {
-    return;
+function processCobra(symbol, group, ts, body = {}) {
+
+    const rawGroup = String(group || "").trim();
+    const upperGroup = rawGroup.toUpperCase();
+
+    if (!rawGroup) return;
+
+    const specialChar = upperGroup[0];
+
+    const ecosystemMap = {
+        "#": "HASH",
+        "~": "ZEBRA",
+        "@": "MANUAL",
+        "^": "KANGAROO"
+    };
+
+    const ecosystem = ecosystemMap[specialChar];
+
+    // COBRA only wants TOP alerts that also carry an ecosystem special character.
+    if (!ecosystem) return;
+    if (!upperGroup.includes("TOP")) return;
+
+    const cleanSymbol =
+        symbol ||
+        normalizeSymbol(body?.symbol) ||
+        normalizeSymbol(body?.ticker) ||
+        "n/a";
+
+    const price =
+        body?.price ??
+        body?.close ??
+        body?.current_price ??
+        "n/a";
+
+    const kind =
+        body?.kind ??
+        body?.type ??
+        body?.signal ??
+        body?.action ??
+        "";
+
+    const timeframe =
+        body?.timeframe ??
+        body?.tf ??
+        body?.interval ??
+        "";
+
+    const source =
+        body?.source ??
+        body?.indicator ??
+        body?.script ??
+        "";
+
+    let msg =
+        "🐍 COBRA\n" +
+        "Rule: TOP + ecosystem special character\n" +
+        "Ecosystem: " + ecosystem + "\n" +
+        "Symbol: " + cleanSymbol + "\n" +
+        "Group: " + rawGroup + "\n" +
+        "Price: " + price + "\n" +
+        "Time: " + formatDateTime(ts);
+
+    if (kind && String(kind).trim()) {
+        msg += "\nKind: " + String(kind).trim();
+    }
+
+    if (timeframe && String(timeframe).trim()) {
+        msg += "\nTimeframe: " + String(timeframe).trim();
+    }
+
+    if (source && String(source).trim()) {
+        msg += "\nSource: " + String(source).trim();
+    }
+
+    sendToTelegram7(msg);
 }
 
 // ==========================================================
@@ -3616,6 +3689,10 @@ app.post("/incoming", (req, res) => {
         recentHashes.add(hash);
         setTimeout(() => recentHashes.delete(hash), 300000);
 
+        // 🐍 COBRA global TOP-special detector.
+        // Runs before isolated ecosystem returns so #, ~, @ and ^ can all be caught.
+        processCobra(symbol, group, ts, body);
+
 
 
         // 🟣 @ MANUAL ECOSYSTEM
@@ -3680,7 +3757,7 @@ if (!isHash) {
         processYaba(symbol, group, ts);
         // processSalsa(symbol, group, ts); // disabled by request
         processTango(symbol, group, ts);
-        processCobra(symbol, group, ts);
+        // processCobra moved to global TOP-special detector
         processNeptune(symbol, group, ts);
         // processZulu(symbol, group, ts); // disabled by request
         processMinta(symbol, group, ts);
