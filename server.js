@@ -2641,203 +2641,167 @@ function registerTrinity(symbol, type) {
 }
 
 // ==========================================================
-//  YABA (G/H/I/J only, delayed family-window detector)
+//  YABA ($ → ANY OTHER ECOSYSTEM CORRELATION)
 //  Bot 9
 //
 //  Rule:
-//    - Normal ecosystem only
 //    - Same symbol
-//    - Same numeric family
-//    - Full 5-minute delayed window
-//    - Qualifies if ALL distinct subgroups in that family window
-//      are G/H/I/J.
-//    - 1, 2, 3, or 4 G/H/I/J subgroups can qualify.
-//    - If any other letter appears in that family window, no alert.
+//    - One $ ecosystem alert
+//    - One NON-$ ecosystem alert
+//    - Other ecosystem can be NORMAL, #, ~, ^, or @
+//    - Either order is valid
+//    - Must match within 1 hour
 // ==========================================================
 
-const YABA_WINDOW_MS = 5 * 60 * 1000;
-const YABA_ALLOWED_LETTERS = new Set(["G", "H", "I", "J"]);
+const YABA_CROSS_WINDOW_MS = 60 * 60 * 1000; // 1 hour
 
-// yabaMemory[symbol][family] = {
-//   windowStart: number,
-//   events: [{ group, letter, time }],
-//   invalid: boolean,
-//   invalidGroups: [{ group, letter, time }]
+// yabaMemory[symbol] = {
+//   lastDollar: { ecosystem, group, time, price },
+//   lastOther: { ecosystem, group, time, price },
+//   lastSentKey: string
 // }
 let yabaMemory = persisted.yabaMemory || {};
 
-function parseYabaNormalGroup(group) {
+function yabaEcosystemFromGroup(group) {
     const raw = String(group || "").trim().toUpperCase();
 
-    if (!raw) return null;
+    if (!raw) return "";
 
-    // Normal ecosystem only.
-    if (
-        raw.startsWith("@") ||
-        raw.startsWith("#") ||
-        raw.startsWith("~") ||
-        raw.startsWith("^")
-    ) {
-        return null;
-    }
+    if (raw.startsWith("$")) return "DOLLAR";
+    if (raw.startsWith("#")) return "HASH";
+    if (raw.startsWith("~")) return "ZEBRA";
+    if (raw.startsWith("^")) return "KANGAROO";
+    if (raw.startsWith("@")) return "MANUAL";
 
-    const m = raw.match(/^(\d+)([A-Z])$/);
-    if (!m) return null;
-
-    return {
-        raw,
-        family: m[1],
-        letter: m[2]
-    };
+    return "NORMAL";
 }
 
-function getYabaFamilyStore(symbol, family) {
-    if (!yabaMemory[symbol] || typeof yabaMemory[symbol] !== "object") {
-        yabaMemory[symbol] = {};
-    }
-
-    const current = yabaMemory[symbol][family];
+function getYabaSymbolState(symbol) {
+    const current = yabaMemory[symbol];
 
     const invalid =
         !current ||
         typeof current !== "object" ||
-        typeof current.windowStart !== "number" ||
-        !Array.isArray(current.events) ||
-        !Array.isArray(current.invalidGroups);
+        Array.isArray(current) ||
+        (
+            !Object.prototype.hasOwnProperty.call(current, "lastDollar") &&
+            !Object.prototype.hasOwnProperty.call(current, "lastOther")
+        );
 
     if (invalid) {
-        yabaMemory[symbol][family] = {
-            windowStart: 0,
-            events: [],
-            invalid: false,
-            invalidGroups: []
+        yabaMemory[symbol] = {
+            lastDollar: null,
+            lastOther: null,
+            lastSentKey: ""
         };
     }
 
-    return yabaMemory[symbol][family];
+    return yabaMemory[symbol];
 }
 
-function addYabaEventToState(state, parsed, ts) {
-    if (!parsed) return;
+function yabaPairKey(a, b) {
+    return [
+        a.ecosystem + ":" + a.group + ":" + a.time,
+        b.ecosystem + ":" + b.group + ":" + b.time
+    ].sort().join("|");
+}
 
-    const item = {
-        group: parsed.raw,
-        letter: parsed.letter,
-        time: ts
+function yabaEventLine(e, index) {
+    return (
+        (index + 1) + ") " +
+        e.ecosystem +
+        " | " + e.group +
+        " | Price " + (e.price ?? "n/a") +
+        " @ " + formatDateTime(e.time)
+    );
+}
+
+function pruneYabaMemory(ts) {
+    if (!yabaMemory || typeof yabaMemory !== "object") return;
+
+    const cutoff = ts - (2 * YABA_CROSS_WINDOW_MS);
+
+    for (const sym of Object.keys(yabaMemory)) {
+        const st = yabaMemory[sym];
+
+        if (!st || typeof st !== "object") {
+            delete yabaMemory[sym];
+            continue;
+        }
+
+        const d = st.lastDollar?.time || 0;
+        const o = st.lastOther?.time || 0;
+
+        if (Math.max(d, o) < cutoff) {
+            delete yabaMemory[sym];
+        }
+    }
+}
+
+function processYaba(symbol, group, ts, body = {}) {
+
+    if (!symbol || !group) return;
+
+    const rawGroup = String(group || "").trim();
+    const ecosystem = yabaEcosystemFromGroup(rawGroup);
+
+    if (!ecosystem) return;
+
+    const state = getYabaSymbolState(symbol);
+
+    const current = {
+        ecosystem,
+        group: rawGroup,
+        time: ts,
+        price:
+            body?.price ??
+            body?.close ??
+            body?.current_price ??
+            "n/a"
     };
 
-    if (!YABA_ALLOWED_LETTERS.has(parsed.letter)) {
-        state.invalid = true;
+    const isDollar = ecosystem === "DOLLAR";
+    const opposite = isDollar ? state.lastOther : state.lastDollar;
 
-        const existingBadIndex = state.invalidGroups.findIndex(e => e.group === parsed.raw);
-        if (existingBadIndex !== -1) {
-            state.invalidGroups[existingBadIndex] = item;
-        } else {
-            state.invalidGroups.push(item);
+    if (opposite && typeof opposite.time === "number") {
+        const gapMs = Math.abs(ts - opposite.time);
+
+        if (gapMs <= YABA_CROSS_WINDOW_MS) {
+            const first = opposite.time <= current.time ? opposite : current;
+            const second = opposite.time <= current.time ? current : opposite;
+            const pairKey = yabaPairKey(first, second);
+
+            if (state.lastSentKey !== pairKey) {
+                const gapMin = Math.floor(gapMs / 60000);
+                const gapSec = Math.floor((gapMs % 60000) / 1000);
+
+                sendToTelegram9(
+                    "🟨 YABA\n" +
+                    "Rule: $ + any other ecosystem within 1 hour\n" +
+                    "Symbol: " + symbol + "\n" +
+                    "Span: " + gapMin + "m " + gapSec + "s\n\n" +
+                    "Alerts:\n" +
+                    yabaEventLine(first, 0) + "\n" +
+                    yabaEventLine(second, 1)
+                );
+
+                state.lastSentKey = pairKey;
+            }
         }
-
-        state.invalidGroups.sort((a, b) => a.time - b.time);
-        return;
     }
 
-    // Keep distinct subgroup only. Same subgroup repeat refreshes time.
-    const existingIndex = state.events.findIndex(e => e.group === parsed.raw);
-
-    if (existingIndex !== -1) {
-        state.events[existingIndex] = item;
+    if (isDollar) {
+        state.lastDollar = current;
     } else {
-        state.events.push(item);
+        state.lastOther = current;
     }
 
-    state.events.sort((a, b) => a.time - b.time);
+    pruneYabaMemory(ts);
+    saveState();
 }
 
-function startYabaWindow(symbol, family, parsed, ts) {
-    const state = getYabaFamilyStore(symbol, family);
-
-    state.windowStart = ts;
-    state.events = [];
-    state.invalid = false;
-    state.invalidGroups = [];
-
-    addYabaEventToState(state, parsed, ts);
-
-    return state;
-}
-
-function yabaEventLines(events) {
-    if (!Array.isArray(events) || !events.length) return "n/a";
-
-    return events
-        .slice()
-        .sort((a, b) => a.time - b.time)
-        .map((e, i) =>
-            (i + 1) + ") " + e.group + " @ " + formatDateTime(e.time)
-        )
-        .join("\n");
-}
-
-function finalizeYabaWindow(symbol, family, state, ts) {
-    if (!state || typeof state.windowStart !== "number" || !state.windowStart) return false;
-
-    const expired = ts - state.windowStart >= YABA_WINDOW_MS;
-    if (!expired) return false;
-
-    const goodEvents = (state.events || [])
-        .filter(e => e && e.group && YABA_ALLOWED_LETTERS.has(e.letter))
-        .sort((a, b) => a.time - b.time);
-
-    const distinctCount = goodEvents.length;
-
-    const qualifies =
-        !state.invalid &&
-        distinctCount >= 1;
-
-    if (qualifies) {
-        const firstTime = goodEvents[0].time;
-        const lastTime = goodEvents[goodEvents.length - 1].time;
-        const spanMs = Math.max(0, lastTime - firstTime);
-        const spanMin = Math.floor(spanMs / 60000);
-        const spanSec = Math.floor((spanMs % 60000) / 1000);
-
-        sendToTelegram9(
-            "🟢 YABA\n" +
-            "Symbol: " + symbol + "\n" +
-            "Family: " + family + "\n" +
-            "Subgroups: " + distinctCount + "\n" +
-            "Allowed Letters: G/H/I/J only\n" +
-            "Window: 5 minutes delayed\n" +
-            "Rule: all subgroups in family window must be G/H/I/J\n" +
-            "Span: " + spanMin + "m " + spanSec + "s\n" +
-            "Window Start: " + formatDateTime(state.windowStart) + "\n" +
-            "Window End: " + formatDateTime(state.windowStart + YABA_WINDOW_MS) + "\n\n" +
-            "Alerts:\n" +
-            yabaEventLines(goodEvents)
-        );
-    }
-
-    return true;
-}
-
-function processYaba(symbol, group, ts, body) {
-    return;
-}
-
-function scanYabaWindows(...args) {
-    return;
-}
-
-// Keep scanner alive so YABA can fire after 5 minutes even if no later alert arrives.
-if (!globalThis.__YABA_GHIJ_SCAN__) {
-    globalThis.__YABA_GHIJ_SCAN__ = setInterval(() => {
-        try {
-            scanYabaWindows(Date.now());
-        } catch (err) {
-            console.error("YABA GHIJ scanner error:", err);
-        }
-    }, 15000);
-}
-
+// ==========================================================
+//  BUNDLE
 
 // ==========================================================
 //  BUNDLE (ACSWU / BDXTV burst collector)
@@ -3768,6 +3732,9 @@ app.post("/incoming", (req, res) => {
         // 🐍 COBRA global TOP-special detector.
         // Runs before isolated ecosystem returns so #, ~, @ and ^ can all be caught.
         processCobra(symbol, group, ts, body);
+        // 🟨 YABA global $ cross-ecosystem detector.
+        // Runs before isolated ecosystem returns so $, #, ~, @, ^ and normal can all be caught.
+        processYaba(symbol, group, ts, body);
 
 
 
@@ -3839,7 +3806,7 @@ if (!isHash) {
         processGando(symbol, group, ts);
         processSideFlip(symbol, group, ts);
         // processGamma(symbol, group, ts); // disabled by request
-        processYaba(symbol, group, ts);
+        // processYaba moved to global $ cross-ecosystem detector
         // processSalsa(symbol, group, ts); // disabled by request
         processTango(symbol, group, ts);
         // processCobra moved to global TOP-special detector
