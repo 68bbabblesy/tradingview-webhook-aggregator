@@ -1198,8 +1198,184 @@ function passesStructuredGroupFilter(groups) {
 let blackPantherMemory = persisted.blackPantherMemory || {};
 let gammaMemory = persisted.gammaMemory || {};
 
-function processBlackPanther(symbol, group, ts, body) {
-    return;
+
+// ==========================================================
+//  BLACKPANTHER — SPECIAL ECOSYSTEM FAMILY CROSS
+//  Bot 3
+//
+//  Rule:
+//    - Same symbol
+//    - Eligible ecosystems only: #, ~, ^, @
+//    - Excluded ecosystems: $, normal/no-prefix
+//    - Families must be different
+//    - Match must occur within 1 hour
+//    - Same eligible ecosystem is allowed if families are different
+//      Example: ~1 and ~2
+// ==========================================================
+
+const BLACKPANTHER_SPECIAL_WINDOW_MS = 60 * 60 * 1000; // 1 hour
+
+function blackPantherSpecialEcosystem(group) {
+    const raw = String(group || "").trim().toUpperCase();
+
+    if (!raw) return "";
+
+    if (raw.startsWith("#")) return "HASH";
+    if (raw.startsWith("~")) return "ZEBRA";
+    if (raw.startsWith("^")) return "KANGAROO";
+    if (raw.startsWith("@")) return "MANUAL";
+
+    // Explicitly exclude DOLLAR and normal/no-prefix.
+    return "";
+}
+
+function blackPantherFamilyFromGroup(group) {
+    const raw = String(group || "").trim().toUpperCase();
+    if (!raw) return "";
+
+    // Remove ecosystem prefix.
+    const body = raw.slice(1);
+
+    // Primary family = first number after the ecosystem character.
+    // Examples: ~1 => 1, ~2 => 2, #37A => 37, @41K => 41.
+    const num = body.match(/^(\d+)/);
+    if (num) return num[1];
+
+    // Fallback for non-numeric special groups.
+    // Example: #TOP_ALERT => TOP
+    const word = body.match(/^([A-Z]+)/);
+    if (word) return word[1];
+
+    return body || raw;
+}
+
+function blackPantherEventLine(e, index) {
+    return (
+        (index + 1) + ") " +
+        e.ecosystem +
+        " | Family " + e.family +
+        " | " + e.group +
+        " | Price " + (e.price ?? "n/a") +
+        " @ " + formatDateTime(e.time)
+    );
+}
+
+function processBlackPanther(symbol, group, ts, body = {}) {
+
+    if (!symbol || !group) return;
+
+    const rawGroup = String(group || "").trim();
+    const ecosystem = blackPantherSpecialEcosystem(rawGroup);
+
+    // Only #, ~, ^, @ are eligible.
+    // $ and normal/no-prefix are excluded.
+    if (!ecosystem) return;
+
+    const family = blackPantherFamilyFromGroup(rawGroup);
+    if (!family) return;
+
+    if (!blackPantherMemory[symbol] || typeof blackPantherMemory[symbol] !== "object") {
+        blackPantherMemory[symbol] = {
+            events: [],
+            lastSentKey: ""
+        };
+    }
+
+    const state = blackPantherMemory[symbol];
+
+    if (!Array.isArray(state.events)) {
+        state.events = [];
+    }
+
+    const current = {
+        ecosystem,
+        family,
+        group: rawGroup,
+        time: ts,
+        price:
+            body?.price ??
+            body?.close ??
+            body?.current_price ??
+            "n/a"
+    };
+
+    const cutoff = ts - BLACKPANTHER_SPECIAL_WINDOW_MS;
+
+    state.events = state.events
+        .filter(e =>
+            e &&
+            typeof e.time === "number" &&
+            e.time >= cutoff &&
+            e.symbol !== null
+        )
+        .sort((a, b) => a.time - b.time);
+
+    const prior = state.events
+        .filter(e => String(e.family) !== String(current.family))
+        .sort((a, b) => b.time - a.time)[0];
+
+    if (prior) {
+        const gapMs = Math.abs(current.time - prior.time);
+
+        if (gapMs <= BLACKPANTHER_SPECIAL_WINDOW_MS) {
+            const first = prior.time <= current.time ? prior : current;
+            const second = prior.time <= current.time ? current : prior;
+
+            const pairKey = [
+                first.ecosystem + ":" + first.family + ":" + first.group + ":" + first.time,
+                second.ecosystem + ":" + second.family + ":" + second.group + ":" + second.time
+            ].sort().join("|");
+
+            if (state.lastSentKey !== pairKey) {
+                const gapMin = Math.floor(gapMs / 60000);
+                const gapSec = Math.floor((gapMs % 60000) / 1000);
+
+                sendToTelegram3(
+                    "🖤 BLACKPANTHER\n" +
+                    "Rule: eligible special ecosystems, different families within 1 hour\n" +
+                    "Eligible: #, ~, ^, @\n" +
+                    "Excluded: $, normal\n" +
+                    "Symbol: " + symbol + "\n" +
+                    "Span: " + gapMin + "m " + gapSec + "s\n\n" +
+                    "Alerts:\n" +
+                    blackPantherEventLine(first, 0) + "\n" +
+                    blackPantherEventLine(second, 1)
+                );
+
+                state.lastSentKey = pairKey;
+            }
+        }
+    }
+
+    // Keep latest event.
+    state.events.push(current);
+
+    // Safety cap.
+    if (state.events.length > 100) {
+        state.events = state.events.slice(-100);
+    }
+
+    // Global cleanup.
+    if (Object.keys(blackPantherMemory).length > 5000) {
+        const oldCutoff = ts - (2 * BLACKPANTHER_SPECIAL_WINDOW_MS);
+
+        for (const sym of Object.keys(blackPantherMemory)) {
+            const st = blackPantherMemory[sym];
+
+            if (!st || typeof st !== "object" || !Array.isArray(st.events)) {
+                delete blackPantherMemory[sym];
+                continue;
+            }
+
+            st.events = st.events.filter(e => e && e.time >= oldCutoff);
+
+            if (!st.events.length) {
+                delete blackPantherMemory[sym];
+            }
+        }
+    }
+
+    saveState();
 }
 
 function processGamma(symbol, group, ts, body) {
@@ -3735,6 +3911,10 @@ app.post("/incoming", (req, res) => {
         // 🟨 YABA global $ cross-ecosystem detector.
         // Runs before isolated ecosystem returns so $, #, ~, @, ^ and normal can all be caught.
         processYaba(symbol, group, ts, body);
+        // 🖤 BLACKPANTHER global special-family cross detector.
+        // Runs before isolated ecosystem returns so #, ~, @ and ^ can all be caught.
+        // $ and normal are ignored inside processBlackPanther.
+        processBlackPanther(symbol, group, ts, body);
 
 
 
