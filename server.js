@@ -3035,7 +3035,8 @@ function processCobra(symbol, group, ts, body = {}) {
         "#": "HASH",
         "~": "ZEBRA",
         "@": "MANUAL",
-        "^": "KANGAROO"
+        "^": "KANGAROO",
+        "$": "DOLLAR"
     };
 
     const ecosystem = ecosystemMap[specialChar];
@@ -3642,6 +3643,80 @@ function processGando(symbol, group, ts) {
 //  YABA, SALSA, GAMMA, MINTA, TANGO.
 // ==========================================================
 
+
+// ==========================================================
+//  DOLLAR $ ECOSYSTEM
+//  Bot 11
+//
+//  Rule:
+//    - Any group starting with $ belongs to DOLLAR.
+//    - Examples: $A, $1A, $AA, $37X, $1__TOP
+//    - Sends to Bot11 only.
+//    - Does NOT enter normal, hash, ZEBRA, KANGAROO, or manual logic.
+// ==========================================================
+
+function isDollarGroup(group) {
+    return String(group || "").trim().startsWith("$");
+}
+
+function dollarField(body, keys, fallback = "n/a") {
+    for (const key of keys) {
+        const value = body?.[key];
+
+        if (
+            value !== undefined &&
+            value !== null &&
+            String(value).trim() !== ""
+        ) {
+            return String(value).trim();
+        }
+    }
+
+    return fallback;
+}
+
+function processDollarEcosystem(symbol, group, ts, body) {
+
+    const cleanGroup = String(group || "").trim();
+    const cleanSymbol = symbol || normalizeSymbol(body?.ticker) || "n/a";
+
+    const price = dollarField(body, ["price", "close", "current_price"]);
+    const level = dollarField(body, ["level", "target", "alert_price", "manual_level"], "");
+    const note = dollarField(body, ["note", "reason", "context", "memo", "message"], "");
+    const source = dollarField(body, ["source", "from", "setup", "bot_source"], "");
+    const timeframe = dollarField(body, ["timeframe", "tf", "interval"], "");
+    const direction = dollarField(body, ["direction", "dir", "side", "signal"], "");
+
+    let msg =
+        "💵 DOLLAR\n" +
+        "Symbol: " + cleanSymbol + "\n" +
+        "Group: " + cleanGroup + "\n" +
+        "Price: " + price + "\n" +
+        "Time: " + formatDateTime(ts);
+
+    if (level && level !== "n/a") {
+        msg += "\nLevel: " + level;
+    }
+
+    if (direction && direction !== "n/a") {
+        msg += "\nDirection: " + direction;
+    }
+
+    if (timeframe && timeframe !== "n/a") {
+        msg += "\nTimeframe: " + timeframe;
+    }
+
+    if (source && source !== "n/a") {
+        msg += "\nSource: " + source;
+    }
+
+    if (note && note !== "n/a") {
+        msg += "\n\nNote:\n" + note;
+    }
+
+    sendToTelegram11(msg);
+}
+
 // ==========================================================
 //  WEBHOOK HANDLER
 // ==========================================================
@@ -3676,6 +3751,7 @@ app.post("/incoming", (req, res) => {
         const isManual = group.startsWith("@");
         const isZebra = group.startsWith("~");
         const isKangaroo = group.startsWith("^");
+        const isDollar = group.startsWith("$");
         const isPeterPayload = isPeterForgePayload(body, group);
 
         const ts = nowMs();
@@ -3714,6 +3790,15 @@ app.post("/incoming", (req, res) => {
             return res.sendStatus(200);
         }
 
+
+
+        // 💵 DOLLAR $ ECOSYSTEM
+        // Fully isolated. Does not feed BOOM or any other ecosystem.
+        if (isDollar) {
+            processDollarEcosystem(symbol, group, ts, body);
+            saveState();
+            return res.sendStatus(200);
+        }
 
         // 🦓 ZEBRA ~ ECOSYSTEM
         // Separate non-manual ecosystem. Must not enter normal/hash logic.
