@@ -65,6 +65,7 @@ function loadState() {
                 boomMemory: parsed.boomMemory || {},
                 jupiterState: parsed.jupiterState || {},
                 yabaMemory: parsed.yabaMemory || {},
+                zebraMemory: parsed.zebraMemory || {},
                 zoneforgeMemory: parsed.zoneforgeMemory || {},
                 zoneforgeLastFire: parsed.zoneforgeLastFire || {},
                 anchorforgeMemory: parsed.anchorforgeMemory || {},
@@ -127,6 +128,7 @@ function loadState() {
         boomMemory: {},
         jupiterState: {},
         yabaMemory: {},
+        zebraMemory: {},
         zoneforgeMemory: {},
         zoneforgeLastFire: {},
         anchorforgeMemory: {},
@@ -195,6 +197,7 @@ function buildStateSnapshot() {
         boomMemory,
         jupiterState,
         yabaMemory,
+        zebraMemory,
         zoneforgeMemory: typeof zoneforgeMemory !== "undefined" ? zoneforgeMemory : {},
         zoneforgeLastFire: typeof zoneforgeLastFire !== "undefined" ? zoneforgeLastFire : {},
         anchorforgeMemory: typeof anchorforgeMemory !== "undefined" ? anchorforgeMemory : {},
@@ -3418,78 +3421,170 @@ function processManualReminderBot10(symbol, group, ts, body) {
 
 
 // ==========================================================
-//  ZEBRA ~ ECOSYSTEM
+//  ZEBRA — NORMAL + ANY SPECIAL ECOSYSTEM CORRELATION
 //  Bot 2
 //
 //  Rule:
-//    - Any group starting with ~ belongs to ZEBRA.
-//    - Examples: ~1A, ~B, ~AA, ~37X
-//    - Sends to Bot2.
-//    - Must return before normal/# ecosystems.
+//    - Same symbol
+//    - One NORMAL ecosystem alert
+//    - One SPECIAL ecosystem alert
+//    - Special can be #, ~, ^, @, or $
+//    - Either order is valid
+//    - Must match within 1 hour
+//
+//  Note:
+//    - This replaces the old standalone "~ sends to Bot2" behaviour.
 // ==========================================================
+
+const ZEBRA_CROSS_WINDOW_MS = 60 * 60 * 1000; // 1 hour
+
+let zebraMemory = persisted.zebraMemory || {};
 
 function isZebraGroup(group) {
     return String(group || "").trim().startsWith("~");
 }
 
-function zebraField(body, keys, fallback = "n/a") {
-    for (const key of keys) {
-        const value = body?.[key];
+function zebraEcosystemFromGroup(group) {
+    const raw = String(group || "").trim().toUpperCase();
 
-        if (
-            value !== undefined &&
-            value !== null &&
-            String(value).trim() !== ""
-        ) {
-            return String(value).trim();
+    if (!raw) return "";
+
+    if (raw.startsWith("#")) return "HASH";
+    if (raw.startsWith("~")) return "ZEBRA";
+    if (raw.startsWith("^")) return "KANGAROO";
+    if (raw.startsWith("@")) return "MANUAL";
+    if (raw.startsWith("$")) return "DOLLAR";
+
+    return "NORMAL";
+}
+
+function getZebraSymbolState(symbol) {
+    const current = zebraMemory[symbol];
+
+    const invalid =
+        !current ||
+        typeof current !== "object" ||
+        Array.isArray(current) ||
+        (
+            !Object.prototype.hasOwnProperty.call(current, "lastNormal") &&
+            !Object.prototype.hasOwnProperty.call(current, "lastSpecial")
+        );
+
+    if (invalid) {
+        zebraMemory[symbol] = {
+            lastNormal: null,
+            lastSpecial: null,
+            lastSentKey: ""
+        };
+    }
+
+    return zebraMemory[symbol];
+}
+
+function zebraPairKey(a, b) {
+    return [
+        a.ecosystem + ":" + a.group + ":" + a.time,
+        b.ecosystem + ":" + b.group + ":" + b.time
+    ].sort().join("|");
+}
+
+function zebraEventLine(e, index) {
+    return (
+        (index + 1) + ") " +
+        e.ecosystem +
+        " | " + e.group +
+        " | Price " + (e.price ?? "n/a") +
+        " @ " + formatDateTime(e.time)
+    );
+}
+
+function pruneZebraMemory(ts) {
+    if (!zebraMemory || typeof zebraMemory !== "object") return;
+
+    const cutoff = ts - (2 * ZEBRA_CROSS_WINDOW_MS);
+
+    for (const sym of Object.keys(zebraMemory)) {
+        const st = zebraMemory[sym];
+
+        if (!st || typeof st !== "object") {
+            delete zebraMemory[sym];
+            continue;
+        }
+
+        const n = st.lastNormal?.time || 0;
+        const sp = st.lastSpecial?.time || 0;
+
+        if (Math.max(n, sp) < cutoff) {
+            delete zebraMemory[sym];
+        }
+    }
+}
+
+function processZebraEcosystem(symbol, group, ts, body = {}) {
+
+    if (!symbol || !group) return;
+
+    const rawGroup = String(group || "").trim();
+    const ecosystem = zebraEcosystemFromGroup(rawGroup);
+
+    if (!ecosystem) return;
+
+    const state = getZebraSymbolState(symbol);
+
+    const current = {
+        ecosystem,
+        group: rawGroup,
+        time: ts,
+        price:
+            body?.price ??
+            body?.close ??
+            body?.current_price ??
+            "n/a"
+    };
+
+    const isNormal = ecosystem === "NORMAL";
+    const opposite = isNormal ? state.lastSpecial : state.lastNormal;
+
+    if (opposite && typeof opposite.time === "number") {
+        const gapMs = Math.abs(ts - opposite.time);
+
+        if (gapMs <= ZEBRA_CROSS_WINDOW_MS) {
+            const first = opposite.time <= current.time ? opposite : current;
+            const second = opposite.time <= current.time ? current : opposite;
+            const pairKey = zebraPairKey(first, second);
+
+            if (state.lastSentKey !== pairKey) {
+                const gapMin = Math.floor(gapMs / 60000);
+                const gapSec = Math.floor((gapMs % 60000) / 1000);
+
+                sendToTelegram2(
+                    "🦓 ZEBRA\n" +
+                    "Rule: NORMAL + any special ecosystem within 1 hour\n" +
+                    "Specials: #, ~, ^, @, $\n" +
+                    "Symbol: " + symbol + "\n" +
+                    "Span: " + gapMin + "m " + gapSec + "s\n\n" +
+                    "Alerts:\n" +
+                    zebraEventLine(first, 0) + "\n" +
+                    zebraEventLine(second, 1)
+                );
+
+                state.lastSentKey = pairKey;
+            }
         }
     }
 
-    return fallback;
+    if (isNormal) {
+        state.lastNormal = current;
+    } else {
+        state.lastSpecial = current;
+    }
+
+    pruneZebraMemory(ts);
+    saveState();
 }
 
-function processZebraEcosystem(symbol, group, ts, body) {
-
-    const cleanGroup = String(group || "").trim();
-    const cleanSymbol = symbol || normalizeSymbol(body?.ticker) || "n/a";
-
-    const price = zebraField(body, ["price", "close", "current_price"]);
-    const level = zebraField(body, ["level", "target", "alert_price", "manual_level"], "");
-    const note = zebraField(body, ["note", "reason", "context", "memo", "message"], "");
-    const source = zebraField(body, ["source", "from", "setup", "bot_source"], "");
-    const timeframe = zebraField(body, ["timeframe", "tf", "interval"], "");
-    const direction = zebraField(body, ["direction", "dir", "side", "signal"], "");
-
-    let msg =
-        "🦓 ZEBRA\n" +
-"Symbol: " + cleanSymbol + "\n" +
-        "Group: " + cleanGroup + "\n" +
-        "Price: " + price + "\n" +
-        "Time: " + formatDateTime(ts);
-
-    if (level && level !== "n/a") {
-        msg += "\nLevel: " + level;
-    }
-
-    if (direction && direction !== "n/a") {
-        msg += "\nDirection: " + direction;
-    }
-
-    if (timeframe && timeframe !== "n/a") {
-        msg += "\nTimeframe: " + timeframe;
-    }
-
-    if (source && source !== "n/a") {
-        msg += "\nSource: " + source;
-    }
-
-    if (note && note !== "n/a") {
-        msg += "\n\nNote:\n" + note;
-    }
-    sendToTelegram2(msg);
-}
-
-
+// ==========================================================
+//  KANGAROO ^ ECOSYSTEM
 
 // ==========================================================
 //  KANGAROO ^ ECOSYSTEM
@@ -3915,6 +4010,9 @@ app.post("/incoming", (req, res) => {
         // Runs before isolated ecosystem returns so #, ~, @ and ^ can all be caught.
         // $ and normal are ignored inside processBlackPanther.
         processBlackPanther(symbol, group, ts, body);
+        // 🦓 ZEBRA global NORMAL + special ecosystem detector.
+        // Runs before isolated ecosystem returns so normal, #, ~, @, ^ and $ can all be caught.
+        processZebraEcosystem(symbol, group, ts, body);
 
 
 
@@ -3951,7 +4049,7 @@ app.post("/incoming", (req, res) => {
         // Separate non-manual ecosystem. Must not enter normal/hash logic.
         if (isZebra) {
             processBoom(symbol, group, ts);
-            processZebraEcosystem(symbol, group, ts, body);
+        // processZebraEcosystem moved to global NORMAL + special detector
             saveState();
             return res.sendStatus(200);
         }
