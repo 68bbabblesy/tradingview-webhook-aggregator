@@ -992,88 +992,182 @@ function getRecentHashBefore(symbol, ts, windowMs) {
 }
 
 // ==========================================================
-//  BAZOOKA (BASIC HASH REPORTER)
+//  BAZOOKA — HASH-INVOLVED CROSS DETECTOR
 //  Bot 4
 //
 //  Rule:
-//    - Any group starting with #
-//    - Same alert reports immediately
-//    - No 5-minute cluster
-//    - No count logic
-//    - No WAKANDA scanner
+//    - Same symbol
+//    - Any 2 alerts within 1 hour
+//    - At least ONE alert must be # ecosystem
+//
+//  Allowed examples:
+//    - # + NORMAL
+//    - # + ~
+//    - # + ^
+//    - # + @
+//    - # + $
+//    - # + #
+//
+//  Note:
+//    - This replaces the old "every # reports immediately" behaviour.
 // ==========================================================
 
-// Kept for persistence compatibility only.
+const BAZOOKA_CROSS_WINDOW_MS = 60 * 60 * 1000; // 1 hour
+
+// bazookaState[symbol] = {
+//   events: [{ ecosystem, group, time, price }],
+//   lastSentKey: string
+// }
 let bazookaState = persisted.bazookaState || {};
 
-function isBazookaHashGroup(group) {
-    return String(group || "").trim().startsWith("#");
+function bazookaEcosystemFromGroup(group) {
+    const raw = String(group || "").trim().toUpperCase();
+
+    if (!raw) return "";
+
+    if (raw.startsWith("#")) return "HASH";
+    if (raw.startsWith("~")) return "ZEBRA";
+    if (raw.startsWith("^")) return "KANGAROO";
+    if (raw.startsWith("@")) return "MANUAL";
+    if (raw.startsWith("$")) return "DOLLAR";
+
+    return "NORMAL";
 }
 
-function bazookaField(body, keys, fallback = "n/a") {
-    for (const key of keys) {
-        const value = body?.[key];
+function getBazookaSymbolState(symbol) {
+    const current = bazookaState[symbol];
 
-        if (
-            value !== undefined &&
-            value !== null &&
-            String(value).trim() !== ""
-        ) {
-            return String(value).trim();
-        }
+    const invalid =
+        !current ||
+        typeof current !== "object" ||
+        Array.isArray(current) ||
+        !Array.isArray(current.events);
+
+    if (invalid) {
+        bazookaState[symbol] = {
+            events: [],
+            lastSentKey: ""
+        };
     }
 
-    return fallback;
+    return bazookaState[symbol];
+}
+
+function bazookaPairKey(a, b) {
+    return [
+        a.ecosystem + ":" + a.group + ":" + a.time,
+        b.ecosystem + ":" + b.group + ":" + b.time
+    ].sort().join("|");
+}
+
+function bazookaEventLine(e, index) {
+    return (
+        (index + 1) + ") " +
+        e.ecosystem +
+        " | " + e.group +
+        " | Price " + (e.price ?? "n/a") +
+        " @ " + formatDateTime(e.time)
+    );
+}
+
+function pruneBazookaMemory(ts) {
+    if (!bazookaState || typeof bazookaState !== "object") return;
+
+    const cutoff = ts - (2 * BAZOOKA_CROSS_WINDOW_MS);
+
+    for (const sym of Object.keys(bazookaState)) {
+        const st = bazookaState[sym];
+
+        if (!st || typeof st !== "object" || !Array.isArray(st.events)) {
+            delete bazookaState[sym];
+            continue;
+        }
+
+        st.events = st.events.filter(e => e && typeof e.time === "number" && e.time >= cutoff);
+
+        if (!st.events.length) {
+            delete bazookaState[sym];
+        }
+    }
 }
 
 function processBazooka(symbol, group, ts, body = {}) {
 
     if (!symbol || !group) return;
-    if (!isBazookaHashGroup(group)) return;
 
-    const cleanGroup = String(group || "").trim().toUpperCase();
-    const cleanSymbol = symbol || normalizeSymbol(body?.symbol) || normalizeSymbol(body?.ticker) || "n/a";
+    const rawGroup = String(group || "").trim();
+    const ecosystem = bazookaEcosystemFromGroup(rawGroup);
 
-    const price = bazookaField(body, ["price", "close", "current_price"]);
-    const kind = bazookaField(body, ["kind", "type", "signal"], "");
-    const range = bazookaField(body, ["range"], "");
-    const windowName = bazookaField(body, ["window"], "");
-    const layer = bazookaField(body, ["layer"], "");
-    const note = bazookaField(body, ["note", "message", "reason", "context"], "");
+    if (!ecosystem) return;
 
-    let msg =
-        "💥 BAZOOKA\n" +
-        "Mode: BASIC HASH REPORT\n" +
-        "Symbol: " + cleanSymbol + "\n" +
-        "Group: " + cleanGroup + "\n" +
-        "Price: " + price + "\n" +
-        "Time: " + formatDateTime(ts);
+    const state = getBazookaSymbolState(symbol);
 
-    if (kind && kind !== "n/a") {
-        msg += "\nKind: " + kind;
+    const current = {
+        ecosystem,
+        group: rawGroup,
+        time: ts,
+        price:
+            body?.price ??
+            body?.close ??
+            body?.current_price ??
+            "n/a"
+    };
+
+    const cutoff = ts - BAZOOKA_CROSS_WINDOW_MS;
+
+    state.events = state.events
+        .filter(e =>
+            e &&
+            typeof e.time === "number" &&
+            e.time >= cutoff
+        )
+        .sort((a, b) => a.time - b.time);
+
+    // Find latest prior event where at least one side is HASH.
+    // This allows # + other ecosystem AND # + #.
+    const prior = state.events
+        .filter(e => e.ecosystem === "HASH" || current.ecosystem === "HASH")
+        .sort((a, b) => b.time - a.time)[0];
+
+    if (prior) {
+        const gapMs = Math.abs(ts - prior.time);
+
+        if (gapMs <= BAZOOKA_CROSS_WINDOW_MS) {
+            const first = prior.time <= current.time ? prior : current;
+            const second = prior.time <= current.time ? current : prior;
+            const pairKey = bazookaPairKey(first, second);
+
+            if (state.lastSentKey !== pairKey) {
+                const gapMin = Math.floor(gapMs / 60000);
+                const gapSec = Math.floor((gapMs % 60000) / 1000);
+
+                sendToTelegram4(
+                    "💥 BAZOOKA\n" +
+                    "Rule: # involved within 1 hour\n" +
+                    "Allowed: # + NORMAL, # + ~, # + ^, # + @, # + $, # + #\n" +
+                    "Symbol: " + symbol + "\n" +
+                    "Span: " + gapMin + "m " + gapSec + "s\n\n" +
+                    "Alerts:\n" +
+                    bazookaEventLine(first, 0) + "\n" +
+                    bazookaEventLine(second, 1)
+                );
+
+                state.lastSentKey = pairKey;
+            }
+        }
     }
 
-    if (range && range !== "n/a") {
-        msg += "\nRange: " + range;
+    state.events.push(current);
+
+    if (state.events.length > 100) {
+        state.events = state.events.slice(-100);
     }
 
-    if (windowName && windowName !== "n/a") {
-        msg += "\nWindow: " + windowName;
-    }
-
-    if (layer && layer !== "n/a") {
-        msg += "\nLayer: " + layer;
-    }
-
-    if (note && note !== "n/a") {
-        msg += "\n\nNote:\n" + note;
-    }
-
-    sendToTelegram4(msg);
+    pruneBazookaMemory(ts);
     saveState();
 }
 
-// Old activation link remains dead.
+// Old activation link kept dead for compatibility.
 function activateBazooka(symbol, source, sourceTime, sourceGroup) {
     return;
 }
@@ -4013,6 +4107,9 @@ app.post("/incoming", (req, res) => {
         // 🦓 ZEBRA global NORMAL + special ecosystem detector.
         // Runs before isolated ecosystem returns so normal, #, ~, @, ^ and $ can all be caught.
         processZebraEcosystem(symbol, group, ts, body);
+        // 💥 BAZOOKA global HASH-involved detector.
+        // Runs before isolated ecosystem returns so #, normal, ~, @, ^ and $ can all be caught.
+        processBazooka(symbol, group, ts, body);
 
 
 
@@ -4121,7 +4218,7 @@ if (!isHash) {
     processGodzilla(symbol, group, ts);
 
     if (typeof processBazooka === "function") {
-        processBazooka(symbol, group, ts, body);
+        // processBazooka moved to global HASH-involved detector
     }
 
     // WAKANDA disabled by request. BAZOOKA now reports every # alert.
