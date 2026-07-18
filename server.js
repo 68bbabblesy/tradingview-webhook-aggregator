@@ -281,7 +281,7 @@ function pruneStateBeforeSave() {
     // Hard prune combo repeat states to 2h + small buffer.
     pruneCompactComboState(kookyComboState, ts, 2 * 60 * 60 * 1000);
     pruneCompactComboState(speshComboState, ts, 2 * 60 * 60 * 1000);
-    pruneCompactComboState(cobraComboState, ts, 2 * 60 * 60 * 1000);
+    pruneCobraRepeatState(cobraComboState, ts, 60 * 60 * 1000);
 
     // Telegram outbox cap.
     if (Array.isArray(telegramOutbox) && telegramOutbox.length > TELEGRAM_OUTBOX_MAX) {
@@ -316,6 +316,45 @@ function pruneCompactComboState(state, ts, windowMs) {
         }
     }
 }
+
+
+function pruneCobraRepeatState(state, ts, windowMs) {
+    if (!state || typeof state !== "object") return;
+
+    const cutoff = ts - windowMs - (5 * 60 * 1000);
+
+    for (const sym of Object.keys(state)) {
+        const st = state[sym];
+
+        if (!st || typeof st !== "object" || Array.isArray(st)) {
+            delete state[sym];
+            continue;
+        }
+
+        if (!Array.isArray(st.events)) {
+            delete state[sym];
+            continue;
+        }
+
+        st.events = st.events.filter(e =>
+            e &&
+            typeof e.time === "number" &&
+            e.time >= cutoff &&
+            e.ecosystem &&
+            e.family
+        );
+
+        if (!st.events.length) {
+            delete state[sym];
+            continue;
+        }
+
+        if (typeof st.lastSentKey !== "string") {
+            st.lastSentKey = "";
+        }
+    }
+}
+
 
 // Load previous state
 const persisted = loadState();
@@ -3289,7 +3328,7 @@ function processCobra(symbol, group, ts, body = {}) {
     //   37A       => NORMAL family 37
     //
     // If no number exists, fallback to first text chunk.
-    const numMatch = groupBody.match(/^(\\d+)/);
+    const numMatch = groupBody.match(/^(\d+)/);
     const wordMatch = groupBody.match(/^([A-Z]+)/);
 
     const family = numMatch
