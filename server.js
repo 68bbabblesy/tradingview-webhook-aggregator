@@ -1038,23 +1038,29 @@ function getRecentHashBefore(symbol, ts, windowMs) {
 //    - Same symbol
 //    - Any 2 alerts within 1 hour
 //    - At least ONE alert must be # ecosystem
+//    - EXCLUDE same ecosystem + same family repeats,
+//      because those belong to COBRA only.
 //
 //  Allowed examples:
+//    - #14 + #15
 //    - # + NORMAL
 //    - # + ~
 //    - # + ^
 //    - # + @
 //    - # + $
-//    - # + #
+//
+//  Blocked examples:
+//    - #14 + #14
+//    - #14_TOP + #14_BOTTOM
 //
 //  Note:
-//    - This replaces the old "every # reports immediately" behaviour.
+//    - This prevents duplicate COBRA matches from also appearing in BAZOOKA.
 // ==========================================================
 
 const BAZOOKA_CROSS_WINDOW_MS = 60 * 60 * 1000; // 1 hour
 
 // bazookaState[symbol] = {
-//   events: [{ ecosystem, group, time, price }],
+//   events: [{ ecosystem, family, group, time, price }],
 //   lastSentKey: string
 // }
 let bazookaState = persisted.bazookaState || {};
@@ -1071,6 +1077,40 @@ function bazookaEcosystemFromGroup(group) {
     if (raw.startsWith("$")) return "DOLLAR";
 
     return "NORMAL";
+}
+
+function bazookaFamilyFromGroup(group) {
+    const raw = String(group || "").trim().toUpperCase();
+    if (!raw) return "";
+
+    const ecosystem = bazookaEcosystemFromGroup(raw);
+    const groupBody = ecosystem === "NORMAL" ? raw : raw.slice(1);
+
+    // Family = first number after ecosystem character.
+    // Examples:
+    //   #14       => 14
+    //   #14_TOP   => 14
+    //   ~1_TOP    => 1
+    //   37A       => 37
+    //
+    // If no number exists, fallback to first text chunk.
+    const numMatch = groupBody.match(/^(\d+)/);
+    const wordMatch = groupBody.match(/^([A-Z]+)/);
+
+    return numMatch
+        ? numMatch[1]
+        : wordMatch
+            ? wordMatch[1]
+            : groupBody;
+}
+
+function isBazookaCobraDuplicate(a, b) {
+    return (
+        a &&
+        b &&
+        String(a.ecosystem) === String(b.ecosystem) &&
+        String(a.family) === String(b.family)
+    );
 }
 
 function getBazookaSymbolState(symbol) {
@@ -1094,8 +1134,8 @@ function getBazookaSymbolState(symbol) {
 
 function bazookaPairKey(a, b) {
     return [
-        a.ecosystem + ":" + a.group + ":" + a.time,
-        b.ecosystem + ":" + b.group + ":" + b.time
+        a.ecosystem + ":" + a.family + ":" + a.group + ":" + a.time,
+        b.ecosystem + ":" + b.family + ":" + b.group + ":" + b.time
     ].sort().join("|");
 }
 
@@ -1103,6 +1143,7 @@ function bazookaEventLine(e, index) {
     return (
         (index + 1) + ") " +
         e.ecosystem +
+        " | Family " + e.family +
         " | " + e.group +
         " | Price " + (e.price ?? "n/a") +
         " @ " + formatDateTime(e.time)
@@ -1122,7 +1163,13 @@ function pruneBazookaMemory(ts) {
             continue;
         }
 
-        st.events = st.events.filter(e => e && typeof e.time === "number" && e.time >= cutoff);
+        st.events = st.events.filter(e =>
+            e &&
+            typeof e.time === "number" &&
+            e.time >= cutoff &&
+            e.ecosystem &&
+            e.family
+        );
 
         if (!st.events.length) {
             delete bazookaState[sym];
@@ -1136,13 +1183,15 @@ function processBazooka(symbol, group, ts, body = {}) {
 
     const rawGroup = String(group || "").trim();
     const ecosystem = bazookaEcosystemFromGroup(rawGroup);
+    const family = bazookaFamilyFromGroup(rawGroup);
 
-    if (!ecosystem) return;
+    if (!ecosystem || !family) return;
 
     const state = getBazookaSymbolState(symbol);
 
     const current = {
         ecosystem,
+        family,
         group: rawGroup,
         time: ts,
         price:
@@ -1158,14 +1207,22 @@ function processBazooka(symbol, group, ts, body = {}) {
         .filter(e =>
             e &&
             typeof e.time === "number" &&
-            e.time >= cutoff
+            e.time >= cutoff &&
+            e.ecosystem &&
+            e.family
         )
         .sort((a, b) => a.time - b.time);
 
-    // Find latest prior event where at least one side is HASH.
-    // This allows # + other ecosystem AND # + #.
+    // Find latest prior event where:
+    //   1) at least one side is HASH
+    //   2) it is NOT a same-ecosystem + same-family repeat
+    //
+    // This keeps # involved logic, but blocks COBRA duplicates.
     const prior = state.events
-        .filter(e => e.ecosystem === "HASH" || current.ecosystem === "HASH")
+        .filter(e =>
+            (e.ecosystem === "HASH" || current.ecosystem === "HASH") &&
+            !isBazookaCobraDuplicate(e, current)
+        )
         .sort((a, b) => b.time - a.time)[0];
 
     if (prior) {
@@ -1182,8 +1239,9 @@ function processBazooka(symbol, group, ts, body = {}) {
 
                 sendToTelegram4(
                     "💥 BAZOOKA\n" +
-                    "Rule: # involved within 1 hour\n" +
-                    "Allowed: # + NORMAL, # + ~, # + ^, # + @, # + $, # + #\n" +
+                    "Rule: # involved within 1 hour, excluding COBRA duplicates\n" +
+                    "Allowed: # + NORMAL, # + ~, # + ^, # + @, # + $, # + different # family\n" +
+                    "Blocked: same ecosystem + same family repeats\n" +
                     "Symbol: " + symbol + "\n" +
                     "Span: " + gapMin + "m " + gapSec + "s\n\n" +
                     "Alerts:\n" +
