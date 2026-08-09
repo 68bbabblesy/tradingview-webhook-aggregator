@@ -1909,6 +1909,174 @@ function processSalsa(symbol, group, ts, body = {}) {
         body?.level ??
         "";
 
+    const price = Number(
+        String(priceRaw)
+            .replace(/,/g, "")
+            .replace(/[^0-9.-]/g, "")
+    );
+
+    if (!Number.isFinite(price) || price <= 0) return;
+
+    const SALSA_MAX_GAP_MS = 30 * 60 * 1000;       // 30 minutes
+    const SALSA_MAX_PRICE_DIFF_PCT = 0.7;          // less than 0.7%
+
+    function salsaEcosystemFromGroup(g) {
+        const raw = String(g || "").trim().toUpperCase();
+
+        if (raw.startsWith("#")) return "HASH";
+        if (raw.startsWith("~")) return "ZEBRA";
+        if (raw.startsWith("^")) return "KANGAROO";
+        if (raw.startsWith("@")) return "MANUAL";
+        if (raw.startsWith("$")) return "DOLLAR";
+
+        return "NORMAL";
+    }
+
+    function salsaPriceDiffPct(a, b) {
+        const base = Math.abs(Number(a));
+        const other = Math.abs(Number(b));
+
+        if (!base || !other) return NaN;
+
+        return Math.abs(other - base) / base * 100;
+    }
+
+    function salsaEventLine(e, index) {
+        return (
+            (index + 1) + ") " +
+            e.ecosystem +
+            " | " + e.group +
+            " | Price " + e.price +
+            " @ " + formatDateTime(e.time)
+        );
+    }
+
+    if (
+        !salsaMemory[symbol] ||
+        typeof salsaMemory[symbol] !== "object" ||
+        Array.isArray(salsaMemory[symbol])
+    ) {
+        salsaMemory[symbol] = {
+            events: [],
+            lastSentKey: ""
+        };
+    }
+
+    if (!Array.isArray(salsaMemory[symbol].events)) {
+        salsaMemory[symbol] = {
+            events: [],
+            lastSentKey: ""
+        };
+    }
+
+    const state = salsaMemory[symbol];
+
+    const current = {
+        ecosystem: salsaEcosystemFromGroup(rawGroup),
+        group: rawGroup,
+        time: ts,
+        price
+    };
+
+    const cutoff = ts - SALSA_MAX_GAP_MS - (5 * 60 * 1000);
+
+    state.events = state.events
+        .filter(e =>
+            e &&
+            typeof e.time === "number" &&
+            e.time >= cutoff &&
+            Number.isFinite(Number(e.price)) &&
+            Number(e.price) > 0 &&
+            e.group
+        )
+        .sort((a, b) => a.time - b.time);
+
+    const prior = state.events
+        .map(e => {
+            const gapMs = Math.abs(ts - e.time);
+            const diffPct = salsaPriceDiffPct(e.price, current.price);
+
+            return {
+                event: e,
+                gapMs,
+                diffPct
+            };
+        })
+        .filter(x =>
+            x.gapMs <= SALSA_MAX_GAP_MS &&
+            Number.isFinite(x.diffPct) &&
+            x.diffPct < SALSA_MAX_PRICE_DIFF_PCT
+        )
+        .sort((a, b) => b.event.time - a.event.time)[0];
+
+    if (prior) {
+        const first = prior.event.time <= current.time ? prior.event : current;
+        const second = prior.event.time <= current.time ? current : prior.event;
+
+        const pairKey = [
+            first.ecosystem + ":" + first.group + ":" + first.price + ":" + first.time,
+            second.ecosystem + ":" + second.group + ":" + second.price + ":" + second.time
+        ].sort().join("|");
+
+        if (state.lastSentKey !== pairKey) {
+            const gapMin = Math.floor(prior.gapMs / 60000);
+            const gapSec = Math.floor((prior.gapMs % 60000) / 1000);
+
+            sendToTelegram8(
+                "💃 SALSA\n" +
+                "Rule: any ecosystem alerts within 30 minutes with price difference under 0.7%\n" +
+                "Symbol: " + symbol + "\n" +
+                "Gap: " + gapMin + "m " + gapSec + "s\n" +
+                "Price difference: " + prior.diffPct.toFixed(3) + "%\n\n" +
+                "Alerts:\n" +
+                salsaEventLine(first, 0) + "\n" +
+                salsaEventLine(second, 1)
+            );
+
+            state.lastSentKey = pairKey;
+        }
+    }
+
+    state.events.push(current);
+
+    if (state.events.length > 200) {
+        state.events = state.events.slice(-200);
+    }
+
+    // Light cleanup.
+    if (Object.keys(salsaMemory).length > 5000) {
+        for (const sym of Object.keys(salsaMemory)) {
+            const st = salsaMemory[sym];
+
+            if (!st || typeof st !== "object" || !Array.isArray(st.events)) {
+                delete salsaMemory[sym];
+                continue;
+            }
+
+            st.events = st.events.filter(e => e && e.time >= cutoff);
+
+            if (!st.events.length) {
+                delete salsaMemory[sym];
+            }
+        }
+    }
+
+    saveState();
+}) {
+
+    if (!symbol || !group) return;
+
+    const rawGroup = String(group || "").trim();
+    if (!rawGroup) return;
+
+    const priceRaw =
+        body?.price ??
+        body?.close ??
+        body?.current_price ??
+        body?.alert_price ??
+        body?.level ??
+        "";
+
     const price = Number(String(priceRaw).replace(/,/g, "").replace(/[^0-9.\-]/g, ""));
 
     if (!Number.isFinite(price) || price <= 0) return;
@@ -2022,7 +2190,7 @@ function processSalsa(symbol, group, ts, body = {}) {
 
             sendToTelegram8(
                 "💃 SALSA\n" +
-                "Rule: any ecosystem alerts 20m to 6h apart with price difference under 0.7%\n" +
+                "Rule: any ecosystem alerts within 30 minutes with price difference under 0.7%\n" +
                 "Symbol: " + symbol + "\n" +
                 "Gap: " + gapMin + "m " + gapSec + "s\n" +
                 "Price difference: " + prior.diffPct.toFixed(3) + "%\n\n" +
@@ -4625,7 +4793,7 @@ app.post("/incoming", (req, res) => {
         // 💥 BAZOOKA global HASH-involved detector.
         // Runs before isolated ecosystem returns so #, normal, ~, @, ^ and $ can all be caught.
         processBazooka(symbol, group, ts, body);
-        // 💃 SALSA global 20m-to-6h price proximity detector.
+        // 💃 SALSA global 30min price proximity detector.
         // Runs before isolated ecosystem returns so normal, #, ~, @, ^ and $ can all be caught.
         processSalsa(symbol, group, ts, body);
         // 🐍 MAMBA global 90m-to-7h price proximity detector.
