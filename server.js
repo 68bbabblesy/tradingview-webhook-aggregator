@@ -1817,24 +1817,192 @@ function processBababia(symbol, group, ts) {
 }
 
 // ==========================================================
-//  MAMAMIA — NON-consecutive family pair
+//  MAMAMIA — TRIPWIRE WALL DECISION BOT
 //  Bot 15
+//
+//  Refactor note:
+//    - Old MAMAMIA non-consecutive family-pair logic is removed.
+//    - MAMAMIA now reads the fib scanner JSON payload:
+//        type, count, matched_tfs, matched_details, group, price
+//    - It converts clustered matched_details into a practical wall/read message:
+//        WALL BROKEN UP, WALL REJECTED DOWN, or MIXED WALL.
 // ==========================================================
 
-function processMAMAMIA(symbol, group, ts) {
-    processFamilyPairTwoSlotDetector(
-        {
-            name: "MAMAMIA",
-            emoji: "🎶",
-            mode: "NON_CONSECUTIVE",
-            ruleLabel: "family numbers must be non-consecutive",
-            storeKey: "__MAMAMIA_FAMILY_PAIR_2SLOT_STATE__",
-            sender: sendToTelegram15
-        },
-        symbol,
-        group,
-        ts
-    );
+function mamamiaCleanText(value, fallback = "n/a") {
+    if (value === undefined || value === null) return fallback;
+    const text = String(value).trim();
+    return text ? text : fallback;
+}
+
+function mamamiaNumber(value) {
+    if (value === undefined || value === null || value === "") return NaN;
+    const n = Number(value);
+    return Number.isFinite(n) ? n : NaN;
+}
+
+function mamamiaPrice(value) {
+    const n = mamamiaNumber(value);
+    if (!Number.isFinite(n)) return "n/a";
+
+    const abs = Math.abs(n);
+    const decimals = abs >= 100 ? 2 : abs >= 1 ? 5 : 8;
+
+    return n
+        .toFixed(decimals)
+        .replace(/0+$/, "")
+        .replace(/\.$/, "");
+}
+
+function mamamiaPercent(value) {
+    const n = mamamiaNumber(value);
+    if (!Number.isFinite(n)) return "n/a";
+    return n.toFixed(3).replace(/0+$/, "").replace(/\.$/, "") + "%";
+}
+
+function mamamiaParseMatchedDetails(rawDetails) {
+    const raw = mamamiaCleanText(rawDetails, "");
+    if (!raw) return [];
+
+    return raw
+        .split(",")
+        .map(part => part.trim())
+        .filter(Boolean)
+        .map(part => {
+            // Expected examples:
+            //   13H=0.117 RET UP @ 0.007111
+            //   6H=HIGH DOWN @ 17.24
+            const m = part.match(/^([^=]+)=\s*(.*?)\s+(UP|DOWN)\s+@\s+([-+]?\d*\.?\d+(?:e[-+]?\d+)?)$/i);
+
+            if (!m) {
+                return { raw: part, parsed: false };
+            }
+
+            const price = Number(m[4]);
+
+            return {
+                raw: part,
+                parsed: true,
+                tf: m[1].trim(),
+                level: m[2].trim().replace(/\s+/g, " ").toUpperCase(),
+                direction: m[3].toUpperCase(),
+                price,
+                priceText: m[4]
+            };
+        });
+}
+
+function mamamiaUnique(list) {
+    return [...new Set((list || []).filter(Boolean))];
+}
+
+function mamamiaBuildWallRead(direction, levelSummary) {
+    if (direction === "UP") {
+        return {
+            title: "WALL BROKEN UP",
+            bias: "BUY-SIDE CONTINUATION WATCH",
+            riskName: "Risk floor",
+            failure: "Idea fails if price loses the tripwire band",
+            plain: "Price broke upward through the stacked " + levelSummary + " wall. The wall now needs to act like a floor."
+        };
+    }
+
+    if (direction === "DOWN") {
+        return {
+            title: "WALL REJECTED DOWN",
+            bias: "SELL-SIDE REJECTION WATCH",
+            riskName: "Risk ceiling",
+            failure: "Idea fails if price reclaims the tripwire band",
+            plain: "Price rejected downward through the stacked " + levelSummary + " wall. The wall now needs to act like a ceiling."
+        };
+    }
+
+    return {
+        title: "MIXED WALL",
+        bias: "WAIT / AUDIT",
+        riskName: "Tripwire band",
+        failure: "Mixed directions, so no clean read yet",
+        plain: "Matched TFs are not all pointing the same way. Treat this as an audit alert, not a clean decision."
+    };
+}
+
+function processMAMAMIA(symbol, group, ts, body = {}) {
+
+    // Only the fib scanner payload should enter the new MAMAMIA.
+    // This fully removes the old non-consecutive family-pair behaviour from MAMAMIA.
+    const payloadType = mamamiaCleanText(body.type, "").toUpperCase();
+    if (payloadType !== "FIB_LEVEL_SCANNER") return;
+
+    const details = mamamiaParseMatchedDetails(body.matched_details);
+    const parsed = details.filter(d => d.parsed && Number.isFinite(d.price));
+
+    if (!parsed.length) return;
+
+    const cleanSymbol = symbol || normalizeSymbol(body.symbol) || "n/a";
+    const cleanGroup = mamamiaCleanText(body.group || group, "n/a");
+    const count = mamamiaCleanText(body.count, String(parsed.length));
+    const minMatches = mamamiaCleanText(body.min_matches, "n/a");
+    const matchedTfs = mamamiaCleanText(body.matched_tfs, parsed.map(d => d.tf).join(","));
+    const alertPrice = mamamiaPrice(body.price);
+
+    const prices = parsed.map(d => d.price).sort((a, b) => a - b);
+    const low = prices[0];
+    const high = prices[prices.length - 1];
+    const bandWidth = high - low;
+
+    const alertPriceNum = mamamiaNumber(body.price);
+    const bandWidthPct = Number.isFinite(alertPriceNum) && alertPriceNum !== 0
+        ? (bandWidth / Math.abs(alertPriceNum)) * 100
+        : NaN;
+
+    const upCount = parsed.filter(d => d.direction === "UP").length;
+    const downCount = parsed.filter(d => d.direction === "DOWN").length;
+    const mainDirection = upCount > 0 && downCount === 0
+        ? "UP"
+        : downCount > 0 && upCount === 0
+            ? "DOWN"
+            : "MIXED";
+
+    const levels = mamamiaUnique(parsed.map(d => d.level));
+    const levelSummary = levels.length === 1 ? levels[0] : "MULTI-LEVEL";
+    const wallRead = mamamiaBuildWallRead(mainDirection, levelSummary);
+
+    const riskLine = mainDirection === "UP"
+        ? mamamiaPrice(low)
+        : mainDirection === "DOWN"
+            ? mamamiaPrice(high)
+            : mamamiaPrice(low) + " - " + mamamiaPrice(high);
+
+    const compactDetails = parsed
+        .map(d => d.tf + " " + d.level + " " + d.direction + " @ " + mamamiaPrice(d.price))
+        .join(" | ");
+
+    const rawDetails = mamamiaCleanText(body.matched_details, "n/a");
+
+    const msg =
+        "🎶 MAMAMIA — TRIPWIRE WALL BOT\n" +
+        wallRead.title + "\n" +
+        "Symbol: " + cleanSymbol + "\n" +
+        "Group: " + cleanGroup + "\n" +
+        "Price: " + alertPrice + "\n" +
+        "Time: " + formatDateTime(ts) + "\n\n" +
+
+        "Count: " + count + " / Min " + minMatches + "\n" +
+        "Matched TFs: " + matchedTfs + "\n" +
+        "Level focus: " + levelSummary + "\n" +
+        "Direction: " + mainDirection + "  |  UP " + upCount + " / DOWN " + downCount + "\n\n" +
+
+        "Tripwire band: " + mamamiaPrice(low) + " - " + mamamiaPrice(high) + "\n" +
+        "Band width: " + mamamiaPrice(bandWidth) + " (" + mamamiaPercent(bandWidthPct) + ")\n" +
+        wallRead.riskName + ": " + riskLine + "\n\n" +
+
+        "Decision: " + wallRead.bias + "\n" +
+        "Read: " + wallRead.plain + "\n" +
+        "Failure: " + wallRead.failure + "\n\n" +
+
+        "Audit: " + compactDetails + "\n\n" +
+        "Raw matched_details:\n" + rawDetails;
+
+    sendToTelegram15(msg);
 }
 
 
@@ -4742,7 +4910,7 @@ if (!isHash) {
         //processTesting(symbol, group, ts);
         //processAudit(symbol, group, ts, body);
         processBababia(symbol, group, ts);
-        processMAMAMIA(symbol, group, ts);
+        processMAMAMIA(symbol, group, ts, body);
         // processZoneforge(symbol, group, ts, body); // disabled temporarily
         // processAnchorforge(symbol, group, ts, body); // disabled temporarily for CABAL Bot3
         //processWakanda(symbol, group, ts, body);
