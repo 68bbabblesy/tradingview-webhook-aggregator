@@ -2513,6 +2513,189 @@ function processMamba(symbol, group, ts, body = {}) {
     const rawGroup = String(group || "").trim();
     if (!rawGroup) return;
 
+    const MAMBA_FAMILY_WINDOW_MS = 5 * 60 * 1000; // 5 minutes
+
+    function mambaEcosystemFromGroup(g) {
+        const raw = String(g || "").trim().toUpperCase();
+
+        if (raw.startsWith("#")) return "HASH";
+        if (raw.startsWith("~")) return "ZEBRA";
+        if (raw.startsWith("^")) return "KANGAROO";
+        if (raw.startsWith("@")) return "MANUAL";
+        if (raw.startsWith("$")) return "DOLLAR";
+
+        return "NORMAL";
+    }
+
+    function mambaFamilyFromGroup(g) {
+        const raw = String(g || "").trim().toUpperCase();
+        if (!raw) return "";
+
+        const ecosystem = mambaEcosystemFromGroup(raw);
+        const groupBody = ecosystem === "NORMAL" ? raw : raw.slice(1);
+
+        // Family = first number after ecosystem character.
+        // Examples:
+        //   #14       => 14
+        //   #14_TOP   => 14
+        //   ~1_TOP    => 1
+        //   37A       => 37
+        //
+        // If no number exists, fallback to first text chunk.
+        const numMatch = groupBody.match(/^(\d+)/);
+        const wordMatch = groupBody.match(/^([A-Z]+)/);
+
+        return numMatch
+            ? numMatch[1]
+            : wordMatch
+                ? wordMatch[1]
+                : groupBody;
+    }
+
+    function mambaCleanPrice(body) {
+        const raw =
+            body?.price ??
+            body?.close ??
+            body?.current_price ??
+            body?.alert_price ??
+            body?.level ??
+            "";
+
+        const n = Number(
+            String(raw)
+                .replace(/,/g, "")
+                .replace(/[^0-9.-]/g, "")
+        );
+
+        return Number.isFinite(n) && n > 0 ? String(n) : "n/a";
+    }
+
+    function mambaEventLine(e, index) {
+        return (
+            (index + 1) + ") " +
+            e.ecosystem +
+            " | Family " + e.family +
+            " | " + e.group +
+            " | Price " + (e.price ?? "n/a") +
+            " @ " + formatDateTime(e.time)
+        );
+    }
+
+    const ecosystem = mambaEcosystemFromGroup(rawGroup);
+    const family = mambaFamilyFromGroup(rawGroup);
+
+    if (!family) return;
+
+    if (
+        !mambaMemory[symbol] ||
+        typeof mambaMemory[symbol] !== "object" ||
+        Array.isArray(mambaMemory[symbol])
+    ) {
+        mambaMemory[symbol] = {
+            events: [],
+            lastSentKey: ""
+        };
+    }
+
+    if (!Array.isArray(mambaMemory[symbol].events)) {
+        mambaMemory[symbol] = {
+            events: [],
+            lastSentKey: ""
+        };
+    }
+
+    const state = mambaMemory[symbol];
+
+    const current = {
+        ecosystem,
+        family,
+        group: rawGroup,
+        time: ts,
+        price: mambaCleanPrice(body)
+    };
+
+    const cutoff = ts - MAMBA_FAMILY_WINDOW_MS;
+
+    state.events = state.events
+        .filter(e =>
+            e &&
+            typeof e.time === "number" &&
+            e.time >= cutoff &&
+            e.family &&
+            e.group
+        )
+        .sort((a, b) => a.time - b.time);
+
+    // Find latest prior alert on the same symbol with a DIFFERENT family.
+    const prior = state.events
+        .filter(e => String(e.family) !== String(current.family))
+        .sort((a, b) => b.time - a.time)[0];
+
+    if (prior) {
+        const gapMs = Math.abs(ts - prior.time);
+
+        if (gapMs <= MAMBA_FAMILY_WINDOW_MS) {
+            const first = prior.time <= current.time ? prior : current;
+            const second = prior.time <= current.time ? current : prior;
+
+            const pairKey = [
+                first.ecosystem + ":" + first.family + ":" + first.group + ":" + first.time,
+                second.ecosystem + ":" + second.family + ":" + second.group + ":" + second.time
+            ].sort().join("|");
+
+            if (state.lastSentKey !== pairKey) {
+                const gapMin = Math.floor(gapMs / 60000);
+                const gapSec = Math.floor((gapMs % 60000) / 1000);
+
+                sendToTelegram6(
+                    "🐍 MAMBA\n" +
+                    "Symbol: " + symbol + "\n" +
+                    "Gap: " + gapMin + "m " + gapSec + "s\n\n" +
+                    "Alerts:\n" +
+                    mambaEventLine(first, 0) + "\n" +
+                    mambaEventLine(second, 1) + "\n\n" +
+                    "Rule: different families within 5 minutes"
+                );
+
+                state.lastSentKey = pairKey;
+            }
+        }
+    }
+
+    state.events.push(current);
+
+    if (state.events.length > 200) {
+        state.events = state.events.slice(-200);
+    }
+
+    // Light cleanup.
+    if (Object.keys(mambaMemory).length > 5000) {
+        const oldCutoff = ts - (2 * MAMBA_FAMILY_WINDOW_MS);
+
+        for (const sym of Object.keys(mambaMemory)) {
+            const st = mambaMemory[sym];
+
+            if (!st || typeof st !== "object" || !Array.isArray(st.events)) {
+                delete mambaMemory[sym];
+                continue;
+            }
+
+            st.events = st.events.filter(e => e && e.time >= oldCutoff);
+
+            if (!st.events.length) {
+                delete mambaMemory[sym];
+            }
+        }
+    }
+
+    saveState();
+}) {
+
+    if (!symbol || !group) return;
+
+    const rawGroup = String(group || "").trim();
+    if (!rawGroup) return;
+
     const priceRaw =
         body?.price ??
         body?.close ??
@@ -4629,7 +4812,7 @@ app.post("/incoming", (req, res) => {
         // 💃 SALSA global 30min price proximity detector.
         // Runs before isolated ecosystem returns so normal, #, ~, @, ^ and $ can all be caught.
         processSalsa(symbol, group, ts, body);
-        // 🐍 MAMBA global 90m-to-7h price proximity detector.
+        // 🐍 MAMBA global different-family 5min detector.
         // Runs before isolated ecosystem returns so normal, #, ~, @, ^ and $ can all be caught.
         processMamba(symbol, group, ts, body);
 
