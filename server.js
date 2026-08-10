@@ -3065,6 +3065,9 @@ function processBoom(symbol, group, ts) {
 let kookyComboState = persisted.kookyComboState || {};
 const kookyComboRuntime = {};
 
+let speshComboState = persisted.speshComboState || {};
+const speshComboRuntime = {};
+
 function processKooky(symbol, group, ts) {
     processComboRepeatEngine(
         {
