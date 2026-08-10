@@ -3663,17 +3663,17 @@ function processComboRepeatEngine(...args) {
 }
 
 // ==========================================================
-//  COBRA (PERSISTENT — any valid combo repeat)
-//  Condition:
-//    - Same symbol
-//    - 2+ groups within 20 seconds
-//    - Groups allowed: single letters OR number+letter subgroups
-//    - Stores all subset combos size 2+
-//    - Same combo repeats within 2 hours
+//  COBRA — 3 DIFFERENT FAMILIES WITHIN 30 SECONDS
 //  Bot 7
+//
+//  Rule:
+//    - Same symbol
+//    - Any ecosystem + any ecosystem
+//    - 3 separate families required
+//    - All 3 must be within 30 seconds
+//    - No price condition
 // ==========================================================
 
-// cobraComboState[symbol][comboKey] = { time, groups }
 let cobraComboState = persisted.cobraComboState || {};
 const cobraComboRuntime = {};
 
@@ -3682,39 +3682,71 @@ function processCobra(symbol, group, ts, body = {}) {
     if (!symbol || !group) return;
 
     const rawGroup = String(group || "").trim();
-    const upperGroup = rawGroup.toUpperCase();
-
     if (!rawGroup) return;
 
-    const firstChar = upperGroup[0];
+    const COBRA_FAMILY_WINDOW_MS = 30 * 1000; // 30 seconds
+    const COBRA_MIN_FAMILIES = 3;
 
-    const ecosystemMap = {
-        "#": "HASH",
-        "~": "ZEBRA",
-        "^": "KANGAROO",
-        "@": "MANUAL",
-        "$": "DOLLAR"
-    };
+    function cobraEcosystemFromGroup(g) {
+        const raw = String(g || "").trim().toUpperCase();
 
-    const ecosystem = ecosystemMap[firstChar] || "NORMAL";
-    const groupBody = ecosystem === "NORMAL" ? upperGroup : upperGroup.slice(1);
+        if (raw.startsWith("#")) return "HASH";
+        if (raw.startsWith("~")) return "ZEBRA";
+        if (raw.startsWith("^")) return "KANGAROO";
+        if (raw.startsWith("@")) return "MANUAL";
+        if (raw.startsWith("$")) return "DOLLAR";
 
-    // Family = first number after ecosystem character.
-    // Examples:
-    //   #14       => HASH family 14
-    //   #14_TOP   => HASH family 14
-    //   ~1_TOP    => ZEBRA family 1
-    //   37A       => NORMAL family 37
-    //
-    // If no number exists, fallback to first text chunk.
-    const numMatch = groupBody.match(/^(\d+)/);
-    const wordMatch = groupBody.match(/^([A-Z]+)/);
+        return "NORMAL";
+    }
 
-    const family = numMatch
-        ? numMatch[1]
-        : wordMatch
-            ? wordMatch[1]
-            : groupBody;
+    function cobraFamilyFromGroup(g) {
+        const raw = String(g || "").trim().toUpperCase();
+        if (!raw) return "";
+
+        const ecosystem = cobraEcosystemFromGroup(raw);
+        const groupBody = ecosystem === "NORMAL" ? raw : raw.slice(1);
+
+        const numMatch = groupBody.match(/^(\d+)/);
+        const wordMatch = groupBody.match(/^([A-Z]+)/);
+
+        return numMatch
+            ? numMatch[1]
+            : wordMatch
+                ? wordMatch[1]
+                : groupBody;
+    }
+
+    function cobraCleanPrice(b) {
+        const raw =
+            b?.price ??
+            b?.close ??
+            b?.current_price ??
+            b?.alert_price ??
+            b?.level ??
+            "";
+
+        const n = Number(
+            String(raw)
+                .replace(/,/g, "")
+                .replace(/[^0-9.-]/g, "")
+        );
+
+        return Number.isFinite(n) && n > 0 ? String(n) : "n/a";
+    }
+
+    function cobraEventLine(e, index) {
+        return (
+            (index + 1) + ") " +
+            e.ecosystem +
+            " | Family " + e.family +
+            " | " + e.group +
+            " | Price " + (e.price ?? "n/a") +
+            " @ " + formatDateTime(e.time)
+        );
+    }
+
+    const ecosystem = cobraEcosystemFromGroup(rawGroup);
+    const family = cobraFamilyFromGroup(rawGroup);
 
     if (!family) return;
 
@@ -3743,71 +3775,73 @@ function processCobra(symbol, group, ts, body = {}) {
         family,
         group: rawGroup,
         time: ts,
-        price:
-            body?.price ??
-            body?.close ??
-            body?.current_price ??
-            "n/a"
+        price: cobraCleanPrice(body)
     };
 
-    const COBRA_REPEAT_WINDOW_MS = 60 * 60 * 1000; // 1 hour
-    const cutoff = ts - COBRA_REPEAT_WINDOW_MS;
+    const cutoff = ts - COBRA_FAMILY_WINDOW_MS;
 
     state.events = state.events
         .filter(e =>
             e &&
             typeof e.time === "number" &&
             e.time >= cutoff &&
-            e.ecosystem &&
-            e.family
+            e.family &&
+            e.group
         )
         .sort((a, b) => a.time - b.time);
 
-    // COBRA rule:
-    //   same symbol
-    //   same ecosystem
-    //   same family
-    //   repeat within 1 hour
-    //
-    // No TOP requirement.
-    // No different-family match.
-    // No cross-ecosystem match.
-    const prior = state.events
+    const combined = [...state.events, current]
         .filter(e =>
-            String(e.ecosystem) === String(current.ecosystem) &&
-            String(e.family) === String(current.family)
+            e &&
+            typeof e.time === "number" &&
+            e.time >= cutoff &&
+            e.family &&
+            e.group
         )
-        .sort((a, b) => b.time - a.time)[0];
+        .sort((a, b) => b.time - a.time);
 
-    if (prior) {
-        const gapMs = Math.abs(current.time - prior.time);
+    // Pick latest alert from each separate family.
+    const latestByFamily = new Map();
 
-        if (gapMs <= COBRA_REPEAT_WINDOW_MS) {
-            const first = prior.time <= current.time ? prior : current;
-            const second = prior.time <= current.time ? current : prior;
+    for (const e of combined) {
+        const familyKey = String(e.family);
 
-            const pairKey = [
-                first.ecosystem + ":" + first.family + ":" + first.group + ":" + first.time,
-                second.ecosystem + ":" + second.family + ":" + second.group + ":" + second.time
-            ].sort().join("|");
+        if (!latestByFamily.has(familyKey)) {
+            latestByFamily.set(familyKey, e);
+        }
+    }
 
-            if (state.lastSentKey !== pairKey) {
-                const gapMin = Math.floor(gapMs / 60000);
-                const gapSec = Math.floor((gapMs % 60000) / 1000);
+    if (latestByFamily.size >= COBRA_MIN_FAMILIES) {
+        const selected = Array.from(latestByFamily.values())
+            .sort((a, b) => b.time - a.time)
+            .slice(0, COBRA_MIN_FAMILIES)
+            .sort((a, b) => a.time - b.time);
+
+        const spanMs = selected[selected.length - 1].time - selected[0].time;
+
+        if (spanMs <= COBRA_FAMILY_WINDOW_MS) {
+            const alertKey = selected
+                .map(e => e.ecosystem + ":" + e.family + ":" + e.group + ":" + e.time)
+                .sort()
+                .join("|");
+
+            if (state.lastSentKey !== alertKey) {
+                const spanSec = Math.floor(spanMs / 1000);
+                const spanMsRemainder = spanMs % 1000;
+                const families = selected.map(e => e.family).join(", ");
 
                 sendToTelegram7(
                     "🐍 COBRA\n" +
-                    "Rule: same ecosystem + same family repeat within 1 hour\n" +
                     "Symbol: " + symbol + "\n" +
-                    "Ecosystem: " + ecosystem + "\n" +
-                    "Family: " + family + "\n" +
-                    "Span: " + gapMin + "m " + gapSec + "s\n\n" +
+                    "Families: " + families + "\n" +
+                    "Span: " + spanSec + "s " + spanMsRemainder + "ms\n\n" +
                     "Alerts:\n" +
-                    "1) " + first.group + " | Price " + first.price + " @ " + formatDateTime(first.time) + "\n" +
-                    "2) " + second.group + " | Price " + second.price + " @ " + formatDateTime(second.time)
+                    selected.map((e, i) => cobraEventLine(e, i)).join("\n") +
+                    "\n\n" +
+                    "Rule: 3 separate families within 30 seconds"
                 );
 
-                state.lastSentKey = pairKey;
+                state.lastSentKey = alertKey;
             }
         }
     }
@@ -3818,9 +3852,8 @@ function processCobra(symbol, group, ts, body = {}) {
         state.events = state.events.slice(-100);
     }
 
-    // Light cleanup so old symbols do not build up forever.
     if (Object.keys(cobraComboState).length > 5000) {
-        const oldCutoff = ts - (2 * COBRA_REPEAT_WINDOW_MS);
+        const oldCutoff = ts - (2 * COBRA_FAMILY_WINDOW_MS);
 
         for (const sym of Object.keys(cobraComboState)) {
             const st = cobraComboState[sym];
@@ -4598,7 +4631,7 @@ app.post("/incoming", (req, res) => {
         recentHashes.add(hash);
         setTimeout(() => recentHashes.delete(hash), 300000);
 
-        // 🐍 COBRA global same-ecosystem same-family repeat detector.
+        // 🐍 COBRA global 3-family 30sec detector.
         // Runs before isolated ecosystem returns so all ecosystems can be caught.
         processCobra(symbol, group, ts, body);
         // 🟨 YABA global $ cross-ecosystem detector.
@@ -4694,7 +4727,7 @@ if (!isHash) {
         // processYaba moved to global $ cross-ecosystem detector
         // processSalsa moved to global Bot8 price-time detector
         processTango(symbol, group, ts);
-        // processCobra moved to global same-family repeat detector
+        // processCobra moved to global 3-family 30sec detector
         processNeptune(symbol, group, ts);
         // processZulu(symbol, group, ts); // disabled by request
         processMinta(symbol, group, ts);
