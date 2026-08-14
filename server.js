@@ -1917,8 +1917,9 @@ function processSalsa(symbol, group, ts, body = {}) {
 
     if (!Number.isFinite(price) || price <= 0) return;
 
-    const SALSA_MAX_GAP_MS = 30 * 60 * 1000;
-    const SALSA_MAX_PRICE_DIFF_PCT = 0.7;
+    const SALSA_MIN_GAP_MS = 4 * 60 * 1000;        // 4 minutes
+    const SALSA_MAX_GAP_MS = 30 * 60 * 1000;       // 30 minutes
+    const SALSA_MAX_PRICE_DIFF_PCT = 0.3;          // not more than 0.3%
 
     function salsaEcosystemFromGroup(g) {
         const raw = String(g || "").trim().toUpperCase();
@@ -2003,9 +2004,10 @@ function processSalsa(symbol, group, ts, body = {}) {
             };
         })
         .filter(x =>
+            x.gapMs >= SALSA_MIN_GAP_MS &&
             x.gapMs <= SALSA_MAX_GAP_MS &&
             Number.isFinite(x.diffPct) &&
-            x.diffPct < SALSA_MAX_PRICE_DIFF_PCT
+            x.diffPct <= SALSA_MAX_PRICE_DIFF_PCT
         )
         .sort((a, b) => b.event.time - a.event.time)[0];
 
@@ -2024,7 +2026,7 @@ function processSalsa(symbol, group, ts, body = {}) {
 
             sendToTelegram8(
                 "💃 SALSA\n" +
-                "Rule: any ecosystem alerts within 30 minutes with price difference under 0.7%\n" +
+                "Rule: any ecosystem alerts between 4 and 30 minutes with price difference not more than 0.3%\n" +
                 "Symbol: " + symbol + "\n" +
                 "Gap: " + gapMin + "m " + gapSec + "s\n" +
                 "Price difference: " + prior.diffPct.toFixed(3) + "%\n\n" +
@@ -4650,7 +4652,7 @@ app.post("/incoming", (req, res) => {
         // 💥 BAZOOKA global HASH-involved detector.
         // Runs before isolated ecosystem returns so #, normal, ~, @, ^ and $ can all be caught.
         processBazooka(symbol, group, ts, body);
-        // 💃 SALSA global 30min price proximity detector.
+        // 💃 SALSA global 4m-to-30m price proximity detector.
         // Runs before isolated ecosystem returns so normal, #, ~, @, ^ and $ can all be caught.
         processSalsa(symbol, group, ts, body);
         // 🐍 MAMBA global different-family 5min detector.
