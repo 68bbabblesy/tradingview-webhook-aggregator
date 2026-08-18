@@ -2504,73 +2504,48 @@ function processMamba(symbol, group, ts, body = {}) {
 
     if (!symbol || !group) return;
 
-    const rawGroup = String(group || "").trim();
-    if (!rawGroup) return;
+    const rawGroup = String(group || "").trim().toUpperCase();
 
-    const MAMBA_FAMILY_WINDOW_MS = 5 * 60 * 1000; // 5 minutes
+    // MAMBA now only tracks exact group 99F.
+    if (rawGroup !== "99F") return;
 
-    function mambaEcosystemFromGroup(g) {
-        const raw = String(g || "").trim().toUpperCase();
+    const priceRaw =
+        body?.price ??
+        body?.close ??
+        body?.current_price ??
+        body?.alert_price ??
+        body?.level ??
+        "";
 
-        if (raw.startsWith("#")) return "HASH";
-        if (raw.startsWith("~")) return "ZEBRA";
-        if (raw.startsWith("^")) return "KANGAROO";
-        if (raw.startsWith("@")) return "MANUAL";
-        if (raw.startsWith("$")) return "DOLLAR";
+    const price = Number(
+        String(priceRaw)
+            .replace(/,/g, "")
+            .replace(/[^0-9.-]/g, "")
+    );
 
-        return "NORMAL";
-    }
+    if (!Number.isFinite(price) || price <= 0) return;
 
-    function mambaFamilyFromGroup(g) {
-        const raw = String(g || "").trim().toUpperCase();
-        if (!raw) return "";
+    const MAMBA_MIN_GAP_MS = 5 * 60 * 1000;        // 5 minutes
+    const MAMBA_MAX_GAP_MS = 24 * 60 * 60 * 1000;  // 24 hours
+    const MAMBA_MAX_PRICE_DIFF_PCT = 0.8;          // not more than 0.8%
 
-        const ecosystem = mambaEcosystemFromGroup(raw);
-        const groupBody = ecosystem === "NORMAL" ? raw : raw.slice(1);
+    function mambaPriceDiffPct(a, b) {
+        const base = Math.abs(Number(a));
+        const other = Math.abs(Number(b));
 
-        const numMatch = groupBody.match(/^(\d+)/);
-        const wordMatch = groupBody.match(/^([A-Z]+)/);
+        if (!base || !other) return NaN;
 
-        return numMatch
-            ? numMatch[1]
-            : wordMatch
-                ? wordMatch[1]
-                : groupBody;
-    }
-
-    function mambaCleanPrice(b) {
-        const raw =
-            b?.price ??
-            b?.close ??
-            b?.current_price ??
-            b?.alert_price ??
-            b?.level ??
-            "";
-
-        const n = Number(
-            String(raw)
-                .replace(/,/g, "")
-                .replace(/[^0-9.-]/g, "")
-        );
-
-        return Number.isFinite(n) && n > 0 ? String(n) : "n/a";
+        return Math.abs(other - base) / base * 100;
     }
 
     function mambaEventLine(e, index) {
         return (
             (index + 1) + ") " +
-            e.ecosystem +
-            " | Family " + e.family +
-            " | " + e.group +
-            " | Price " + (e.price ?? "n/a") +
+            e.group +
+            " | Price " + e.price +
             " @ " + formatDateTime(e.time)
         );
     }
-
-    const ecosystem = mambaEcosystemFromGroup(rawGroup);
-    const family = mambaFamilyFromGroup(rawGroup);
-
-    if (!family) return;
 
     if (
         !mambaMemory[symbol] ||
@@ -2593,69 +2568,79 @@ function processMamba(symbol, group, ts, body = {}) {
     const state = mambaMemory[symbol];
 
     const current = {
-        ecosystem,
-        family,
         group: rawGroup,
         time: ts,
-        price: mambaCleanPrice(body)
+        price
     };
 
-    const cutoff = ts - MAMBA_FAMILY_WINDOW_MS;
+    const cutoff = ts - MAMBA_MAX_GAP_MS - (10 * 60 * 1000);
 
     state.events = state.events
         .filter(e =>
             e &&
+            e.group === "99F" &&
             typeof e.time === "number" &&
             e.time >= cutoff &&
-            e.family &&
-            e.group
+            Number.isFinite(Number(e.price)) &&
+            Number(e.price) > 0
         )
         .sort((a, b) => a.time - b.time);
 
     const prior = state.events
-        .filter(e => String(e.family) !== String(current.family))
-        .sort((a, b) => b.time - a.time)[0];
+        .map(e => {
+            const gapMs = Math.abs(ts - e.time);
+            const diffPct = mambaPriceDiffPct(e.price, current.price);
+
+            return {
+                event: e,
+                gapMs,
+                diffPct
+            };
+        })
+        .filter(x =>
+            x.gapMs >= MAMBA_MIN_GAP_MS &&
+            x.gapMs <= MAMBA_MAX_GAP_MS &&
+            Number.isFinite(x.diffPct) &&
+            x.diffPct <= MAMBA_MAX_PRICE_DIFF_PCT
+        )
+        .sort((a, b) => b.event.time - a.event.time)[0];
 
     if (prior) {
-        const gapMs = Math.abs(ts - prior.time);
+        const first = prior.event.time <= current.time ? prior.event : current;
+        const second = prior.event.time <= current.time ? current : prior.event;
 
-        if (gapMs <= MAMBA_FAMILY_WINDOW_MS) {
-            const first = prior.time <= current.time ? prior : current;
-            const second = prior.time <= current.time ? current : prior;
+        const pairKey = [
+            first.group + ":" + first.price + ":" + first.time,
+            second.group + ":" + second.price + ":" + second.time
+        ].sort().join("|");
 
-            const pairKey = [
-                first.ecosystem + ":" + first.family + ":" + first.group + ":" + first.time,
-                second.ecosystem + ":" + second.family + ":" + second.group + ":" + second.time
-            ].sort().join("|");
+        if (state.lastSentKey !== pairKey) {
+            const gapMin = Math.floor(prior.gapMs / 60000);
+            const gapSec = Math.floor((prior.gapMs % 60000) / 1000);
 
-            if (state.lastSentKey !== pairKey) {
-                const gapMin = Math.floor(gapMs / 60000);
-                const gapSec = Math.floor((gapMs % 60000) / 1000);
+            sendToTelegram6(
+                "🐍 MAMBA\n" +
+                "Symbol: " + symbol + "\n" +
+                "Group: 99F\n" +
+                "Gap: " + gapMin + "m " + gapSec + "s\n" +
+                "Price difference: " + prior.diffPct.toFixed(3) + "%\n\n" +
+                "Alerts:\n" +
+                mambaEventLine(first, 0) + "\n" +
+                mambaEventLine(second, 1) + "\n\n" +
+                "Rule: exact 99F repeat, 5 minutes to 24 hours, price difference not more than 0.8%"
+            );
 
-                sendToTelegram6(
-                    "🐍 MAMBA\n" +
-                    "Symbol: " + symbol + "\n" +
-                    "Gap: " + gapMin + "m " + gapSec + "s\n\n" +
-                    "Alerts:\n" +
-                    mambaEventLine(first, 0) + "\n" +
-                    mambaEventLine(second, 1) + "\n\n" +
-                    "Rule: different families within 5 minutes"
-                );
-
-                state.lastSentKey = pairKey;
-            }
+            state.lastSentKey = pairKey;
         }
     }
 
     state.events.push(current);
 
-    if (state.events.length > 200) {
-        state.events = state.events.slice(-200);
+    if (state.events.length > 300) {
+        state.events = state.events.slice(-300);
     }
 
     if (Object.keys(mambaMemory).length > 5000) {
-        const oldCutoff = ts - (2 * MAMBA_FAMILY_WINDOW_MS);
-
         for (const sym of Object.keys(mambaMemory)) {
             const st = mambaMemory[sym];
 
@@ -2664,7 +2649,12 @@ function processMamba(symbol, group, ts, body = {}) {
                 continue;
             }
 
-            st.events = st.events.filter(e => e && e.time >= oldCutoff);
+            st.events = st.events.filter(e =>
+                e &&
+                e.group === "99F" &&
+                typeof e.time === "number" &&
+                e.time >= cutoff
+            );
 
             if (!st.events.length) {
                 delete mambaMemory[sym];
@@ -4694,7 +4684,7 @@ app.post("/incoming", (req, res) => {
         // 💃 SALSA global 4m-to-30m price proximity detector.
         // Runs before isolated ecosystem returns so normal, #, ~, @, ^ and $ can all be caught.
         processSalsa(symbol, group, ts, body);
-        // 🐍 MAMBA global different-family 5min detector.
+        // 🐍 MAMBA global 99F 5m-to-24h price detector.
         // Runs before isolated ecosystem returns so normal, #, ~, @, ^ and $ can all be caught.
         processMamba(symbol, group, ts, body);
 
