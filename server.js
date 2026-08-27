@@ -2506,8 +2506,20 @@ function processMamba(symbol, group, ts, body = {}) {
 
     const rawGroup = String(group || "").trim().toUpperCase();
 
-    // MAMBA now only tracks exact group 99F.
+    // MAMBA only tracks exact group 99F.
     if (rawGroup !== "99F") return;
+
+    const matchTypeRaw =
+        body?.match_type ??
+        body?.matchType ??
+        body?.matchtype ??
+        body?.type ??
+        "";
+
+    const matchType = String(matchTypeRaw || "").trim().toUpperCase();
+
+    // MAMBA needs a clear match type for the directional price rule.
+    if (matchType !== "RETRACEMENTS" && matchType !== "EXTENSIONS") return;
 
     const priceRaw =
         body?.price ??
@@ -2527,7 +2539,6 @@ function processMamba(symbol, group, ts, body = {}) {
 
     const MAMBA_MIN_GAP_MS = 5 * 60 * 1000;        // 5 minutes
     const MAMBA_MAX_GAP_MS = 24 * 60 * 60 * 1000;  // 24 hours
-    const MAMBA_MAX_PRICE_DIFF_PCT = 0.8;          // not more than 0.8%
 
     function mambaPriceDiffPct(a, b) {
         const base = Math.abs(Number(a));
@@ -2538,10 +2549,30 @@ function processMamba(symbol, group, ts, body = {}) {
         return Math.abs(other - base) / base * 100;
     }
 
+    function mambaDirectionPass(previousPrice, latestPrice, latestMatchType) {
+        const prev = Number(previousPrice);
+        const latest = Number(latestPrice);
+
+        if (!Number.isFinite(prev) || !Number.isFinite(latest)) return false;
+
+        // For RETRACEMENTS, previous price must be lower than or equal to latest.
+        if (latestMatchType === "RETRACEMENTS") {
+            return prev <= latest;
+        }
+
+        // For EXTENSIONS, previous price must be higher than or equal to latest.
+        if (latestMatchType === "EXTENSIONS") {
+            return prev >= latest;
+        }
+
+        return false;
+    }
+
     function mambaEventLine(e, index) {
         return (
             (index + 1) + ") " +
             e.group +
+            " | " + (e.matchType || "n/a") +
             " | Price " + e.price +
             " @ " + formatDateTime(e.time)
         );
@@ -2569,6 +2600,7 @@ function processMamba(symbol, group, ts, body = {}) {
 
     const current = {
         group: rawGroup,
+        matchType,
         time: ts,
         price
     };
@@ -2586,22 +2618,26 @@ function processMamba(symbol, group, ts, body = {}) {
         )
         .sort((a, b) => a.time - b.time);
 
+    // Check all previous 99F alerts within the 24h window.
+    // It does NOT have to be the most recent previous alert.
     const prior = state.events
         .map(e => {
             const gapMs = Math.abs(ts - e.time);
             const diffPct = mambaPriceDiffPct(e.price, current.price);
+            const directionOk = mambaDirectionPass(e.price, current.price, current.matchType);
 
             return {
                 event: e,
                 gapMs,
-                diffPct
+                diffPct,
+                directionOk
             };
         })
         .filter(x =>
             x.gapMs >= MAMBA_MIN_GAP_MS &&
             x.gapMs <= MAMBA_MAX_GAP_MS &&
             Number.isFinite(x.diffPct) &&
-            x.diffPct <= MAMBA_MAX_PRICE_DIFF_PCT
+            x.directionOk
         )
         .sort((a, b) => b.event.time - a.event.time)[0];
 
@@ -2610,24 +2646,31 @@ function processMamba(symbol, group, ts, body = {}) {
         const second = prior.event.time <= current.time ? current : prior.event;
 
         const pairKey = [
-            first.group + ":" + first.price + ":" + first.time,
-            second.group + ":" + second.price + ":" + second.time
+            first.group + ":" + (first.matchType || "") + ":" + first.price + ":" + first.time,
+            second.group + ":" + (second.matchType || "") + ":" + second.price + ":" + second.time
         ].sort().join("|");
 
         if (state.lastSentKey !== pairKey) {
             const gapMin = Math.floor(prior.gapMs / 60000);
             const gapSec = Math.floor((prior.gapMs % 60000) / 1000);
 
+            const directionText =
+                current.matchType === "RETRACEMENTS"
+                    ? "Previous price <= latest price"
+                    : "Previous price >= latest price";
+
             sendToTelegram6(
                 "🐍 MAMBA\n" +
                 "Symbol: " + symbol + "\n" +
                 "Group: 99F\n" +
+                "Match type: " + current.matchType + "\n" +
                 "Gap: " + gapMin + "m " + gapSec + "s\n" +
                 "Price difference: " + prior.diffPct.toFixed(3) + "%\n\n" +
                 "Alerts:\n" +
                 mambaEventLine(first, 0) + "\n" +
                 mambaEventLine(second, 1) + "\n\n" +
-                "Rule: exact 99F repeat, 5 minutes to 24 hours, price difference not more than 0.8%"
+                "Direction check: " + directionText + "\n" +
+                "Rule: exact 99F repeat, 5 minutes to 24 hours, no price-difference cap"
             );
 
             state.lastSentKey = pairKey;
@@ -2636,8 +2679,8 @@ function processMamba(symbol, group, ts, body = {}) {
 
     state.events.push(current);
 
-    if (state.events.length > 300) {
-        state.events = state.events.slice(-300);
+    if (state.events.length > 500) {
+        state.events = state.events.slice(-500);
     }
 
     if (Object.keys(mambaMemory).length > 5000) {
@@ -4684,7 +4727,7 @@ app.post("/incoming", (req, res) => {
         // 💃 SALSA global 4m-to-30m price proximity detector.
         // Runs before isolated ecosystem returns so normal, #, ~, @, ^ and $ can all be caught.
         processSalsa(symbol, group, ts, body);
-        // 🐍 MAMBA global 99F 5m-to-24h price detector.
+        // 🐍 MAMBA global 99F match-type direction detector.
         // Runs before isolated ecosystem returns so normal, #, ~, @, ^ and $ can all be caught.
         processMamba(symbol, group, ts, body);
 
