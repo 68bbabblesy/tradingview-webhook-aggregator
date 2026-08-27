@@ -2557,12 +2557,12 @@ function processMamba(symbol, group, ts, body = {}) {
 
         // For RETRACEMENTS, previous price must be lower than or equal to latest.
         if (latestMatchType === "RETRACEMENTS") {
-            return prev <= latest;
+            return prev >= latest;
         }
 
         // For EXTENSIONS, previous price must be higher than or equal to latest.
         if (latestMatchType === "EXTENSIONS") {
-            return prev >= latest;
+            return prev <= latest;
         }
 
         return false;
@@ -2656,8 +2656,8 @@ function processMamba(symbol, group, ts, body = {}) {
 
             const directionText =
                 current.matchType === "RETRACEMENTS"
-                    ? "Previous price <= latest price"
-                    : "Previous price >= latest price";
+                    ? "Previous price >= latest price"
+                    : "Previous price <= latest price";
 
             sendToTelegram6(
                 "🐍 MAMBA\n" +
