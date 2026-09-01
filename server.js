@@ -1890,56 +1890,37 @@ function processSalsa(symbol, group, ts, body = {}) {
 
     if (!symbol || !group) return;
 
-    const rawGroup = String(group || "").trim();
-    if (!rawGroup) return;
+    const rawGroup = String(group || "").trim().toUpperCase();
 
-    const priceRaw =
-        body?.price ??
-        body?.close ??
-        body?.current_price ??
-        body?.alert_price ??
-        body?.level ??
-        "";
+    // SALSA now only tracks exact group 52Y.
+    if (rawGroup !== "52Y") return;
 
-    const price = Number(
-        String(priceRaw)
-            .replace(/,/g, "")
-            .replace(/[^0-9.-]/g, "")
-    );
+    const SALSA_MIN_GAP_MS = 15 * 60 * 1000;       // 15 minutes
+    const SALSA_MAX_GAP_MS = 12 * 60 * 60 * 1000;  // 12 hours
 
-    if (!Number.isFinite(price) || price <= 0) return;
+    function salsaCleanPrice(b) {
+        const raw =
+            b?.price ??
+            b?.close ??
+            b?.current_price ??
+            b?.alert_price ??
+            b?.level ??
+            "";
 
-    const SALSA_MIN_GAP_MS = 4 * 60 * 1000;        // 4 minutes
-    const SALSA_MAX_GAP_MS = 30 * 60 * 1000;       // 30 minutes
-    const SALSA_MAX_PRICE_DIFF_PCT = 0.3;          // not more than 0.3%
+        const n = Number(
+            String(raw)
+                .replace(/,/g, "")
+                .replace(/[^0-9.-]/g, "")
+        );
 
-    function salsaEcosystemFromGroup(g) {
-        const raw = String(g || "").trim().toUpperCase();
-
-        if (raw.startsWith("#")) return "HASH";
-        if (raw.startsWith("~")) return "ZEBRA";
-        if (raw.startsWith("^")) return "KANGAROO";
-        if (raw.startsWith("@")) return "MANUAL";
-        if (raw.startsWith("$")) return "DOLLAR";
-
-        return "NORMAL";
-    }
-
-    function salsaPriceDiffPct(a, b) {
-        const base = Math.abs(Number(a));
-        const other = Math.abs(Number(b));
-
-        if (!base || !other) return NaN;
-
-        return Math.abs(other - base) / base * 100;
+        return Number.isFinite(n) && n > 0 ? String(n) : "n/a";
     }
 
     function salsaEventLine(e, index) {
         return (
             (index + 1) + ") " +
-            e.ecosystem +
-            " | " + e.group +
-            " | Price " + e.price +
+            e.group +
+            " | Price " + (e.price ?? "n/a") +
             " @ " + formatDateTime(e.time)
         );
     }
@@ -1965,41 +1946,35 @@ function processSalsa(symbol, group, ts, body = {}) {
     const state = salsaMemory[symbol];
 
     const current = {
-        ecosystem: salsaEcosystemFromGroup(rawGroup),
         group: rawGroup,
         time: ts,
-        price
+        price: salsaCleanPrice(body)
     };
 
-    const cutoff = ts - SALSA_MAX_GAP_MS - (5 * 60 * 1000);
+    const cutoff = ts - SALSA_MAX_GAP_MS - (10 * 60 * 1000);
 
     state.events = state.events
         .filter(e =>
             e &&
+            e.group === "52Y" &&
             typeof e.time === "number" &&
-            e.time >= cutoff &&
-            Number.isFinite(Number(e.price)) &&
-            Number(e.price) > 0 &&
-            e.group
+            e.time >= cutoff
         )
         .sort((a, b) => a.time - b.time);
 
+    // Check all previous 52Y alerts within the 12h window.
     const prior = state.events
         .map(e => {
             const gapMs = Math.abs(ts - e.time);
-            const diffPct = salsaPriceDiffPct(e.price, current.price);
 
             return {
                 event: e,
-                gapMs,
-                diffPct
+                gapMs
             };
         })
         .filter(x =>
             x.gapMs >= SALSA_MIN_GAP_MS &&
-            x.gapMs <= SALSA_MAX_GAP_MS &&
-            Number.isFinite(x.diffPct) &&
-            x.diffPct <= SALSA_MAX_PRICE_DIFF_PCT
+            x.gapMs <= SALSA_MAX_GAP_MS
         )
         .sort((a, b) => b.event.time - a.event.time)[0];
 
@@ -2008,23 +1983,29 @@ function processSalsa(symbol, group, ts, body = {}) {
         const second = prior.event.time <= current.time ? current : prior.event;
 
         const pairKey = [
-            first.ecosystem + ":" + first.group + ":" + first.price + ":" + first.time,
-            second.ecosystem + ":" + second.group + ":" + second.price + ":" + second.time
+            first.group + ":" + first.price + ":" + first.time,
+            second.group + ":" + second.price + ":" + second.time
         ].sort().join("|");
 
         if (state.lastSentKey !== pairKey) {
-            const gapMin = Math.floor(prior.gapMs / 60000);
+            const gapHours = Math.floor(prior.gapMs / 3600000);
+            const gapMin = Math.floor((prior.gapMs % 3600000) / 60000);
             const gapSec = Math.floor((prior.gapMs % 60000) / 1000);
+
+            const gapText =
+                gapHours > 0
+                    ? gapHours + "h " + gapMin + "m " + gapSec + "s"
+                    : gapMin + "m " + gapSec + "s";
 
             sendToTelegram8(
                 "💃 SALSA\n" +
-                "Rule: any ecosystem alerts between 4 and 30 minutes with price difference not more than 0.3%\n" +
                 "Symbol: " + symbol + "\n" +
-                "Gap: " + gapMin + "m " + gapSec + "s\n" +
-                "Price difference: " + prior.diffPct.toFixed(3) + "%\n\n" +
+                "Group: 52Y\n" +
+                "Gap: " + gapText + "\n\n" +
                 "Alerts:\n" +
                 salsaEventLine(first, 0) + "\n" +
-                salsaEventLine(second, 1)
+                salsaEventLine(second, 1) + "\n\n" +
+                "Rule: exact 52Y repeat, 15 minutes to 12 hours"
             );
 
             state.lastSentKey = pairKey;
@@ -2033,8 +2014,8 @@ function processSalsa(symbol, group, ts, body = {}) {
 
     state.events.push(current);
 
-    if (state.events.length > 200) {
-        state.events = state.events.slice(-200);
+    if (state.events.length > 500) {
+        state.events = state.events.slice(-500);
     }
 
     if (Object.keys(salsaMemory).length > 5000) {
@@ -2046,7 +2027,12 @@ function processSalsa(symbol, group, ts, body = {}) {
                 continue;
             }
 
-            st.events = st.events.filter(e => e && e.time >= cutoff);
+            st.events = st.events.filter(e =>
+                e &&
+                e.group === "52Y" &&
+                typeof e.time === "number" &&
+                e.time >= cutoff
+            );
 
             if (!st.events.length) {
                 delete salsaMemory[sym];
@@ -4724,7 +4710,7 @@ app.post("/incoming", (req, res) => {
         // 💥 BAZOOKA global exact 27-61-77 30sec detector.
         // Runs before isolated ecosystem returns so #, normal, ~, @, ^ and $ can all be caught.
         processBazooka(symbol, group, ts, body);
-        // 💃 SALSA global 4m-to-30m price proximity detector.
+        // 💃 SALSA global 52Y 15m-to-12h detector.
         // Runs before isolated ecosystem returns so normal, #, ~, @, ^ and $ can all be caught.
         processSalsa(symbol, group, ts, body);
         // 🐍 MAMBA global 99F match-type direction detector.
