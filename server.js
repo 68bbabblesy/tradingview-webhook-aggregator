@@ -281,7 +281,7 @@ function pruneStateBeforeSave() {
     // Hard prune combo repeat states to 2h + small buffer.
     pruneCompactComboState(kookyComboState, ts, 2 * 60 * 60 * 1000);
     pruneCompactComboState(speshComboState, ts, 2 * 60 * 60 * 1000);
-    pruneCobraRepeatState(cobraComboState, ts, 60 * 60 * 1000);
+    pruneCobraRepeatState(cobraComboState, ts, 30 * 60 * 1000);
 
     // Telegram outbox cap.
     if (Array.isArray(telegramOutbox) && telegramOutbox.length > TELEGRAM_OUTBOX_MAX) {
@@ -318,7 +318,7 @@ function pruneCompactComboState(state, ts, windowMs) {
 }
 
 
-function pruneCobraRepeatState(state, ts, windowMs) {
+function pruneCobraRepeatState(state, ts, windowMs = 30 * 60 * 1000) {
     if (!state || typeof state !== "object") return;
 
     const cutoff = ts - windowMs - (5 * 60 * 1000);
@@ -326,12 +326,7 @@ function pruneCobraRepeatState(state, ts, windowMs) {
     for (const sym of Object.keys(state)) {
         const st = state[sym];
 
-        if (!st || typeof st !== "object" || Array.isArray(st)) {
-            delete state[sym];
-            continue;
-        }
-
-        if (!Array.isArray(st.events)) {
+        if (!st || typeof st !== "object" || Array.isArray(st) || !Array.isArray(st.events)) {
             delete state[sym];
             continue;
         }
@@ -340,8 +335,7 @@ function pruneCobraRepeatState(state, ts, windowMs) {
             e &&
             typeof e.time === "number" &&
             e.time >= cutoff &&
-            e.ecosystem &&
-            e.family
+            e.group
         );
 
         if (!st.events.length) {
@@ -3679,259 +3673,186 @@ function processComboRepeatEngine(...args) {
 }
 
 // ==========================================================
-//  COBRA — 3 DIFFERENT FAMILIES WITHIN 30 SECONDS
-//  EXCLUDES EXACT 27 / 61 / 77
+//  COBRA — NORMAL ECOSYSTEM CLUSTER WITHIN 30 MINUTES
 //  Bot 7
 //
 //  Rule:
 //    - Same symbol
-//    - Any ecosystem + any ecosystem
-//    - 3 separate families required
-//    - All 3 must be within 30 seconds
-//    - Excludes exact family set 27, 61, 77
-//    - No price condition
+//    - NORMAL ecosystem only (no #, ~, ^, @, $ prefix)
+//    - 2+ DIFFERENT exact groups within 30 minutes of each other
+//    - Either order: 40L then 42A, or 42A then 40L
+//    - Fires when a new group joins the 30-minute window and the
+//      window then holds 2+ different groups
+//    - The same group repeating inside the window does NOT re-fire
+//      (it just refreshes that group's latest time)
+//
+//  Valid:
+//    40L then 42A 12 min later       -> fires (40L + 42A)
+//    then 39B 5 min after that        -> fires again (40L + 42A + 39B)
+//
+//  Invalid:
+//    40L then 40L                     -> same group, no alert
+//    40L then 42A 31 min later        -> outside window
+//    40L then #12                     -> # is not normal ecosystem
+//
+//  State (persisted in state.json):
+//    cobraComboState[symbol] = {
+//      v: 2,
+//      events: [{ group, time, price }],
+//      lastSentKey: string
+//    }
 // ==========================================================
 
+const COBRA_WINDOW_MS = 30 * 60 * 1000;   // 30 minutes
+const COBRA_MIN_GROUPS = 2;                // different groups needed to fire
+const COBRA_STATE_VERSION = 2;             // old 30s/family state is discarded
+const COBRA_MAX_EVENTS_PER_SYMBOL = 200;   // hard safety cap
+const COBRA_MAX_LINES = 20;                // max alert lines in one message
+
 let cobraComboState = persisted.cobraComboState || {};
-const cobraComboRuntime = {};
+
+function cobraIsNormalGroup(group) {
+    const raw = String(group || "").trim();
+    if (!raw) return false;
+    return !/^[#~^@$]/.test(raw);
+}
+
+function cobraCleanPrice(body) {
+    const raw =
+        body?.price ??
+        body?.close ??
+        body?.current_price ??
+        body?.alert_price ??
+        body?.level ??
+        "";
+
+    const n = Number(
+        String(raw)
+            .replace(/,/g, "")
+            .replace(/[^0-9.-]/g, "")
+    );
+
+    return Number.isFinite(n) && n > 0 ? String(n) : "n/a";
+}
+
+function cobraFormatGap(ms) {
+    const totalSec = Math.max(0, Math.floor(ms / 1000));
+    const m = Math.floor(totalSec / 60);
+    const s = totalSec % 60;
+    return m + "m " + s + "s";
+}
+
+function getCobraState(symbol) {
+    const st = cobraComboState[symbol];
+
+    if (
+        !st ||
+        typeof st !== "object" ||
+        Array.isArray(st) ||
+        st.v !== COBRA_STATE_VERSION ||
+        !Array.isArray(st.events)
+    ) {
+        cobraComboState[symbol] = {
+            v: COBRA_STATE_VERSION,
+            events: [],
+            lastSentKey: ""
+        };
+    }
+
+    return cobraComboState[symbol];
+}
+
+// Latest occurrence of each distinct group, oldest first.
+function cobraLatestPerGroup(events) {
+    const latest = new Map();
+
+    for (const e of events) {
+        const prev = latest.get(e.group);
+        if (!prev || e.time >= prev.time) {
+            latest.set(e.group, e);
+        }
+    }
+
+    return Array.from(latest.values()).sort((a, b) => a.time - b.time);
+}
 
 function processCobra(symbol, group, ts, body = {}) {
 
     if (!symbol || !group) return;
+    if (!cobraIsNormalGroup(group)) return;
 
-    const rawGroup = String(group || "").trim();
-    if (!rawGroup) return;
+    const rawGroup = String(group).trim().toUpperCase();
+    const state = getCobraState(symbol);
+    const cutoff = ts - COBRA_WINDOW_MS;
 
-    const COBRA_FAMILY_WINDOW_MS = 30 * 1000; // 30 seconds
-    const COBRA_MIN_FAMILIES = 3;
-    const COBRA_EXCLUDED_FAMILY_KEY = "27|61|77";
+    // Keep only valid normal-ecosystem events inside the 30-minute window.
+    state.events = state.events.filter(e =>
+        e &&
+        typeof e.time === "number" &&
+        e.time >= cutoff &&
+        e.group &&
+        cobraIsNormalGroup(e.group)
+    );
 
-    function cobraEcosystemFromGroup(g) {
-        const raw = String(g || "").trim().toUpperCase();
-
-        if (raw.startsWith("#")) return "HASH";
-        if (raw.startsWith("~")) return "ZEBRA";
-        if (raw.startsWith("^")) return "KANGAROO";
-        if (raw.startsWith("@")) return "MANUAL";
-        if (raw.startsWith("$")) return "DOLLAR";
-
-        return "NORMAL";
-    }
-
-    function cobraFamilyFromGroup(g) {
-        const raw = String(g || "").trim().toUpperCase();
-        if (!raw) return "";
-
-        const ecosystem = cobraEcosystemFromGroup(raw);
-        const groupBody = ecosystem === "NORMAL" ? raw : raw.slice(1);
-
-        const numMatch = groupBody.match(/^(\d+)/);
-        const wordMatch = groupBody.match(/^([A-Z]+)/);
-
-        return numMatch
-            ? numMatch[1]
-            : wordMatch
-                ? wordMatch[1]
-                : groupBody;
-    }
-
-    function cobraFamilySort(a, b) {
-        const na = Number(a);
-        const nb = Number(b);
-
-        if (Number.isFinite(na) && Number.isFinite(nb)) {
-            return na - nb;
-        }
-
-        return String(a).localeCompare(String(b));
-    }
-
-    function cobraFamilyKey(events) {
-        return events
-            .map(e => String(e.family))
-            .sort(cobraFamilySort)
-            .join("|");
-    }
-
-    function cobraCleanPrice(b) {
-        const raw =
-            b?.price ??
-            b?.close ??
-            b?.current_price ??
-            b?.alert_price ??
-            b?.level ??
-            "";
-
-        const n = Number(
-            String(raw)
-                .replace(/,/g, "")
-                .replace(/[^0-9.-]/g, "")
-        );
-
-        return Number.isFinite(n) && n > 0 ? String(n) : "n/a";
-    }
-
-    function cobraEventLine(e, index) {
-        return (
-            (index + 1) + ") " +
-            e.ecosystem +
-            " | Family " + e.family +
-            " | " + e.group +
-            " | Price " + (e.price ?? "n/a") +
-            " @ " + formatDateTime(e.time)
-        );
-    }
-
-    function cobraPickNonBazookaCombo(events) {
-        const sorted = events
-            .slice()
-            .sort((a, b) => b.time - a.time);
-
-        for (let i = 0; i < sorted.length; i++) {
-            for (let j = i + 1; j < sorted.length; j++) {
-                for (let k = j + 1; k < sorted.length; k++) {
-                    const combo = [sorted[i], sorted[j], sorted[k]]
-                        .sort((a, b) => a.time - b.time);
-
-                    const familyKey = cobraFamilyKey(combo);
-
-                    if (familyKey === COBRA_EXCLUDED_FAMILY_KEY) {
-                        continue;
-                    }
-
-                    const spanMs = combo[combo.length - 1].time - combo[0].time;
-
-                    if (spanMs <= COBRA_FAMILY_WINDOW_MS) {
-                        return combo;
-                    }
-                }
-            }
-        }
-
-        return null;
-    }
-
-    const ecosystem = cobraEcosystemFromGroup(rawGroup);
-    const family = cobraFamilyFromGroup(rawGroup);
-
-    if (!family) return;
-
-    if (
-        !cobraComboState[symbol] ||
-        typeof cobraComboState[symbol] !== "object" ||
-        Array.isArray(cobraComboState[symbol])
-    ) {
-        cobraComboState[symbol] = {
-            events: [],
-            lastSentKey: ""
-        };
-    }
-
-    if (!Array.isArray(cobraComboState[symbol].events)) {
-        cobraComboState[symbol] = {
-            events: [],
-            lastSentKey: ""
-        };
-    }
-
-    const state = cobraComboState[symbol];
+    const groupAlreadyInWindow = state.events.some(e => e.group === rawGroup);
 
     const current = {
-        ecosystem,
-        family,
         group: rawGroup,
         time: ts,
         price: cobraCleanPrice(body)
     };
 
-    const cutoff = ts - COBRA_FAMILY_WINDOW_MS;
-
-    state.events = state.events
-        .filter(e =>
-            e &&
-            typeof e.time === "number" &&
-            e.time >= cutoff &&
-            e.family &&
-            e.group
-        )
-        .sort((a, b) => a.time - b.time);
-
-    const combined = [...state.events, current]
-        .filter(e =>
-            e &&
-            typeof e.time === "number" &&
-            e.time >= cutoff &&
-            e.family &&
-            e.group
-        )
-        .sort((a, b) => b.time - a.time);
-
-    const latestByFamily = new Map();
-
-    for (const e of combined) {
-        const familyKey = String(e.family);
-
-        if (!latestByFamily.has(familyKey)) {
-            latestByFamily.set(familyKey, e);
-        }
-    }
-
-    if (latestByFamily.size >= COBRA_MIN_FAMILIES) {
-        const selected = cobraPickNonBazookaCombo(
-            Array.from(latestByFamily.values())
-        );
-
-        if (selected) {
-            const spanMs = selected[selected.length - 1].time - selected[0].time;
-            const alertKey = selected
-                .map(e => e.ecosystem + ":" + e.family + ":" + e.group + ":" + e.time)
-                .sort()
-                .join("|");
-
-            if (state.lastSentKey !== alertKey) {
-                const spanSec = Math.floor(spanMs / 1000);
-                const spanMsRemainder = spanMs % 1000;
-                const families = selected.map(e => e.family).join(", ");
-
-                sendToTelegram7(
-                    "🐍 COBRA\n" +
-                    "Symbol: " + symbol + "\n" +
-                    "Families: " + families + "\n" +
-                    "Span: " + spanSec + "s " + spanMsRemainder + "ms\n\n" +
-                    "Alerts:\n" +
-                    selected.map((e, i) => cobraEventLine(e, i)).join("\n") +
-                    "\n\n" +
-                    "Rule: 3 separate families within 30 seconds, excluding exact 27, 61, 77"
-                );
-
-                state.lastSentKey = alertKey;
-            }
-        }
-    }
-
     state.events.push(current);
 
-    if (state.events.length > 100) {
-        state.events = state.events.slice(-100);
+    if (state.events.length > COBRA_MAX_EVENTS_PER_SYMBOL) {
+        state.events = state.events.slice(-COBRA_MAX_EVENTS_PER_SYMBOL);
     }
 
-    if (Object.keys(cobraComboState).length > 5000) {
-        const oldCutoff = ts - (2 * COBRA_FAMILY_WINDOW_MS);
+    const cluster = cobraLatestPerGroup(state.events);
 
-        for (const sym of Object.keys(cobraComboState)) {
-            const st = cobraComboState[sym];
+    if (!groupAlreadyInWindow && cluster.length >= COBRA_MIN_GROUPS) {
+        const alertKey =
+            cluster.map(e => e.group).sort().join("+") + "@" + ts;
 
-            if (!st || typeof st !== "object" || !Array.isArray(st.events)) {
-                delete cobraComboState[sym];
-                continue;
+        if (state.lastSentKey !== alertKey) {
+            const first = cluster[0];
+            const spanMs = current.time - first.time;
+
+            const shown = cluster.slice(-COBRA_MAX_LINES);
+            const hidden = cluster.length - shown.length;
+
+            const lines = shown.map((e, i) =>
+                (i + 1 + hidden) + ") " +
+                e.group +
+                " | Price " + (e.price ?? "n/a") +
+                " @ " + formatDateTime(e.time) +
+                (e === first ? "" : " (+" + cobraFormatGap(e.time - first.time) + ")") +
+                (e === current ? "  ⬅️ new" : "")
+            );
+
+            if (hidden > 0) {
+                lines.unshift("… " + hidden + " earlier group(s) not shown");
             }
 
-            st.events = st.events.filter(e => e && e.time >= oldCutoff);
+            sendToTelegram7(
+                "🐍 COBRA\n" +
+                "Symbol: " + symbol + "\n" +
+                "New group: " + current.group + "\n" +
+                "Groups in window: " + cluster.length + "\n" +
+                "Span: " + cobraFormatGap(spanMs) + "\n\n" +
+                "Alerts:\n" +
+                lines.join("\n") +
+                "\n\n" +
+                "Rule: " + COBRA_MIN_GROUPS + "+ different NORMAL groups within 30 minutes"
+            );
 
-            if (!st.events.length) {
-                delete cobraComboState[sym];
-            }
+            state.lastSentKey = alertKey;
         }
+    }
+
+    // Safety sweep when many symbols are tracked.
+    if (Object.keys(cobraComboState).length > 5000) {
+        pruneCobraRepeatState(cobraComboState, ts, COBRA_WINDOW_MS);
     }
 
     saveState();
@@ -4694,9 +4615,7 @@ app.post("/incoming", (req, res) => {
         recentHashes.add(hash);
         setTimeout(() => recentHashes.delete(hash), 300000);
 
-        // 🐍 COBRA global 3-family non-27-61-77 30sec detector.
-        // Runs before isolated ecosystem returns so all ecosystems can be caught.
-        processCobra(symbol, group, ts, body);
+        // 🐍 COBRA is NORMAL-only now — called inside the normal pipeline below.
         // 🟨 YABA global $ cross-ecosystem detector.
         // Runs before isolated ecosystem returns so $, #, ~, @, ^ and normal can all be caught.
         processYaba(symbol, group, ts, body);
@@ -4790,7 +4709,7 @@ if (!isHash) {
         // processYaba moved to global $ cross-ecosystem detector
         // processSalsa moved to global Bot8 price-time detector
         processTango(symbol, group, ts);
-        // processCobra moved to global 3-family 30sec detector
+        processCobra(symbol, group, ts, body); // 🐍 Bot7: 2+ different normal groups within 30m
         processNeptune(symbol, group, ts);
         // processZulu(symbol, group, ts); // disabled by request
         processMinta(symbol, group, ts);
