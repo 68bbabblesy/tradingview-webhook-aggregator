@@ -3711,6 +3711,8 @@ const COBRA_MAX_LINES = 20;                // max alert lines in one message
 
 let cobraComboState = persisted.cobraComboState || {};
 
+console.log("🐍 COBRA v2 LOADED — Bot7: 2+ different NORMAL groups within 30 minutes");
+
 function cobraIsNormalGroup(group) {
     const raw = String(group || "").trim();
     if (!raw) return false;
@@ -3809,6 +3811,11 @@ function processCobra(symbol, group, ts, body = {}) {
     }
 
     const cluster = cobraLatestPerGroup(state.events);
+
+    console.log(
+        "🐍 COBRA saw " + symbol + " " + rawGroup +
+        " | groups in 30m window: " + cluster.map(e => e.group).join(", ")
+    );
 
     if (!groupAlreadyInWindow && cluster.length >= COBRA_MIN_GROUPS) {
         const alertKey =
