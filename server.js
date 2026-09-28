@@ -4833,6 +4833,76 @@ saveState();
     }
 }, CHECK_MS);
 
+// ==========================================================
+//  TEST LINKS (open in a browser)
+//
+//    /test/7?secret=YOUR_ALERT_SECRET      -> plain test message to Bot 7
+//    /test/3?secret=YOUR_ALERT_SECRET      -> same for any bot number 1-15
+//    /test/cobra?secret=YOUR_ALERT_SECRET  -> runs 2 fake NORMAL alerts
+//                                             through the real COBRA logic
+//
+//  If ALERT_SECRET is not set on Render, the ?secret= part isn't needed.
+// ==========================================================
+
+function testSecretOk(req) {
+    if (!ALERT_SECRET) return true;
+    return String(req.query.secret || "") === ALERT_SECRET;
+}
+
+app.get("/test/cobra", (req, res) => {
+    if (!testSecretOk(req)) return res.status(401).send("❌ Wrong or missing ?secret=");
+
+    const testSymbol = "TEST_COBRA";
+    const now = Date.now();
+
+    delete cobraComboState[testSymbol];
+
+    processCobra(testSymbol, "TEST1A", now - 5 * 60 * 1000, { price: "100" });
+    processCobra(testSymbol, "TEST2B", now, { price: "101" });
+
+    const fired = !!cobraComboState[testSymbol]?.lastSentKey;
+    delete cobraComboState[testSymbol];
+
+    const { token, chat } = getTelegramCreds(7);
+
+    if (!token || !chat) {
+        return res.status(500).send(
+            "❌ COBRA logic ran, but Bot 7 is missing TELEGRAM_BOT_TOKEN_7 or TELEGRAM_CHAT_ID_7 on Render."
+        );
+    }
+
+    res.send(
+        fired
+            ? "✅ COBRA fired and the message is queued for Bot 7. It should appear in Telegram within a few seconds. If it doesn't, check the Render logs for 'Telegram send failed: Bot7'."
+            : "❌ COBRA ran but did not fire. Something is wrong in the COBRA logic, please share the Render logs."
+    );
+});
+
+app.get("/test/:bot", async (req, res) => {
+    if (!testSecretOk(req)) return res.status(401).send("❌ Wrong or missing ?secret=");
+
+    const botNo = Number(req.params.bot);
+
+    if (!Number.isInteger(botNo) || botNo < 1 || botNo > 15) {
+        return res.status(400).send("❌ Use a bot number from 1 to 15, e.g. /test/7");
+    }
+
+    try {
+        await rawTelegramSend(
+            botNo,
+            "✅ TEST — Bot " + botNo + " is connected and working\n" +
+            "Service: " + (process.env.SERVICE_ROLE || "n/a") + "\n" +
+            "Time: " + formatDateTime(Date.now())
+        );
+
+        res.send("✅ Test message sent to Bot " + botNo + ". Check Telegram.");
+    } catch (err) {
+        res.status(500).send(
+            "❌ Bot " + botNo + " test failed: " + telegramErrorSummary(err)
+        );
+    }
+});
+
 app.get("/ping", (req, res) => {
     res.json({ ok: true, rules: RULES.map(r => r.name) });
 });
