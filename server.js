@@ -108,6 +108,7 @@ function loadState() {
                 gammaMemory: parsed.gammaMemory || {},
                 mamamiaHashMemory: parsed.mamamiaHashMemory || {},
                 salsaMemory: parsed.salsaMemory || {},
+                breadthState: parsed.breadthState || { events: [], lastFire: 0, lastLevel: 0 },
                 neptuneMemory: parsed.neptuneMemory || {},
                 zuluState: parsed.zuluState || {},
                 sideFlipMemory: parsed.sideFlipMemory || {},
@@ -171,6 +172,7 @@ function loadState() {
         gammaMemory: {},
         mamamiaHashMemory: {},
         salsaMemory: {},
+        breadthState: { events: [], lastFire: 0, lastLevel: 0 },
         neptuneMemory: {},
         zuluState: {},
         sideFlipMemory: {},
@@ -240,6 +242,7 @@ function buildStateSnapshot() {
         gammaMemory,
         mamamiaHashMemory,
         salsaMemory,
+        breadthState,
         neptuneMemory,
         zuluState,
         sideFlipMemory,
@@ -332,6 +335,9 @@ function pruneStateBeforeSave() {
     pruneCompactComboState(kookyComboState, ts, 2 * 60 * 60 * 1000);
     pruneCompactComboState(speshComboState, ts, 2 * 60 * 60 * 1000);
     pruneCobraRepeatState(cobraComboState, ts, 30 * 60 * 1000);
+
+    // Keep the breadth window small.
+    try { breadthPrune(ts); } catch {}
 
     // Telegram outbox cap.
     if (Array.isArray(telegramOutbox) && telegramOutbox.length > TELEGRAM_OUTBOX_MAX) {
@@ -896,6 +902,19 @@ if (telegramOutbox.length) {
 
 function sendToTelegram1(text) { enqueueTelegram(1, text); }
 function sendToTelegram2(text) { enqueueTelegram(2, text); }
+
+/* ─────────────────────────────────────────────────────────────────────────────
+   Bot 2 is now the BREADTH bot only. Bundle / Zebra / Dollar used to notify here
+   and are disabled at your request. Their message-building code is untouched —
+   it just goes to a sink instead of Telegram. To bring any of them back, swap
+   sendToTelegram2Disabled(...) back to sendToTelegram2(...) at the call site.
+───────────────────────────────────────────────────────────────────────────── */
+const BOT2_LEGACY_ENABLED = (process.env.BOT2_LEGACY_ENABLED || "0").trim() === "1";
+function sendToTelegram2Disabled(text) {
+    if (BOT2_LEGACY_ENABLED) { sendToTelegram2(text); return; }
+    // swallowed on purpose
+}
+
 function sendToTelegram3(text) { enqueueTelegram(3, text); }
 function sendToTelegram4(text) { enqueueTelegram(4, text); }
 function sendToTelegram5(text) { enqueueTelegram(5, text); }
@@ -1906,6 +1925,7 @@ function processCheck(symbol, group, ts, body) {
 // ==========================================================
 
 let salsaMemory = persisted.salsaMemory || {};
+let breadthState = persisted.breadthState || { events: [], lastFire: 0, lastLevel: 0 };
 let tangoState = persisted.tangoState || {};
 let gandoState = persisted.gandoState || {};
 
@@ -1928,6 +1948,138 @@ function getFamily(group) {
     if (match) return match[1];
 
     return raw;
+}
+
+
+/* ─────────────────────────────────────────────────────────────────────────────
+   🌊 BREADTH  —  market-wide bias detector
+   Individual alerts cannot tell you the market bias: each one looks the same
+   whether the whole watchlist is falling or just that symbol. Breadth can,
+   because it counts how many DISTINCT symbols are alerting at once.
+   Normal is ~3 distinct symbols per 30 min. On 28 Sep 2026 it reached 64, with
+   80% of them pullback-zone alerts — that was a market-wide decline in progress.
+   Descriptive, not predictive: it tells you what IS happening, not what comes
+   next. Sized to the whole watchlist, so it runs on EVERY incoming alert.
+───────────────────────────────────────────────────────────────────────────── */
+const BREADTH_ENABLED      = (process.env.BREADTH_ENABLED || "1").trim() !== "0";
+const BREADTH_WINDOW_MS    = Number((process.env.BREADTH_WINDOW_MIN || "30").trim()) * 60 * 1000;
+const BREADTH_THRESHOLD    = Number((process.env.BREADTH_THRESHOLD || "15").trim());
+const BREADTH_STEP         = Number((process.env.BREADTH_STEP || "20").trim());
+const BREADTH_COOLDOWN_MS  = Number((process.env.BREADTH_COOLDOWN_MIN || "20").trim()) * 60 * 1000;
+const BREADTH_MAX_EVENTS   = 4000;
+
+// Classify an alert by the ZONE ITS RANGE DEFINES, not by the levels it matched.
+// The matched-level list contains whatever each timeframe happened to be on, which
+// is noisy; the band edges / clause ranges are what the alert was actually asking for.
+function breadthZone(body = {}) {
+    const ranges = [
+        body.band_top, body.band_bottom,
+        body.clause_a_range, body.clause_b_range,
+        body.a_range, body.b_range,
+        body.deep_threshold, body.retracement_threshold
+    ].map(v => (v === undefined || v === null) ? "" : String(v)).join(" ").toLowerCase();
+
+    // "EXT x" and small ratios sit at the previous high; 0.35-1.05 is a pull back
+    // into the range. A band spanning the high (e.g. 0.05 .. EXT 0.04) is zero-zone.
+    const plain = [];
+    const ext = [];
+    const re = /(ext\s*)?(\d*\.?\d+)/g;
+    let m;
+    while ((m = re.exec(ranges)) !== null) {
+        const n = Number(m[2]);
+        if (!Number.isFinite(n)) continue;
+        if (m[1]) ext.push(n); else plain.push(n);
+    }
+
+    const hasPullback = plain.some(n => n >= 0.35 && n <= 1.05);
+    const nearHigh    = ext.length > 0 || plain.some(n => n <= 0.12);
+
+    if (hasPullback && !nearHigh) return "pullback";
+    if (nearHigh && !hasPullback) return "zero";
+    if (nearHigh && hasPullback)  return "zero";   // band straddling the high
+    return "other";
+}
+
+function breadthPrune(ts) {
+    const cutoff = ts - BREADTH_WINDOW_MS;
+    let arr = Array.isArray(breadthState.events) ? breadthState.events : [];
+    arr = arr.filter(e => e && e.t >= cutoff);
+    if (arr.length > BREADTH_MAX_EVENTS) arr = arr.slice(-BREADTH_MAX_EVENTS);
+    breadthState.events = arr;
+    return arr;
+}
+
+function processBreadth(symbol, group, ts, body = {}) {
+    if (!BREADTH_ENABLED || !symbol) return;
+
+    if (!breadthState || typeof breadthState !== "object") {
+        breadthState = { events: [], lastFire: 0, lastLevel: 0 };
+    }
+    if (!Array.isArray(breadthState.events)) breadthState.events = [];
+
+    breadthState.events.push({ t: ts, s: symbol, z: breadthZone(body) });
+    const arr = breadthPrune(ts);
+
+    // Breadth = DISTINCT symbols in the window, not raw alert count. Ten alerts
+    // from one symbol is one symbol moving; ten symbols is the market moving.
+    const bySymbol = new Map();
+    for (const e of arr) {
+        if (!bySymbol.has(e.s)) bySymbol.set(e.s, []);
+        bySymbol.get(e.s).push(e.z);
+    }
+    const breadth = bySymbol.size;
+    if (breadth < BREADTH_THRESHOLD) {
+        // Dropped back below the threshold: re-arm so the next surge can report.
+        if (breadth < BREADTH_THRESHOLD * 0.6) breadthState.lastLevel = 0;
+        return;
+    }
+
+    // Report on the first crossing, then only when it has grown by another STEP
+    // since the last report, or after the cooldown. One burst = a couple of
+    // messages, not one per alert.
+    const lastAt = breadthState.lastLevel || 0;
+    const cooledDown = (ts - (breadthState.lastFire || 0)) >= BREADTH_COOLDOWN_MS;
+    const grewEnough = breadth >= lastAt + BREADTH_STEP;
+    if (lastAt > 0 && !grewEnough && !cooledDown) return;
+
+    const counts = { pullback: 0, zero: 0, mixed: 0, other: 0 };
+    for (const [, zones] of bySymbol) {
+        const pick = zones.includes("pullback") ? "pullback"
+                   : zones.includes("zero")     ? "zero"
+                   : zones.includes("mixed")    ? "mixed" : "other";
+        counts[pick]++;
+    }
+
+    let bias = "UNCLEAR", note = "mixed alert types — no clear market-wide bias";
+    if (counts.pullback >= breadth * 0.6) {
+        bias = "SELL-SIDE";
+        note = "most symbols have fallen into pullback zones — treat these as a market-wide decline, NOT as individual buy setups";
+    } else if (counts.zero >= breadth * 0.6) {
+        bias = "BUY-SIDE";
+        note = "most symbols are pressing against their previous highs together";
+    }
+
+    const total = arr.length;
+    const lines = [
+        "🌊 BREADTH SURGE — " + bias,
+        "",
+        breadth + " distinct symbols in " + Math.round(BREADTH_WINDOW_MS / 60000) + " min  (normal ≈ 3)",
+        total + " alerts total",
+        "",
+        "pullback-zone symbols : " + counts.pullback,
+        "zero-zone symbols     : " + counts.zero,
+        "mixed / other         : " + (counts.mixed + counts.other),
+        "",
+        note,
+        "",
+        "⚠️ Describes what IS happening, not what happens next.",
+        formatDateTime(ts)
+    ];
+
+    sendToTelegram2(lines.join("\n"));
+    breadthState.lastFire = ts;
+    breadthState.lastLevel = breadth;
+    saveState();
 }
 
 function processSalsa(symbol, group, ts, body = {}) {
@@ -3600,7 +3752,7 @@ function processBundle(symbol, group, ts) {
                     )
                     .join("\n");
 
-                sendToTelegram2(
+                sendToTelegram2Disabled(
                     `📦 BUNDLE\n` +
                     `Total: ${valid.length}\n` +
                     `Window: 2m\n` +
@@ -4229,7 +4381,7 @@ function processZebraEcosystem(symbol, group, ts, body = {}) {
                 const gapMin = Math.floor(gapMs / 60000);
                 const gapSec = Math.floor((gapMs % 60000) / 1000);
 
-                sendToTelegram2(
+                sendToTelegram2Disabled(
                     "🦓 ZEBRA\n" +
                     "Rule: NORMAL + any special ecosystem within 1 hour\n" +
                     "Specials: #, ~, ^, @, $\n" +
@@ -4690,6 +4842,9 @@ app.post("/incoming", (req, res) => {
         // 💃 SALSA global 52Y 15m-to-12h detector.
         // Runs before isolated ecosystem returns so normal, #, ~, @, ^ and $ can all be caught.
         processSalsa(symbol, group, ts, body);
+        // 🌊 BREADTH global market-wide bias detector.
+        // Must run on EVERY alert regardless of ecosystem, so it sits with the other globals.
+        processBreadth(symbol, group, ts, body);
         // 🐍 MAMBA global 99F match-type direction detector.
         // Runs before isolated ecosystem returns so normal, #, ~, @, ^ and $ can all be caught.
         processMamba(symbol, group, ts, body);
@@ -4815,7 +4970,7 @@ if (!isHash) {
             const dir = body.direction?.toLowerCase();
             const mom = body.momentum?.toLowerCase();
             if (dir && mom && dir === mom) {
-                sendToTelegram2(
+                sendToTelegram2Disabled(
                     `🔥 STRONG SIGNAL\nSymbol: ${symbol}\nLevel: ${body.level || body.fib_level || "n/a"}\nDirection: ${dir}\nMomentum: ${mom}\nTime: ${body.time}`
                 );
             }
