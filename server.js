@@ -19,7 +19,57 @@ console.log(
 
 
 const app = express();
-app.use(express.json());
+// -----------------------------
+// BODY PARSING (TradingView-tolerant)
+// -----------------------------
+// TradingView only sends "application/json" when the alert message is valid
+// JSON. Messages like  "levels":["1H":"0.92","2H":"0.55"]  are NOT valid JSON
+// (key:value pairs inside [ ]), so TradingView sends them as plain text and a
+// plain express.json() would leave the body empty -> every bot ignores it.
+// We read every body as text and parse it ourselves, repairing that pattern.
+
+function repairTradingViewJson(text) {
+    // ["1H":"0.92","2H":"0.55"]  ->  {"1H":"0.92","2H":"0.55"}
+    return text.replace(
+        /\[((?:\s*"[^"]*"\s*:\s*(?:"[^"]*"|-?[\d.]+(?:[eE][-+]?\d+)?|true|false|null)\s*,?)+)\]/g,
+        "{$1}"
+    );
+}
+
+function parseAlertBody(raw) {
+    const text = String(raw || "").trim();
+    if (!text) return {};
+
+    try {
+        return JSON.parse(text);
+    } catch {}
+
+    try {
+        return JSON.parse(repairTradingViewJson(text));
+    } catch {}
+
+    return null;
+}
+
+app.use(express.text({ type: () => true, limit: "1mb" }));
+
+app.use((req, res, next) => {
+    if (typeof req.body !== "string") {
+        req.body = req.body && typeof req.body === "object" ? req.body : {};
+        return next();
+    }
+
+    const parsed = parseAlertBody(req.body);
+
+    if (parsed && typeof parsed === "object" && !Array.isArray(parsed)) {
+        req.body = parsed;
+    } else {
+        console.warn("⚠️ Unreadable alert body (not JSON):", req.body.slice(0, 300));
+        req.body = {};
+    }
+
+    next();
+});
 
 // -----------------------------
 // -----------------------------
@@ -4597,6 +4647,7 @@ app.post("/incoming", (req, res) => {
 		
         if (IS_MAIN) {
     if (ALERT_SECRET && body.secret !== ALERT_SECRET) {
+        console.warn("⛔ Alert rejected: missing/wrong \"secret\" in alert message | group=" + (body.group || "n/a") + " | symbol=" + (body.symbol || "n/a"));
         return res.sendStatus(401);
     }
 }
