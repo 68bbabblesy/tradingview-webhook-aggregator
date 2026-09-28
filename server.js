@@ -109,6 +109,7 @@ function loadState() {
                 mamamiaHashMemory: parsed.mamamiaHashMemory || {},
                 salsaMemory: parsed.salsaMemory || {},
                 breadthState: parsed.breadthState || { events: [], lastFire: 0, lastLevel: 0 },
+                censusState: parsed.censusState || { zones: {}, lastFire: 0, lastShare: 0 },
                 neptuneMemory: parsed.neptuneMemory || {},
                 zuluState: parsed.zuluState || {},
                 sideFlipMemory: parsed.sideFlipMemory || {},
@@ -173,6 +174,7 @@ function loadState() {
         mamamiaHashMemory: {},
         salsaMemory: {},
         breadthState: { events: [], lastFire: 0, lastLevel: 0 },
+        censusState: { zones: {}, lastFire: 0, lastShare: 0 },
         neptuneMemory: {},
         zuluState: {},
         sideFlipMemory: {},
@@ -243,6 +245,7 @@ function buildStateSnapshot() {
         mamamiaHashMemory,
         salsaMemory,
         breadthState,
+        censusState,
         neptuneMemory,
         zuluState,
         sideFlipMemory,
@@ -338,6 +341,7 @@ function pruneStateBeforeSave() {
 
     // Keep the breadth window small.
     try { breadthPrune(ts); } catch {}
+    try { censusPrune(ts); } catch {}
 
     // Telegram outbox cap.
     if (Array.isArray(telegramOutbox) && telegramOutbox.length > TELEGRAM_OUTBOX_MAX) {
@@ -1926,6 +1930,7 @@ function processCheck(symbol, group, ts, body) {
 
 let salsaMemory = persisted.salsaMemory || {};
 let breadthState = persisted.breadthState || { events: [], lastFire: 0, lastLevel: 0 };
+let censusState = persisted.censusState || { zones: {}, lastFire: 0, lastShare: 0 };
 let tangoState = persisted.tangoState || {};
 let gandoState = persisted.gandoState || {};
 
@@ -2007,6 +2012,104 @@ function breadthPrune(ts) {
     if (arr.length > BREADTH_MAX_EVENTS) arr = arr.slice(-BREADTH_MAX_EVENTS);
     breadthState.events = arr;
     return arr;
+}
+
+
+/* ─────────────────────────────────────────────────────────────────────────────
+   🧭 CENSUS  —  live position of every watchlist symbol
+   Fed by the CENSUS_REPORTER script on each symbol, which reports only when a
+   symbol CHANGES zone. Unlike breadth (which counts setup alerts, and so only
+   sees symbols that happened to fire) this is a true head count: we always know
+   where every reporting symbol currently sits.
+   Zones, by ratio from the reference timeframe's previous range:
+     ABOVE (<0) · TOP (0-0.12) · MID (0.12-0.35) · PULLBACK (0.35-1) · BELOW (>1)
+───────────────────────────────────────────────────────────────────────────── */
+const CENSUS_ENABLED       = (process.env.CENSUS_ENABLED || "1").trim() !== "0";
+const CENSUS_STALE_MS      = Number((process.env.CENSUS_STALE_HOURS || "12").trim()) * 60 * 60 * 1000;
+const CENSUS_MIN_SYMBOLS   = Number((process.env.CENSUS_MIN_SYMBOLS || "20").trim());
+const CENSUS_SHARE_TRIGGER = Number((process.env.CENSUS_SHARE || "0.6").trim());
+const CENSUS_SHARE_STEP    = Number((process.env.CENSUS_SHARE_STEP || "0.15").trim());
+const CENSUS_COOLDOWN_MS   = Number((process.env.CENSUS_COOLDOWN_MIN || "20").trim()) * 60 * 1000;
+// After a restart the picture rebuilds one symbol at a time, so the first few reports can
+// look like 100% of a tiny sample. Stay quiet until enough of the watchlist has checked in.
+const CENSUS_WARMUP_MS     = Number((process.env.CENSUS_WARMUP_MIN || "20").trim()) * 60 * 1000;
+const CENSUS_BOOT_TS       = Date.now();
+
+function censusPrune(ts) {
+    const z = censusState.zones || {};
+    for (const s of Object.keys(z)) {
+        if (!z[s] || (ts - (z[s].t || 0)) > CENSUS_STALE_MS) delete z[s];
+    }
+    censusState.zones = z;
+    return z;
+}
+
+function censusIsReport(body = {}) {
+    return String(body.condition || "").toLowerCase() === "census";
+}
+
+function processCensus(symbol, group, ts, body = {}) {
+    if (!CENSUS_ENABLED || !symbol || !censusIsReport(body)) return true;
+
+    if (!censusState || typeof censusState !== "object") {
+        censusState = { zones: {}, lastFire: 0, lastShare: 0 };
+    }
+    if (!censusState.zones || typeof censusState.zones !== "object") censusState.zones = {};
+
+    const zone = String(body.zone || "").toUpperCase();
+    if (!zone) return true;
+    censusState.zones[symbol] = { z: zone, t: ts, r: Number(body.ratio) };
+
+    const z = censusPrune(ts);
+    const symbols = Object.keys(z);
+    const total = symbols.length;
+    if (total < CENSUS_MIN_SYMBOLS) return true;
+    if ((Date.now() - CENSUS_BOOT_TS) < CENSUS_WARMUP_MS) return true;
+
+    const counts = { ABOVE: 0, TOP: 0, MID: 0, PULLBACK: 0, BELOW: 0 };
+    for (const s of symbols) if (counts[z[s].z] !== undefined) counts[z[s].z]++;
+
+    // Bearish share = pulled back or broken down. Bullish = at or above the high.
+    const bear = (counts.PULLBACK + counts.BELOW) / total;
+    const bull = (counts.ABOVE + counts.TOP) / total;
+    const share = Math.max(bear, bull);
+    const bias = bear >= bull ? "SELL-SIDE" : "BUY-SIDE";
+
+    if (share < CENSUS_SHARE_TRIGGER) {
+        if (share < CENSUS_SHARE_TRIGGER - 0.1) censusState.lastShare = 0;
+        return true;
+    }
+
+    const cooled = (ts - (censusState.lastFire || 0)) >= CENSUS_COOLDOWN_MS;
+    const grew = share >= (censusState.lastShare || 0) + CENSUS_SHARE_STEP;
+    if ((censusState.lastShare || 0) > 0 && !grew && !cooled) return true;
+
+    const pct = n => Math.round((n / total) * 100) + "%";
+    const lines = [
+        "🧭 CENSUS — " + bias,
+        "",
+        Math.round(share * 100) + "% of " + total + " symbols on the " +
+            (bias === "SELL-SIDE" ? "sell" : "buy") + " side",
+        "",
+        "ABOVE prev high : " + counts.ABOVE + "  (" + pct(counts.ABOVE) + ")",
+        "TOP  0-0.12     : " + counts.TOP + "  (" + pct(counts.TOP) + ")",
+        "MID  0.12-0.35  : " + counts.MID + "  (" + pct(counts.MID) + ")",
+        "PULLBACK 0.35-1 : " + counts.PULLBACK + "  (" + pct(counts.PULLBACK) + ")",
+        "BELOW prev low  : " + counts.BELOW + "  (" + pct(counts.BELOW) + ")",
+        "",
+        bias === "SELL-SIDE"
+            ? "Most of the watchlist has pulled back off its highs — do not read individual pullback alerts as buy setups."
+            : "Most of the watchlist is at or above its previous high.",
+        "",
+        "⚠️ Describes what IS happening, not what happens next.",
+        formatDateTime(ts)
+    ];
+
+    sendToTelegram2(lines.join("\n"));
+    censusState.lastFire = ts;
+    censusState.lastShare = share;
+    saveState();
+    return true;
 }
 
 function processBreadth(symbol, group, ts, body = {}) {
@@ -4844,6 +4947,12 @@ app.post("/incoming", (req, res) => {
         processSalsa(symbol, group, ts, body);
         // 🌊 BREADTH global market-wide bias detector.
         // Must run on EVERY alert regardless of ecosystem, so it sits with the other globals.
+        // 🧭 CENSUS position reports are not trading setups - they only feed the head count,
+        // so they are handled here and must not enter the normal/hash pipelines below.
+        if (censusIsReport(body)) {
+            processCensus(symbol, group, ts, body);
+            return res.sendStatus(200);
+        }
         processBreadth(symbol, group, ts, body);
         // 🐍 MAMBA global 99F match-type direction detector.
         // Runs before isolated ecosystem returns so normal, #, ~, @, ^ and $ can all be caught.
