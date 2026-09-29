@@ -959,6 +959,8 @@ function sendToTelegram3(text) { enqueueTelegram(3, text); }
 function sendToTelegram3Html(text) { enqueueTelegram(3, text, { html: true }); }
 function sendToTelegram4(text) { enqueueTelegram(4, text); }
 function sendToTelegram5(text) { enqueueTelegram(5, text); }
+function sendToTelegram5Html(text) { enqueueTelegram(5, text, { html: true }); }
+function sendToTelegram5Disabled(text) { return; } // Bot 5 is reserved for NEPTUNE
 function sendToTelegram6(text) { enqueueTelegram(6, text); }
 function sendToTelegram7(text) { enqueueTelegram(7, text); }
 function sendToTelegram8(text) { enqueueTelegram(8, text); }
@@ -1171,7 +1173,7 @@ const BAZOOKA_TRAIL_RESET_MS =
 
 const BAZOOKA_STATE_VERSION = 4;
 
-// 🎯 FOCUS MODE: only BREADTH + CENSUS (Bot2), BLACKPANTHER (Bot3), BAZOOKA (Bot4) and COBRA (Bot7) run.
+// 🎯 FOCUS MODE: only BREADTH + CENSUS (Bot2), BLACKPANTHER (Bot3), BAZOOKA (Bot4), NEPTUNE (Bot5) and COBRA (Bot7) run.
 // Every other bot is paused. Set FOCUS_MODE=0 on Render to run every bot again.
 const FOCUS_MODE = (process.env.FOCUS_MODE || "1").trim() !== "0";
 const BAZOOKA_MAX_TRAIL = 200;   // stored per symbol + group
@@ -1186,7 +1188,7 @@ for (const key of Object.keys(bazookaState)) {
 }
 
 console.log("💥 BAZOOKA LOADED — Bot4 alert + trail | full match only | groups: " + [...BAZOOKA_GROUPS].join(", "));
-console.log(FOCUS_MODE ? "🎯 FOCUS MODE: running Bot2 BREADTH+CENSUS, Bot3 BLACKPANTHER, Bot4 BAZOOKA, Bot7 COBRA — all other bots paused" : "▶️ All bots active (FOCUS_MODE=0)");
+console.log(FOCUS_MODE ? "🎯 FOCUS MODE: running Bot2 BREADTH+CENSUS, Bot3 BLACKPANTHER, Bot4 BAZOOKA, Bot5 NEPTUNE, Bot7 COBRA — all other bots paused" : "▶️ All bots active (FOCUS_MODE=0)");
 
 function bazookaNum(v) {
     const n = Number(String(v ?? "").replace(/,/g, "").trim());
@@ -2324,149 +2326,209 @@ function processTango(symbol, group, ts, body) {
 }
 
 // ==========================================================
-//  NEPTUNE (NORMAL + HASH CROSS-ECOSYSTEM CORRELATION)
-
-// ==========================================================
-//  NEPTUNE (NORMAL + HASH CROSS-ECOSYSTEM CORRELATION)
-//  Bot 5
+//  🌊 NEPTUNE — CENSUS ZONE ALERTS + TRAIL          -> Bot 5
 //
-//  Rule:
-//    - Same symbol
-//    - NORMAL ecosystem alert + # ecosystem alert
-//    - Either one can come first
-//    - Must be within 30 minutes
+//  Only alerts with group "CENSUS", and only these zone moves
+//  (either direction), kept apart as two separate sides:
+//
+//    🔺 ABOVE / TOP        TOP → ABOVE   or   ABOVE → TOP
+//    🔻 BELOW / PULLBACK   PULLBACK → BELOW   or   BELOW → PULLBACK
+//
+//  Every other move (MID → TOP, PULLBACK → MID ...) is ignored.
+//
+//  One message per alert: the details on top and, underneath,
+//  the trail of every alert for that symbol + side so far.
+//  The trail starts fresh after NEPTUNE_TRAIL_RESET_HOURS
+//  (default 24) with no new alert for that symbol + side.
+//  The same bar arriving twice (e.g. BINANCE + BYBIT) counts once.
+//
+//  Fully separate from every other bot: own settings and memory.
 // ==========================================================
 
-const NEPTUNE_CROSS_WINDOW_MS = 30 * 60 * 1000; // 30 minutes
+const NEPTUNE_TRAIL_RESET_MS =
+    (Number(process.env.NEPTUNE_TRAIL_RESET_HOURS) || 24) * 60 * 60 * 1000;
 
-// neptuneMemory[symbol] = {
-//   lastNormal: { group, time } | null,
-//   lastHash: { group, time } | null,
-//   lastSentKey: string
-// }
+const NEPTUNE_STATE_VERSION = 2;
+const NEPTUNE_MAX_TRAIL = 200;   // stored per symbol + side
+const NEPTUNE_MAX_LINES = 25;    // shown in one Telegram message
+
+const NEPTUNE_SIDES = {
+    TOP: {
+        zones: ["ABOVE", "TOP"],
+        title: "🔺 <b>NEPTUNE · ABOVE / TOP</b>"
+    },
+    BOTTOM: {
+        zones: ["BELOW", "PULLBACK"],
+        title: "🔻 <b>NEPTUNE · BELOW / PULLBACK</b>"
+    }
+};
+
 let neptuneMemory = persisted.neptuneMemory || {};
 
-function neptuneKindFromGroup(group) {
-    const raw = String(group || "").trim().toUpperCase();
-
-    if (!raw) return "";
-    if (raw.startsWith("#")) return "HASH";
-    if (raw.startsWith("@")) return "";
-    if (raw.startsWith("~")) return "";
-    if (raw.startsWith("^")) return "";
-
-    return "NORMAL";
+// Drop anything saved by the old NEPTUNE.
+for (const key of Object.keys(neptuneMemory)) {
+    const st = neptuneMemory[key];
+    if (!st || st.v !== NEPTUNE_STATE_VERSION || !Array.isArray(st.trail)) delete neptuneMemory[key];
 }
 
-function getNeptuneState(symbol) {
-    const current = neptuneMemory[symbol];
+console.log("🌊 NEPTUNE LOADED — Bot5 | CENSUS only | ABOVE↔TOP and BELOW↔PULLBACK");
 
-    const invalid =
-        !current ||
-        typeof current !== "object" ||
-        Array.isArray(current) ||
-        (
-            !Object.prototype.hasOwnProperty.call(current, "lastNormal") &&
-            !Object.prototype.hasOwnProperty.call(current, "lastHash")
-        );
-
-    if (invalid) {
-        neptuneMemory[symbol] = {
-            lastNormal: null,
-            lastHash: null,
-            lastSentKey: ""
-        };
-    }
-
-    return neptuneMemory[symbol];
-}
-
-function neptunePairKey(a, b) {
-    return [
-        a.kind + ":" + a.group + ":" + a.time,
-        b.kind + ":" + b.group + ":" + b.time
-    ].sort().join("|");
-}
-
-function neptuneEventLine(e, index) {
-    return (
-        (index + 1) + ") " +
-        e.kind +
-        " | " + e.group +
-        " @ " + formatDateTime(e.time)
-    );
-}
-
-function processNeptune(symbol, group, ts) {
-
-    if (!symbol || !group) return;
-
-    const rawGroup = String(group || "").trim().toUpperCase();
-    const kind = neptuneKindFromGroup(rawGroup);
-
-    if (!kind) return;
-
-    const state = getNeptuneState(symbol);
-
-    const current = {
-        kind,
-        group: rawGroup,
-        time: ts
-    };
-
-    const oppositeKey = kind === "HASH" ? "lastNormal" : "lastHash";
-    const ownKey = kind === "HASH" ? "lastHash" : "lastNormal";
-
-    const prior = state[oppositeKey];
-
-    if (prior && typeof prior.time === "number") {
-        const gapMs = Math.abs(ts - prior.time);
-
-        if (gapMs <= NEPTUNE_CROSS_WINDOW_MS) {
-            const first = prior.time <= current.time ? prior : current;
-            const second = prior.time <= current.time ? current : prior;
-
-            const pairKey = neptunePairKey(first, second);
-
-            if (state.lastSentKey !== pairKey) {
-                const gapMin = Math.floor(gapMs / 60000);
-                const gapSec = Math.floor((gapMs % 60000) / 1000);
-
-                sendToTelegram5(
-                    "🌊 NEPTUNE\n" +
-                    "Symbol: " + symbol + "\n" +
-                    "Rule: NORMAL + HASH within 30 minutes\n" +
-                    "Span: " + gapMin + "m " + gapSec + "s\n\n" +
-                    "Alerts:\n" +
-                    neptuneEventLine(first, 0) + "\n" +
-                    neptuneEventLine(second, 1)
-                );
-
-                state.lastSentKey = pairKey;
-            }
+function neptuneSide(zone, prevZone) {
+    for (const [side, cfg] of Object.entries(NEPTUNE_SIDES)) {
+        if (zone !== prevZone && cfg.zones.includes(zone) && cfg.zones.includes(prevZone)) {
+            return side;
         }
     }
+    return null;
+}
 
-    // Always store latest alert from this ecosystem.
-    state[ownKey] = current;
+function npNum(v) {
+    const n = Number(String(v ?? "").replace(/,/g, "").trim());
+    return Number.isFinite(n) ? n : null;
+}
 
-    // Safety cleanup.
-    if (Object.keys(neptuneMemory).length > 5000) {
-        const cutoff = ts - (2 * 60 * 60 * 1000);
+function npHm(ts) {
+    return new Date(ts).toLocaleTimeString("en-GB", {
+        timeZone: "Europe/London",
+        hour: "2-digit",
+        minute: "2-digit"
+    });
+}
 
-        for (const sym of Object.keys(neptuneMemory)) {
-            const st = neptuneMemory[sym];
+function npDay(ts) {
+    const parts = new Intl.DateTimeFormat("en-GB", {
+        timeZone: "Europe/London",
+        day: "numeric",
+        month: "numeric"
+    }).formatToParts(new Date(ts));
+    const day = parts.find(p => p.type === "day")?.value || "";
+    const month = Number(parts.find(p => p.type === "month")?.value || 1);
+    return day + " " + ["Jan","Feb","Mar","Apr","May","Jun","Jul","Aug","Sep","Oct","Nov","Dec"][month - 1];
+}
 
-            if (!st || typeof st !== "object") {
-                delete neptuneMemory[sym];
-                continue;
-            }
+function npGap(ms) {
+    const safe = Math.max(0, ms);
+    const totalMin = Math.floor(safe / 60000);
+    const h = Math.floor(totalMin / 60);
+    if (h > 0) return h + "h " + (totalMin % 60) + "m";
+    return totalMin + "m " + Math.floor((safe % 60000) / 1000) + "s";
+}
 
-            const n = st.lastNormal?.time || 0;
-            const h = st.lastHash?.time || 0;
+function npPct(from, to) {
+    if (!from || !to) return "";
+    const pct = ((to - from) / from) * 100;
+    return (pct >= 0 ? "+" : "") + pct.toFixed(2) + "%";
+}
 
-            if (Math.max(n, h) < cutoff) {
-                delete neptuneMemory[sym];
+function processNeptune(symbol, group, ts, body = {}) {
+    if (!symbol) return;
+    if (String(group || body.group || "").trim().toUpperCase() !== "CENSUS") return;
+
+    const zone = String(body.zone || "").trim().toUpperCase();
+    const prevZone = String(body.prev_zone || "").trim().toUpperCase();
+    const side = neptuneSide(zone, prevZone);
+    if (!side) return;
+
+    const key = symbol + "|" + side;
+    let state = neptuneMemory[key];
+
+    // Fresh trail if none yet, or it went quiet for too long.
+    if (
+        !state ||
+        !state.trail.length ||
+        ts - state.trail[state.trail.length - 1].time > NEPTUNE_TRAIL_RESET_MS
+    ) {
+        state = neptuneMemory[key] = { v: NEPTUNE_STATE_VERSION, trail: [] };
+    }
+
+    const barTime = npNum(body.time) || ts;
+    if (state.trail.some(e => e.barTime === barTime && e.zone === zone)) return;   // duplicate copy
+
+    const current = {
+        time: ts,
+        barTime,
+        zone,
+        prevZone,
+        price: npNum(body.price ?? body.close),
+        ratio: npNum(body.ratio)
+    };
+
+    state.trail.push(current);
+
+    if (state.trail.length > NEPTUNE_MAX_TRAIL) {
+        state.trail = state.trail.slice(-NEPTUNE_MAX_TRAIL);
+    }
+
+    const trail = state.trail;
+    const first = trail[0];
+    const shown = trail.slice(-NEPTUNE_MAX_LINES);
+    const hidden = trail.length - shown.length;
+
+    // ---------- trail table ----------
+    const rows = shown.map((e, i) => {
+        const n = hidden + i + 1;
+        return {
+            n: String(n),
+            time: npHm(e.time),
+            price: e.price === null || e.price === undefined ? "n/a" : String(e.price),
+            chg: n === 1 ? "-" : (npPct(first.price, e.price) || "-"),
+            zone: e.zone,
+            day: npDay(e.time),
+            isNew: e === current && trail.length > 1
+        };
+    });
+
+    const cols = [
+        { key: "n", title: "#", right: true },
+        { key: "time", title: "Time", right: false },
+        { key: "price", title: "Price", right: true },
+        { key: "chg", title: "Chg", right: true },
+        { key: "zone", title: "Now", right: false }
+    ];
+
+    for (const c of cols) {
+        c.width = Math.max(c.title.length, ...rows.map(r => r[c.key].length));
+    }
+
+    const fmtRow = r => cols
+        .map(c => c.right ? r[c.key].padStart(c.width) : r[c.key].padEnd(c.width))
+        .join("  ")
+        .trimEnd();
+
+    const table = [fmtRow(Object.fromEntries(cols.map(c => [c.key, c.title])))];
+    if (hidden > 0) table.push("… " + hidden + " earlier");
+
+    rows.forEach((r, i) => {
+        if (i > 0 && r.day !== rows[i - 1].day) table.push("── " + r.day + " ──");
+        table.push(fmtRow(r) + (r.isNew ? "  ◀" : ""));
+    });
+
+    // ---------- header ----------
+    const pctSinceFirst = trail.length > 1 ? npPct(first.price, current.price) : "";
+    const tf = body.tf ? " " + tgEscape(body.tf) : "";
+
+    const msg =
+        NEPTUNE_SIDES[side].title + "\n" +
+        "<b>" + tgEscape(symbol) + "</b>  ·  CENSUS" + tf + "\n" +
+        "Move <b>" + tgEscape(prevZone) + " → " + tgEscape(zone) + "</b>" +
+        (current.ratio !== null ? "  ·  ratio " + tgEscape(current.ratio) : "") + "\n" +
+        "Price <b>" + tgEscape(current.price ?? "n/a") + "</b>" +
+        (pctSinceFirst ? "  (" + tgEscape(pctSinceFirst) + " since #1)" : "") + "\n" +
+        "\n<pre>" + tgEscape(table.join("\n")) + "</pre>\n" +
+        "<i>" +
+        (trail.length > 1
+            ? trail.length + " alerts over " + npGap(current.time - first.time) + " · started " + npDay(first.time) + " " + npHm(first.time)
+            : "First alert · " + npDay(first.time) + " " + npHm(first.time)) +
+        "</i>";
+
+    sendToTelegram5Html(msg);
+
+    // Tidy up long-dead trails.
+    if (Object.keys(neptuneMemory).length > 3000) {
+        for (const k of Object.keys(neptuneMemory)) {
+            const t = neptuneMemory[k]?.trail;
+            if (!Array.isArray(t) || !t.length || ts - t[t.length - 1].time > NEPTUNE_TRAIL_RESET_MS) {
+                delete neptuneMemory[k];
             }
         }
     }
@@ -2649,7 +2711,7 @@ function processAnyTwo(symbol, group, ts) {
                     )
                     .join("\n");
 
-                sendToTelegram5(
+                sendToTelegram5Disabled(   // muted: Bot 5 is NEPTUNE only
                     `🔁 ANY_TWO\n` +
                     `Symbol: ${symbol}\n` +
                     `Count: ${events.length}\n` +
@@ -4910,12 +4972,14 @@ app.post("/incoming", (req, res) => {
         //   Bot 2 — 🌊 BREADTH + 🧭 CENSUS
         //   Bot 3 — 🖤 BLACKPANTHER
         //   Bot 4 — 💥 BAZOOKA
+        //   Bot 5 — 🌊 NEPTUNE
         //   Bot 7 — 🐍 COBRA
         // To run every bot again, set FOCUS_MODE=0 on Render.
         if (FOCUS_MODE) {
             processBazooka(symbol, group, ts, body);
 
             if (censusIsReport(body)) {
+                processNeptune(symbol, group, ts, body);   // 🌊 Bot5: CENSUS ABOVE↔TOP / BELOW↔PULLBACK
                 processCensus(symbol, group, ts, body);
                 return res.sendStatus(200);
             }
@@ -4944,6 +5008,7 @@ app.post("/incoming", (req, res) => {
         // 🧭 CENSUS position reports are not trading setups - they only feed the head count,
         // so they are handled here and must not enter the normal/hash pipelines below.
         if (censusIsReport(body)) {
+            processNeptune(symbol, group, ts, body);   // 🌊 Bot5: CENSUS ABOVE↔TOP / BELOW↔PULLBACK
             processCensus(symbol, group, ts, body);
             return res.sendStatus(200);
         }
@@ -5023,7 +5088,6 @@ if (!isHash) {
         // processSalsa moved to global Bot8 price-time detector
         processTango(symbol, group, ts);
         processCobra(symbol, group, ts, body); // 🐍 Bot7: 2+ different normal groups within 30m
-        processNeptune(symbol, group, ts);
         // processZulu(symbol, group, ts); // disabled by request
         processMinta(symbol, group, ts);
         // processMamba moved to global Bot6 90m-to-7h price-time detector
@@ -5047,8 +5111,6 @@ if (!isHash) {
     // 🔴 HASH ECOSYSTEM (isolated)
 
     recordHashEvent(symbol, group, ts);
-
-    processNeptune(symbol, group, ts);
 
     processBoom(symbol, group, ts);
 
@@ -5141,6 +5203,7 @@ saveState();
 //    /test/3?secret=YOUR_ALERT_SECRET      -> same for any bot number 1-15
 //    /test/bazooka                          -> fake 17G trail of 3 -> Bot 4
 //    /test/blackpanther                     -> fake 35P trail of 3 -> Bot 3
+//    /test/neptune                          -> fake CENSUS moves -> Bot 5
 //    /test/cobra?secret=YOUR_ALERT_SECRET  -> runs 2 fake NORMAL alerts
 //                                             through the real COBRA logic
 //
@@ -5229,6 +5292,34 @@ app.get("/test/blackpanther", (req, res) => {
     res.send(count === 3
         ? "✅ BLACKPANTHER test queued: 3 messages to Bot 3, the trail growing from 1 to 3 alerts (group \"A\" was correctly ignored)."
         : "❌ BLACKPANTHER test problem: trail count was " + count + " (expected 3). Please share the Render logs.");
+});
+
+app.get("/test/neptune", (req, res) => {
+    if (!testSecretOk(req)) return res.status(401).send("❌ Wrong or missing ?secret=");
+
+    const sym = "TEST_NEPTUNE";
+    const now = Date.now();
+    delete neptuneMemory[sym + "|TOP"];
+    delete neptuneMemory[sym + "|BOTTOM"];
+
+    const fire = (min, zone, prev_zone, price, time, group = "CENSUS") =>
+        processNeptune(sym, group, now - min * 60000,
+            { condition: "Census", group, tf: "1D", zone, prev_zone, ratio: 0.01, price, time });
+
+    fire(60, "TOP", "MID", 24.40, 1);            // MID -> TOP: ignored
+    fire(55, "ABOVE", "TOP", 24.55, 2, "17G");   // not CENSUS: ignored
+    fire(50, "ABOVE", "TOP", 24.55, 3);          // 🔺 #1
+    fire(0, "TOP", "ABOVE", 24.41, 4);           // 🔺 #2
+    fire(0, "BELOW", "PULLBACK", 0.042, 5);      // 🔻 #1
+
+    const top = neptuneMemory[sym + "|TOP"]?.trail?.length || 0;
+    const bottom = neptuneMemory[sym + "|BOTTOM"]?.trail?.length || 0;
+    delete neptuneMemory[sym + "|TOP"];
+    delete neptuneMemory[sym + "|BOTTOM"];
+
+    res.send(top === 2 && bottom === 1
+        ? "✅ NEPTUNE test queued: 3 messages to Bot 5 — two 🔺 ABOVE / TOP (trail of 2) and one 🔻 BELOW / PULLBACK."
+        : "❌ NEPTUNE test problem: top=" + top + " bottom=" + bottom + " (expected 2 and 1).");
 });
 
 app.get("/test/:bot", async (req, res) => {
