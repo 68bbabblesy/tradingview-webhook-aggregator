@@ -1098,240 +1098,164 @@ function getRecentHashBefore(symbol, ts, windowMs) {
 }
 
 // ==========================================================
-//  BAZOOKA — EXACT 27 / 61 / 77 FAMILY DETECTOR
-//  Bot 4
+//  💥 BAZOOKA — FULL-MATCH ALERT + TRAIL          -> Bot 4
 //
-//  Rule:
-//    - Same symbol
-//    - Any ecosystem + any ecosystem
-//    - 3 separate families required
-//    - Families must be exactly 27, 61, 77
-//    - All 3 must be within 30 seconds
-//    - No price condition
+//  Only these groups, and only when EVERY level matched
+//  (matched_count === enabled_count):
+//
+//    17G  my.golden.pocket          18 of 18
+//    62H  EARLY 0.5 RET to 0.883    18 of 18
+//    44U  KOSOKO 0.618              4 of 4
+//
+//  Anything less (17 of 18, 3 of 4 ...) is ignored.
+//
+//  One message per full match: the alert details on top, and
+//  underneath the trail of every full match for that symbol +
+//  group so far, e.g. 1) 04:07  2) 04:11  3) 05:30 <- new
+//
+//  The trail starts fresh after BAZOOKA_TRAIL_RESET_HOURS
+//  (default 24) with no new full match for that symbol + group.
+//  The same bar arriving twice (e.g. BINANCE + OKX) counts once.
+//
+//  Optional Render settings (no need to set them):
+//    BAZOOKA_GROUPS             default "17G,62H,44U"
+//    BAZOOKA_TRAIL_RESET_HOURS  default 24
 // ==========================================================
 
-const BAZOOKA_FAMILY_WINDOW_MS = 30 * 1000; // 30 seconds
-const BAZOOKA_TARGET_FAMILY_KEY = "27|61|77";
+const BAZOOKA_GROUPS = new Set(
+    (process.env.BAZOOKA_GROUPS || "17G,62H,44U")
+        .split(",")
+        .map(g => g.trim().toUpperCase())
+        .filter(Boolean)
+);
+
+const BAZOOKA_TRAIL_RESET_MS =
+    (Number(process.env.BAZOOKA_TRAIL_RESET_HOURS) || 24) * 60 * 60 * 1000;
+
+const BAZOOKA_STATE_VERSION = 4;
+
+// 🎯 FOCUS MODE: only BREADTH + CENSUS (Bot2), BAZOOKA (Bot4) and COBRA (Bot7) run.
+// Every other bot is paused. Set FOCUS_MODE=0 on Render to run every bot again.
+const FOCUS_MODE = (process.env.FOCUS_MODE || "1").trim() !== "0";
+const BAZOOKA_MAX_TRAIL = 200;   // stored per symbol + group
+const BAZOOKA_MAX_LINES = 25;    // shown in one Telegram message
 
 let bazookaState = persisted.bazookaState || {};
 
-function bazookaEcosystemFromGroup(group) {
-    const raw = String(group || "").trim().toUpperCase();
-
-    if (!raw) return "";
-
-    if (raw.startsWith("#")) return "HASH";
-    if (raw.startsWith("~")) return "ZEBRA";
-    if (raw.startsWith("^")) return "KANGAROO";
-    if (raw.startsWith("@")) return "MANUAL";
-    if (raw.startsWith("$")) return "DOLLAR";
-
-    return "NORMAL";
+// Drop anything saved by older BAZOOKA versions.
+for (const key of Object.keys(bazookaState)) {
+    const st = bazookaState[key];
+    if (!st || st.v !== BAZOOKA_STATE_VERSION || !Array.isArray(st.trail)) delete bazookaState[key];
 }
 
-function bazookaFamilyFromGroup(group) {
-    const raw = String(group || "").trim().toUpperCase();
-    if (!raw) return "";
+console.log("💥 BAZOOKA LOADED — Bot4 alert + trail | full match only | groups: " + [...BAZOOKA_GROUPS].join(", "));
+console.log(FOCUS_MODE ? "🎯 FOCUS MODE: running Bot2 BREADTH+CENSUS, Bot4 BAZOOKA, Bot7 COBRA — all other bots paused" : "▶️ All bots active (FOCUS_MODE=0)");
 
-    const ecosystem = bazookaEcosystemFromGroup(raw);
-    const groupBody = ecosystem === "NORMAL" ? raw : raw.slice(1);
-
-    const numMatch = groupBody.match(/^(\d+)/);
-    const wordMatch = groupBody.match(/^([A-Z]+)/);
-
-    return numMatch
-        ? numMatch[1]
-        : wordMatch
-            ? wordMatch[1]
-            : groupBody;
+function bazookaNum(v) {
+    const n = Number(String(v ?? "").replace(/,/g, "").trim());
+    return Number.isFinite(n) ? n : null;
 }
 
-function bazookaFamilySort(a, b) {
-    const na = Number(a);
-    const nb = Number(b);
-
-    if (Number.isFinite(na) && Number.isFinite(nb)) {
-        return na - nb;
-    }
-
-    return String(a).localeCompare(String(b));
+function bazookaTime(ts) {
+    return new Date(ts).toLocaleString("en-GB", {
+        timeZone: "Europe/London",
+        day: "2-digit",
+        month: "2-digit",
+        hour: "2-digit",
+        minute: "2-digit",
+        second: "2-digit"
+    });
 }
 
-function bazookaFamilyKey(events) {
-    return events
-        .map(e => String(e.family))
-        .sort(bazookaFamilySort)
-        .join("|");
+function bazookaGap(ms) {
+    const safe = Math.max(0, ms);
+    const totalMin = Math.floor(safe / 60000);
+    const h = Math.floor(totalMin / 60);
+    if (h > 0) return h + "h " + (totalMin % 60) + "m";
+    return totalMin + "m " + Math.floor((safe % 60000) / 1000) + "s";
 }
 
-function bazookaCleanPrice(body) {
-    const raw =
-        body?.price ??
-        body?.close ??
-        body?.current_price ??
-        body?.alert_price ??
-        body?.level ??
-        "";
-
-    const n = Number(
-        String(raw)
-            .replace(/,/g, "")
-            .replace(/[^0-9.-]/g, "")
-    );
-
-    return Number.isFinite(n) && n > 0 ? String(n) : "n/a";
-}
-
-function bazookaEventLine(e, index) {
-    return (
-        (index + 1) + ") " +
-        e.ecosystem +
-        " | Family " + e.family +
-        " | " + e.group +
-        " | Price " + (e.price ?? "n/a") +
-        " @ " + formatDateTime(e.time)
-    );
-}
-
-function getBazookaSymbolState(symbol) {
-    if (
-        !bazookaState[symbol] ||
-        typeof bazookaState[symbol] !== "object" ||
-        Array.isArray(bazookaState[symbol])
-    ) {
-        bazookaState[symbol] = {
-            events: [],
-            lastSentKey: ""
-        };
-    }
-
-    if (!Array.isArray(bazookaState[symbol].events)) {
-        bazookaState[symbol] = {
-            events: [],
-            lastSentKey: ""
-        };
-    }
-
-    return bazookaState[symbol];
+function bazookaPct(from, to) {
+    if (!from || !to) return "";
+    const pct = ((to - from) / from) * 100;
+    return (pct >= 0 ? "+" : "") + pct.toFixed(2) + "%";
 }
 
 function processBazooka(symbol, group, ts, body = {}) {
-
     if (!symbol || !group) return;
 
-    const rawGroup = String(group || "").trim();
-    if (!rawGroup) return;
+    const rawGroup = String(group).trim().toUpperCase();
+    if (!BAZOOKA_GROUPS.has(rawGroup)) return;
 
-    const ecosystem = bazookaEcosystemFromGroup(rawGroup);
-    const family = bazookaFamilyFromGroup(rawGroup);
+    const matched = bazookaNum(body.matched_count);
+    const enabled = bazookaNum(body.enabled_count);
+    if (!enabled || matched !== enabled) return;   // full match only
 
-    if (!ecosystem || !family) return;
+    const key = symbol + "|" + rawGroup;
+    let state = bazookaState[key];
 
-    const state = getBazookaSymbolState(symbol);
-
-    const current = {
-        ecosystem,
-        family,
-        group: rawGroup,
-        time: ts,
-        price: bazookaCleanPrice(body)
-    };
-
-    const cutoff = ts - BAZOOKA_FAMILY_WINDOW_MS;
-
-    state.events = state.events
-        .filter(e =>
-            e &&
-            typeof e.time === "number" &&
-            e.time >= cutoff &&
-            e.family &&
-            e.group
-        )
-        .sort((a, b) => a.time - b.time);
-
-    const combined = [...state.events, current]
-        .filter(e =>
-            e &&
-            typeof e.time === "number" &&
-            e.time >= cutoff &&
-            e.family &&
-            e.group
-        )
-        .sort((a, b) => b.time - a.time);
-
-    const latestByFamily = new Map();
-
-    for (const e of combined) {
-        const familyKey = String(e.family);
-
-        if (!latestByFamily.has(familyKey)) {
-            latestByFamily.set(familyKey, e);
-        }
-    }
-
+    // Fresh trail if none yet, or it went quiet for too long.
     if (
-        latestByFamily.has("27") &&
-        latestByFamily.has("61") &&
-        latestByFamily.has("77")
+        !state ||
+        !state.trail.length ||
+        ts - state.trail[state.trail.length - 1].time > BAZOOKA_TRAIL_RESET_MS
     ) {
-        const selected = [
-            latestByFamily.get("27"),
-            latestByFamily.get("61"),
-            latestByFamily.get("77")
-        ].sort((a, b) => a.time - b.time);
-
-        const spanMs = selected[selected.length - 1].time - selected[0].time;
-
-        if (
-            spanMs <= BAZOOKA_FAMILY_WINDOW_MS &&
-            bazookaFamilyKey(selected) === BAZOOKA_TARGET_FAMILY_KEY
-        ) {
-            const alertKey = selected
-                .map(e => e.ecosystem + ":" + e.family + ":" + e.group + ":" + e.time)
-                .sort()
-                .join("|");
-
-            if (state.lastSentKey !== alertKey) {
-                const spanSec = Math.floor(spanMs / 1000);
-                const spanMsRemainder = spanMs % 1000;
-
-                sendToTelegram4(
-                    "💥 BAZOOKA\n" +
-                    "Symbol: " + symbol + "\n" +
-                    "Families: 27, 61, 77\n" +
-                    "Span: " + spanSec + "s " + spanMsRemainder + "ms\n\n" +
-                    "Alerts:\n" +
-                    selected.map((e, i) => bazookaEventLine(e, i)).join("\n") +
-                    "\n\n" +
-                    "Rule: exact families 27, 61, 77 within 30 seconds"
-                );
-
-                state.lastSentKey = alertKey;
-            }
-        }
+        state = bazookaState[key] = { v: BAZOOKA_STATE_VERSION, trail: [] };
     }
 
-    state.events.push(current);
+    const barTime = bazookaNum(body.time) || ts;
+    if (state.trail.some(e => e.barTime === barTime)) return;   // duplicate copy
 
-    if (state.events.length > 100) {
-        state.events = state.events.slice(-100);
+    const current = { time: ts, barTime, price: bazookaNum(body.price ?? body.close) };
+    state.trail.push(current);
+
+    if (state.trail.length > BAZOOKA_MAX_TRAIL) {
+        state.trail = state.trail.slice(-BAZOOKA_MAX_TRAIL);
     }
 
-    if (Object.keys(bazookaState).length > 5000) {
-        const oldCutoff = ts - (2 * BAZOOKA_FAMILY_WINDOW_MS);
+    const trail = state.trail;
+    const first = trail[0];
+    const shown = trail.slice(-BAZOOKA_MAX_LINES);
+    const hidden = trail.length - shown.length;
 
-        for (const sym of Object.keys(bazookaState)) {
-            const st = bazookaState[sym];
+    const lines = shown.map((e, i) => {
+        const n = hidden + i + 1;
+        const prev = trail[n - 2];
+        let line = n + ") " + bazookaTime(e.time) + " | Price " + (e.price ?? "n/a");
 
-            if (!st || typeof st !== "object" || !Array.isArray(st.events)) {
-                delete bazookaState[sym];
-                continue;
-            }
+        if (prev) line += " | +" + bazookaGap(e.time - prev.time);
 
-            st.events = st.events.filter(e => e && e.time >= oldCutoff);
+        const pct = n > 1 ? bazookaPct(first.price, e.price) : "";
+        if (pct) line += " | " + pct + " vs #1";
 
-            if (!st.events.length) {
-                delete bazookaState[sym];
+        if (e === current && trail.length > 1) line += "  ⬅️ new";
+        return line;
+    });
+
+    if (hidden > 0) lines.unshift("… " + hidden + " earlier alert(s) not shown");
+
+    const band =
+        body.band_top !== undefined && body.band_bottom !== undefined
+            ? body.band_top + " – " + body.band_bottom
+            : "n/a";
+
+    sendToTelegram4(
+        "💥 BAZOOKA\n" +
+        "Symbol: " + symbol + "\n" +
+        "Group: " + rawGroup + " (" + matched + " of " + enabled + ")\n" +
+        "Band: " + band + "\n" +
+        "Price: " + (current.price ?? "n/a") + "\n" +
+        "Time: " + bazookaTime(ts) + "\n\n" +
+        "Trail (" + trail.length + " alert" + (trail.length > 1 ? "s over " + bazookaGap(current.time - first.time) : "") + "):\n" +
+        lines.join("\n")
+    );
+
+    // Tidy up long-dead trails.
+    if (Object.keys(bazookaState).length > 2000) {
+        for (const k of Object.keys(bazookaState)) {
+            const t = bazookaState[k]?.trail;
+            if (!Array.isArray(t) || !t.length || ts - t[t.length - 1].time > BAZOOKA_TRAIL_RESET_MS) {
+                delete bazookaState[k];
             }
         }
     }
@@ -1348,7 +1272,6 @@ function activateBazooka(symbol, source, sourceTime, sourceGroup) {
 //  WAKANDA DISABLED
 //
 //  Disabled by request.
-//  BAZOOKA now handles every # alert as a basic report.
 // ==========================================================
 
 let wakandaState = persisted.wakandaState || {};
@@ -1448,187 +1371,18 @@ function passesStructuredGroupFilter(groups) {
 //  Names kept only so we can reuse them later.
 // ==========================================================
 
-let blackPantherMemory = persisted.blackPantherMemory || {};
 let gammaMemory = persisted.gammaMemory || {};
 
 
 // ==========================================================
-//  BLACKPANTHER — SPECIAL ECOSYSTEM FAMILY CROSS
-//  Bot 3
-//
-//  Rule:
-//    - Same symbol
-//    - Eligible ecosystems only: #, ~, ^, @
-//    - Excluded ecosystems: $, normal/no-prefix
-//    - Families must be different
-//    - Match must occur within 1 hour
-//    - Same eligible ecosystem is allowed if families are different
-//      Example: ~1 and ~2
+//  🖤 BLACKPANTHER — DISABLED
+//  Switched off by request. Nothing is sent to Bot 3.
 // ==========================================================
 
-const BLACKPANTHER_SPECIAL_WINDOW_MS = 60 * 60 * 1000; // 1 hour
-
-function blackPantherSpecialEcosystem(group) {
-    const raw = String(group || "").trim().toUpperCase();
-
-    if (!raw) return "";
-
-    if (raw.startsWith("#")) return "HASH";
-    if (raw.startsWith("~")) return "ZEBRA";
-    if (raw.startsWith("^")) return "KANGAROO";
-    if (raw.startsWith("@")) return "MANUAL";
-
-    // Explicitly exclude DOLLAR and normal/no-prefix.
-    return "";
-}
-
-function blackPantherFamilyFromGroup(group) {
-    const raw = String(group || "").trim().toUpperCase();
-    if (!raw) return "";
-
-    // Remove ecosystem prefix.
-    const body = raw.slice(1);
-
-    // Primary family = first number after the ecosystem character.
-    // Examples: ~1 => 1, ~2 => 2, #37A => 37, @41K => 41.
-    const num = body.match(/^(\d+)/);
-    if (num) return num[1];
-
-    // Fallback for non-numeric special groups.
-    // Example: #TOP_ALERT => TOP
-    const word = body.match(/^([A-Z]+)/);
-    if (word) return word[1];
-
-    return body || raw;
-}
-
-function blackPantherEventLine(e, index) {
-    return (
-        (index + 1) + ") " +
-        e.ecosystem +
-        " | Family " + e.family +
-        " | " + e.group +
-        " | Price " + (e.price ?? "n/a") +
-        " @ " + formatDateTime(e.time)
-    );
-}
+let blackPantherMemory = {}; // kept empty so state.json stays valid
 
 function processBlackPanther(symbol, group, ts, body = {}) {
-
-    if (!symbol || !group) return;
-
-    const rawGroup = String(group || "").trim();
-    const ecosystem = blackPantherSpecialEcosystem(rawGroup);
-
-    // Only #, ~, ^, @ are eligible.
-    // $ and normal/no-prefix are excluded.
-    if (!ecosystem) return;
-
-    const family = blackPantherFamilyFromGroup(rawGroup);
-    if (!family) return;
-
-    if (!blackPantherMemory[symbol] || typeof blackPantherMemory[symbol] !== "object") {
-        blackPantherMemory[symbol] = {
-            events: [],
-            lastSentKey: ""
-        };
-    }
-
-    const state = blackPantherMemory[symbol];
-
-    if (!Array.isArray(state.events)) {
-        state.events = [];
-    }
-
-    const current = {
-        ecosystem,
-        family,
-        group: rawGroup,
-        time: ts,
-        price:
-            body?.price ??
-            body?.close ??
-            body?.current_price ??
-            "n/a"
-    };
-
-    const cutoff = ts - BLACKPANTHER_SPECIAL_WINDOW_MS;
-
-    state.events = state.events
-        .filter(e =>
-            e &&
-            typeof e.time === "number" &&
-            e.time >= cutoff &&
-            e.symbol !== null
-        )
-        .sort((a, b) => a.time - b.time);
-
-    const prior = state.events
-        .filter(e => String(e.family) !== String(current.family))
-        .sort((a, b) => b.time - a.time)[0];
-
-    if (prior) {
-        const gapMs = Math.abs(current.time - prior.time);
-
-        if (gapMs <= BLACKPANTHER_SPECIAL_WINDOW_MS) {
-            const first = prior.time <= current.time ? prior : current;
-            const second = prior.time <= current.time ? current : prior;
-
-            const pairKey = [
-                first.ecosystem + ":" + first.family + ":" + first.group + ":" + first.time,
-                second.ecosystem + ":" + second.family + ":" + second.group + ":" + second.time
-            ].sort().join("|");
-
-            if (state.lastSentKey !== pairKey) {
-                const gapMin = Math.floor(gapMs / 60000);
-                const gapSec = Math.floor((gapMs % 60000) / 1000);
-
-                sendToTelegram3(
-                    "🖤 BLACKPANTHER\n" +
-                    "Rule: eligible special ecosystems, different families within 1 hour\n" +
-                    "Eligible: #, ~, ^, @\n" +
-                    "Excluded: $, normal\n" +
-                    "Symbol: " + symbol + "\n" +
-                    "Span: " + gapMin + "m " + gapSec + "s\n\n" +
-                    "Alerts:\n" +
-                    blackPantherEventLine(first, 0) + "\n" +
-                    blackPantherEventLine(second, 1)
-                );
-
-                state.lastSentKey = pairKey;
-            }
-        }
-    }
-
-    // Keep latest event.
-    state.events.push(current);
-
-    // Safety cap.
-    if (state.events.length > 100) {
-        state.events = state.events.slice(-100);
-    }
-
-    // Global cleanup.
-    if (Object.keys(blackPantherMemory).length > 5000) {
-        const oldCutoff = ts - (2 * BLACKPANTHER_SPECIAL_WINDOW_MS);
-
-        for (const sym of Object.keys(blackPantherMemory)) {
-            const st = blackPantherMemory[sym];
-
-            if (!st || typeof st !== "object" || !Array.isArray(st.events)) {
-                delete blackPantherMemory[sym];
-                continue;
-            }
-
-            st.events = st.events.filter(e => e && e.time >= oldCutoff);
-
-            if (!st.events.length) {
-                delete blackPantherMemory[sym];
-            }
-        }
-    }
-
-    saveState();
+    return;
 }
 
 function processGamma(symbol, group, ts, body) {
@@ -4928,19 +4682,34 @@ app.post("/incoming", (req, res) => {
         recentHashes.add(hash);
         setTimeout(() => recentHashes.delete(hash), 300000);
 
+        // 🎯 FOCUS MODE (default ON)
+        // Only the bots in use run; every other bot is paused:
+        //   Bot 2 — 🌊 BREADTH + 🧭 CENSUS
+        //   Bot 4 — 💥 BAZOOKA
+        //   Bot 7 — 🐍 COBRA
+        // To run every bot again, set FOCUS_MODE=0 on Render.
+        if (FOCUS_MODE) {
+            processBazooka(symbol, group, ts, body);
+
+            if (censusIsReport(body)) {
+                processCensus(symbol, group, ts, body);
+                return res.sendStatus(200);
+            }
+
+            processBreadth(symbol, group, ts, body);
+            processCobra(symbol, group, ts, body);   // normal groups only (checked inside)
+
+            return res.sendStatus(200);
+        }
+
         // 🐍 COBRA is NORMAL-only now — called inside the normal pipeline below.
         // 🟨 YABA global $ cross-ecosystem detector.
         // Runs before isolated ecosystem returns so $, #, ~, @, ^ and normal can all be caught.
         processYaba(symbol, group, ts, body);
-        // 🖤 BLACKPANTHER global special-family cross detector.
-        // Runs before isolated ecosystem returns so all ecosystems can be caught.
-        // $ and normal are ignored inside processBlackPanther.
-        processBlackPanther(symbol, group, ts, body);
         // 🦓 ZEBRA global NORMAL + special ecosystem detector.
         // Runs before isolated ecosystem returns so normal, #, ~, @, ^ and $ can all be caught.
         processZebraEcosystem(symbol, group, ts, body);
-        // 💥 BAZOOKA global exact 27-61-77 30sec detector.
-        // Runs before isolated ecosystem returns so #, normal, ~, @, ^ and $ can all be caught.
+        // 💥 BAZOOKA (Bot4): 17G / 62H / 44U full-match alert + trail.
         processBazooka(symbol, group, ts, body);
         // 💃 SALSA global 52Y 15m-to-12h detector.
         // Runs before isolated ecosystem returns so normal, #, ~, @, ^ and $ can all be caught.
@@ -5022,9 +4791,6 @@ if (!isHash) {
     if (group) {
         processAnyTwo(symbol, group, ts);    
         processBundle(symbol, group, ts);      
-        //processBazooka(symbol, group, ts, body);
-
-        processBlackPanther(symbol, group, ts);
         processGando(symbol, group, ts);
         processSideFlip(symbol, group, ts);
         // processGamma(symbol, group, ts); // disabled by request
@@ -5054,7 +4820,6 @@ if (!isHash) {
 
 } else {
     // 🔴 HASH ECOSYSTEM (isolated)
-    // Any # group is reported by BAZOOKA. WAKANDA is disabled.
 
     recordHashEvent(symbol, group, ts);
 
@@ -5064,11 +4829,7 @@ if (!isHash) {
 
     processGodzilla(symbol, group, ts);
 
-    if (typeof processBazooka === "function") {
-        // processBazooka moved to global HASH-involved detector
-    }
-
-    // WAKANDA disabled by request. BAZOOKA now reports every # alert.
+    // WAKANDA disabled by request.
     // if (typeof processWakanda === "function") {
     //     processWakanda(symbol, group, ts);
     // }
@@ -5153,6 +4914,7 @@ saveState();
 //
 //    /test/7?secret=YOUR_ALERT_SECRET      -> plain test message to Bot 7
 //    /test/3?secret=YOUR_ALERT_SECRET      -> same for any bot number 1-15
+//    /test/bazooka                          -> fake 17G trail of 3 -> Bot 4
 //    /test/cobra?secret=YOUR_ALERT_SECRET  -> runs 2 fake NORMAL alerts
 //                                             through the real COBRA logic
 //
@@ -5191,6 +4953,32 @@ app.get("/test/cobra", (req, res) => {
             ? "✅ COBRA fired and the message is queued for Bot 7. It should appear in Telegram within a few seconds. If it doesn't, check the Render logs for 'Telegram send failed: Bot7'."
             : "❌ COBRA ran but did not fire. Something is wrong in the COBRA logic, please share the Render logs."
     );
+});
+
+app.get("/test/bazooka", (req, res) => {
+    if (!testSecretOk(req)) return res.status(401).send("❌ Wrong or missing ?secret=");
+
+    const key = "TEST_BAZOOKA|17G";
+    const now = Date.now();
+    delete bazookaState[key];
+
+    const fire = (min, price, time, matched = 18) =>
+        processBazooka("TEST_BAZOOKA", "17G", now - min * 60000, {
+            matched_count: matched, enabled_count: 18,
+            band_top: "0.55", band_bottom: "0.66", price, time
+        });
+
+    fire(83, 99, 1, 17);   // 17 of 18 -> ignored
+    fire(83, 100, 2);
+    fire(79, 101, 3);
+    fire(0, 98.5, 4);
+
+    const count = bazookaState[key]?.trail?.length || 0;
+    delete bazookaState[key];
+
+    res.send(count === 3
+        ? "✅ BAZOOKA test queued: 3 messages to Bot 4, the trail growing from 1 to 3 alerts (the 17 of 18 was correctly ignored)."
+        : "❌ BAZOOKA test problem: trail count was " + count + " (expected 3). Please share the Render logs.");
 });
 
 app.get("/test/:bot", async (req, res) => {
