@@ -729,7 +729,23 @@ function splitTelegramMessage(text, maxLen = TELEGRAM_SAFE_MESSAGE_LEN) {
     );
 }
 
-function enqueueTelegram(botNo, text) {
+// Telegram HTML helpers (used by bots that send formatted messages).
+function tgEscape(v) {
+    return String(v ?? "")
+        .replace(/&/g, "&amp;")
+        .replace(/</g, "&lt;")
+        .replace(/>/g, "&gt;");
+}
+
+function tgStripHtml(text) {
+    return String(text ?? "")
+        .replace(/<[^>]+>/g, "")
+        .replace(/&lt;/g, "<")
+        .replace(/&gt;/g, ">")
+        .replace(/&amp;/g, "&");
+}
+
+function enqueueTelegram(botNo, text, opts = {}) {
     const { token, chat } = getTelegramCreds(botNo);
 
     if (!token || !chat) {
@@ -738,13 +754,25 @@ function enqueueTelegram(botNo, text) {
     }
 
     const now = Date.now();
-    const parts = splitTelegramMessage(text);
+
+    // Formatted (HTML) messages are sent whole. If one is ever too long to send
+    // in one piece, it falls back to plain text so splitting can't break the tags.
+    let parseMode = null;
+    let parts;
+
+    if (opts.html && String(text).length <= TELEGRAM_SAFE_MESSAGE_LEN) {
+        parseMode = "HTML";
+        parts = [String(text)];
+    } else {
+        parts = splitTelegramMessage(opts.html ? tgStripHtml(text) : text);
+    }
 
     for (const part of parts) {
         telegramOutbox.push({
             id: `${now}-${botNo}-${Math.random().toString(36).slice(2)}`,
             botNo,
             text: String(part ?? ""),
+            parseMode,
             attempts: 0,
             createdAt: now,
             nextAttemptAt: now,
@@ -766,7 +794,7 @@ function enqueueTelegram(botNo, text) {
     scheduleTelegramOutbox(0);
 }
 
-async function rawTelegramSend(botNo, text) {
+async function rawTelegramSend(botNo, text, parseMode = null) {
     const { token, chat } = getTelegramCreds(botNo);
 
     if (!token || !chat) {
@@ -786,7 +814,8 @@ async function rawTelegramSend(botNo, text) {
             },
             body: JSON.stringify({
                 chat_id: chat,
-                text
+                text,
+                ...(parseMode ? { parse_mode: parseMode } : {})
             }),
             signal: controller.signal
         });
@@ -850,7 +879,7 @@ async function processTelegramOutbox() {
             const item = telegramOutbox[idx];
 
             try {
-                await rawTelegramSend(item.botNo, item.text);
+                await rawTelegramSend(item.botNo, item.text, item.parseMode || null);
 
                 telegramOutbox.splice(idx, 1);
                 requestTelegramOutboxSave();
@@ -865,7 +894,14 @@ async function processTelegramOutbox() {
                     `⚠️ Telegram send failed: Bot${item.botNo} | attempt=${item.attempts}/${TELEGRAM_MAX_ATTEMPTS} | ${item.lastError}`
                 );
 
-                if (err.status === 400) {
+                if (err.status === 400 && item.parseMode) {
+                    // Telegram didn't like the formatting: send the same message as plain text.
+                    console.error(`⚠️ Telegram formatting rejected: Bot${item.botNo} | resending as plain text`);
+                    item.text = tgStripHtml(item.text);
+                    item.parseMode = null;
+                    item.nextAttemptAt = Date.now();
+
+                } else if (err.status === 400) {
                     console.error(
                         `❌ Telegram outbox dropping permanent 400: Bot${item.botNo} | createdAt=${formatDateTime(item.createdAt)} | error=${item.lastError}`
                     );
@@ -920,6 +956,7 @@ function sendToTelegram2Disabled(text) {
 }
 
 function sendToTelegram3(text) { enqueueTelegram(3, text); }
+function sendToTelegram3Html(text) { enqueueTelegram(3, text, { html: true }); }
 function sendToTelegram4(text) { enqueueTelegram(4, text); }
 function sendToTelegram5(text) { enqueueTelegram(5, text); }
 function sendToTelegram6(text) { enqueueTelegram(6, text); }
@@ -1134,7 +1171,7 @@ const BAZOOKA_TRAIL_RESET_MS =
 
 const BAZOOKA_STATE_VERSION = 4;
 
-// 🎯 FOCUS MODE: only BREADTH + CENSUS (Bot2), BAZOOKA (Bot4) and COBRA (Bot7) run.
+// 🎯 FOCUS MODE: only BREADTH + CENSUS (Bot2), BLACKPANTHER (Bot3), BAZOOKA (Bot4) and COBRA (Bot7) run.
 // Every other bot is paused. Set FOCUS_MODE=0 on Render to run every bot again.
 const FOCUS_MODE = (process.env.FOCUS_MODE || "1").trim() !== "0";
 const BAZOOKA_MAX_TRAIL = 200;   // stored per symbol + group
@@ -1149,7 +1186,7 @@ for (const key of Object.keys(bazookaState)) {
 }
 
 console.log("💥 BAZOOKA LOADED — Bot4 alert + trail | full match only | groups: " + [...BAZOOKA_GROUPS].join(", "));
-console.log(FOCUS_MODE ? "🎯 FOCUS MODE: running Bot2 BREADTH+CENSUS, Bot4 BAZOOKA, Bot7 COBRA — all other bots paused" : "▶️ All bots active (FOCUS_MODE=0)");
+console.log(FOCUS_MODE ? "🎯 FOCUS MODE: running Bot2 BREADTH+CENSUS, Bot3 BLACKPANTHER, Bot4 BAZOOKA, Bot7 COBRA — all other bots paused" : "▶️ All bots active (FOCUS_MODE=0)");
 
 function bazookaNum(v) {
     const n = Number(String(v ?? "").replace(/,/g, "").trim());
@@ -1375,14 +1412,200 @@ let gammaMemory = persisted.gammaMemory || {};
 
 
 // ==========================================================
-//  🖤 BLACKPANTHER — DISABLED
-//  Switched off by request. Nothing is sent to Bot 3.
+//  🖤 BLACKPANTHER — ALERT + TRAIL, ALL GROUPS       -> Bot 3
+//
+//  Every alert whose group has at least one NUMBER and one
+//  LETTER (17G, 44U, 62H, 91W, 35P, #12A ...). No match-count
+//  filter: 13 of 18 counts just the same as 18 of 18.
+//
+//  Groups without both (e.g. "A", "#12", no group) are ignored,
+//  which keeps BREADTH / CENSUS style payloads out.
+//
+//  One message per alert: the alert details on top, and the
+//  trail of every alert for that symbol + group so far below.
+//
+//  The trail starts fresh after BLACKPANTHER_TRAIL_RESET_HOURS
+//  (default 24) with no new alert for that symbol + group.
+//  The same bar arriving twice (e.g. BINANCE + OKX) counts once.
+//
+//  Fully separate from BAZOOKA: own settings, helpers and memory.
 // ==========================================================
 
-let blackPantherMemory = {}; // kept empty so state.json stays valid
+const BLACKPANTHER_TRAIL_RESET_MS =
+    (Number(process.env.BLACKPANTHER_TRAIL_RESET_HOURS) || 24) * 60 * 60 * 1000;
+
+const BLACKPANTHER_STATE_VERSION = 2;
+const BLACKPANTHER_MAX_TRAIL = 200;   // stored per symbol + group
+const BLACKPANTHER_MAX_LINES = 25;    // shown in one Telegram message
+
+let blackPantherMemory = persisted.blackPantherMemory || {};
+
+// Drop anything saved by older BLACKPANTHER versions.
+for (const key of Object.keys(blackPantherMemory)) {
+    const st = blackPantherMemory[key];
+    if (!st || st.v !== BLACKPANTHER_STATE_VERSION || !Array.isArray(st.trail)) delete blackPantherMemory[key];
+}
+
+console.log("🖤 BLACKPANTHER LOADED — Bot3 trail | every group with a number + letter");
+
+function blackPantherGroupOk(group) {
+    const g = String(group || "");
+    return /[0-9]/.test(g) && /[A-Za-z]/.test(g);
+}
+
+function bpNum(v) {
+    const n = Number(String(v ?? "").replace(/,/g, "").trim());
+    return Number.isFinite(n) ? n : null;
+}
+
+function bpHm(ts) {
+    return new Date(ts).toLocaleTimeString("en-GB", {
+        timeZone: "Europe/London",
+        hour: "2-digit",
+        minute: "2-digit"
+    });
+}
+
+function bpDay(ts) {
+    const parts = new Intl.DateTimeFormat("en-GB", {
+        timeZone: "Europe/London",
+        day: "numeric",
+        month: "numeric"
+    }).formatToParts(new Date(ts));
+    const day = parts.find(p => p.type === "day")?.value || "";
+    const month = Number(parts.find(p => p.type === "month")?.value || 1);
+    return day + " " + ["Jan","Feb","Mar","Apr","May","Jun","Jul","Aug","Sep","Oct","Nov","Dec"][month - 1];
+}
+
+function bpGap(ms) {
+    const safe = Math.max(0, ms);
+    const totalMin = Math.floor(safe / 60000);
+    const h = Math.floor(totalMin / 60);
+    if (h > 0) return h + "h " + (totalMin % 60) + "m";
+    return totalMin + "m " + Math.floor((safe % 60000) / 1000) + "s";
+}
+
+function bpPct(from, to) {
+    if (!from || !to) return "";
+    const pct = ((to - from) / from) * 100;
+    return (pct >= 0 ? "+" : "") + pct.toFixed(2) + "%";
+}
 
 function processBlackPanther(symbol, group, ts, body = {}) {
-    return;
+    if (!symbol || !blackPantherGroupOk(group)) return;
+
+    const rawGroup = String(group).trim().toUpperCase();
+    const key = symbol + "|" + rawGroup;
+    let state = blackPantherMemory[key];
+
+    // Fresh trail if none yet, or it went quiet for too long.
+    if (
+        !state ||
+        !state.trail.length ||
+        ts - state.trail[state.trail.length - 1].time > BLACKPANTHER_TRAIL_RESET_MS
+    ) {
+        state = blackPantherMemory[key] = { v: BLACKPANTHER_STATE_VERSION, trail: [] };
+    }
+
+    const barTime = bpNum(body.time) || ts;
+    if (state.trail.some(e => e.barTime === barTime)) return;   // duplicate copy
+
+    const matched = bpNum(body.matched_count);
+    const enabled = bpNum(body.enabled_count);
+
+    const current = {
+        time: ts,
+        barTime,
+        price: bpNum(body.price ?? body.close),
+        match: matched !== null && enabled ? matched + "/" + enabled : ""
+    };
+
+    state.trail.push(current);
+
+    if (state.trail.length > BLACKPANTHER_MAX_TRAIL) {
+        state.trail = state.trail.slice(-BLACKPANTHER_MAX_TRAIL);
+    }
+
+    const trail = state.trail;
+    const first = trail[0];
+    const shown = trail.slice(-BLACKPANTHER_MAX_LINES);
+    const hidden = trail.length - shown.length;
+
+    // ---------- trail table ----------
+    const rows = shown.map((e, i) => {
+        const n = hidden + i + 1;
+        return {
+            n: String(n),
+            time: bpHm(e.time),
+            price: e.price === null || e.price === undefined ? "n/a" : String(e.price),
+            chg: n === 1 ? "-" : (bpPct(first.price, e.price) || "-"),
+            match: e.match || "-",
+            day: bpDay(e.time),
+            isNew: e === current && trail.length > 1
+        };
+    });
+
+    const hasMatch = rows.some(r => r.match !== "-");
+    const cols = [
+        { key: "n", title: "#", right: true },
+        { key: "time", title: "Time", right: false },
+        { key: "price", title: "Price", right: true },
+        { key: "chg", title: "Chg", right: true },
+        ...(hasMatch ? [{ key: "match", title: "Match", right: true }] : [])
+    ];
+
+    for (const c of cols) {
+        c.width = Math.max(c.title.length, ...rows.map(r => r[c.key].length));
+    }
+
+    const fmtRow = r => cols
+        .map(c => c.right ? r[c.key].padStart(c.width) : r[c.key].padEnd(c.width))
+        .join("  ")
+        .trimEnd();
+
+    const table = [fmtRow(Object.fromEntries(cols.map(c => [c.key, c.title])))];
+    if (hidden > 0) table.push("… " + hidden + " earlier");
+
+    rows.forEach((r, i) => {
+        if (i > 0 && r.day !== rows[i - 1].day) table.push("── " + r.day + " ──");
+        table.push(fmtRow(r) + (r.isNew ? "  ◀" : ""));
+    });
+
+    // ---------- header ----------
+    const pctSinceFirst = trail.length > 1 ? bpPct(first.price, current.price) : "";
+
+    let msg =
+        "🖤 <b>BLACKPANTHER</b>\n" +
+        "<b>" + tgEscape(symbol) + "</b>  ·  " + tgEscape(rawGroup) +
+        (current.match ? "  ·  " + tgEscape(current.match) : "") + "\n" +
+        "Price <b>" + tgEscape(current.price ?? "n/a") + "</b>" +
+        (pctSinceFirst ? "  (" + tgEscape(pctSinceFirst) + " since #1)" : "") + "\n";
+
+    if (body.band_top !== undefined && body.band_bottom !== undefined) {
+        msg += "Band " + tgEscape(body.band_top) + " – " + tgEscape(body.band_bottom) + "\n";
+    }
+
+    msg +=
+        "\n<pre>" + tgEscape(table.join("\n")) + "</pre>\n" +
+        "<i>" +
+        (trail.length > 1
+            ? trail.length + " alerts over " + bpGap(current.time - first.time) + " · started " + bpDay(first.time) + " " + bpHm(first.time)
+            : "First alert · " + bpDay(first.time) + " " + bpHm(first.time)) +
+        "</i>";
+
+    sendToTelegram3Html(msg);
+
+    // Tidy up long-dead trails.
+    if (Object.keys(blackPantherMemory).length > 3000) {
+        for (const k of Object.keys(blackPantherMemory)) {
+            const t = blackPantherMemory[k]?.trail;
+            if (!Array.isArray(t) || !t.length || ts - t[t.length - 1].time > BLACKPANTHER_TRAIL_RESET_MS) {
+                delete blackPantherMemory[k];
+            }
+        }
+    }
+
+    saveState();
 }
 
 function processGamma(symbol, group, ts, body) {
@@ -4685,6 +4908,7 @@ app.post("/incoming", (req, res) => {
         // 🎯 FOCUS MODE (default ON)
         // Only the bots in use run; every other bot is paused:
         //   Bot 2 — 🌊 BREADTH + 🧭 CENSUS
+        //   Bot 3 — 🖤 BLACKPANTHER
         //   Bot 4 — 💥 BAZOOKA
         //   Bot 7 — 🐍 COBRA
         // To run every bot again, set FOCUS_MODE=0 on Render.
@@ -4697,7 +4921,8 @@ app.post("/incoming", (req, res) => {
             }
 
             processBreadth(symbol, group, ts, body);
-            processCobra(symbol, group, ts, body);   // normal groups only (checked inside)
+            processCobra(symbol, group, ts, body);          // normal groups only (checked inside)
+            processBlackPanther(symbol, group, ts, body);   // groups with a number + letter
 
             return res.sendStatus(200);
         }
@@ -4915,6 +5140,7 @@ saveState();
 //    /test/7?secret=YOUR_ALERT_SECRET      -> plain test message to Bot 7
 //    /test/3?secret=YOUR_ALERT_SECRET      -> same for any bot number 1-15
 //    /test/bazooka                          -> fake 17G trail of 3 -> Bot 4
+//    /test/blackpanther                     -> fake 35P trail of 3 -> Bot 3
 //    /test/cobra?secret=YOUR_ALERT_SECRET  -> runs 2 fake NORMAL alerts
 //                                             through the real COBRA logic
 //
@@ -4979,6 +5205,30 @@ app.get("/test/bazooka", (req, res) => {
     res.send(count === 3
         ? "✅ BAZOOKA test queued: 3 messages to Bot 4, the trail growing from 1 to 3 alerts (the 17 of 18 was correctly ignored)."
         : "❌ BAZOOKA test problem: trail count was " + count + " (expected 3). Please share the Render logs.");
+});
+
+app.get("/test/blackpanther", (req, res) => {
+    if (!testSecretOk(req)) return res.status(401).send("❌ Wrong or missing ?secret=");
+
+    const key = "TEST_BLACKPANTHER|35P";
+    const now = Date.now();
+    delete blackPantherMemory[key];
+
+    const fire = (min, price, time, matched) =>
+        processBlackPanther("TEST_BLACKPANTHER", "35P", now - min * 60000,
+            { matched_count: matched, enabled_count: 18, price, time });
+
+    processBlackPanther("TEST_BLACKPANTHER", "A", now, { price: 1, time: 9 });   // no number -> ignored
+    fire(83, 100, 1, 13);
+    fire(79, 101, 2, 18);
+    fire(0, 98.5, 3, 15);
+
+    const count = blackPantherMemory[key]?.trail?.length || 0;
+    delete blackPantherMemory[key];
+
+    res.send(count === 3
+        ? "✅ BLACKPANTHER test queued: 3 messages to Bot 3, the trail growing from 1 to 3 alerts (group \"A\" was correctly ignored)."
+        : "❌ BLACKPANTHER test problem: trail count was " + count + " (expected 3). Please share the Render logs.");
 });
 
 app.get("/test/:bot", async (req, res) => {
