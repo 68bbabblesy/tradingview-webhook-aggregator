@@ -5,6 +5,7 @@
 import express from "express";
 import fetch from "node-fetch";
 import fs from "fs";
+import crypto from "crypto";
 
 // 🔑 SERVICE ROLE (MAIN vs STAGING)
 const IS_MAIN = process.env.SERVICE_ROLE === "main";
@@ -107,7 +108,6 @@ function loadState() {
                 blackPantherMemory: parsed.blackPantherMemory || {},
                 gammaMemory: parsed.gammaMemory || {},
                 mamamiaHashMemory: parsed.mamamiaHashMemory || {},
-                salsaMemory: parsed.salsaMemory || {},
                 breadthState: parsed.breadthState || { events: [], lastFire: 0, lastLevel: 0 },
                 censusState: parsed.censusState || { zones: {}, lastFire: 0, lastShare: 0 },
                 neptuneMemory: parsed.neptuneMemory || {},
@@ -172,7 +172,6 @@ function loadState() {
         blackPantherMemory: {},
         gammaMemory: {},
         mamamiaHashMemory: {},
-        salsaMemory: {},
         breadthState: { events: [], lastFire: 0, lastLevel: 0 },
         censusState: { zones: {}, lastFire: 0, lastShare: 0 },
         neptuneMemory: {},
@@ -243,7 +242,6 @@ function buildStateSnapshot() {
         blackPantherMemory,
         gammaMemory,
         mamamiaHashMemory,
-        salsaMemory,
         breadthState,
         censusState,
         neptuneMemory,
@@ -487,15 +485,6 @@ const CHECK_MS           = Number((process.env.CHECK_MS || "1000").trim());
 const ALERT_SECRET       = (process.env.ALERT_SECRET || "").trim();
 const COOLDOWN_SECONDS   = Number((process.env.COOLDOWN_SECONDS || "60").trim());
 
-// -----------------------------
-// SPECIAL SYMBOLS (BOT 8 MIRROR)
-// -----------------------------
-const SPECIAL_TOKENS = new Set(
-    (process.env.SPECIAL_TOKENS || "")
-        .split(",")
-        .map(s => s.trim())
-        .filter(Boolean)
-);
 
 
 async function forwardToShadow(payload) {
@@ -964,6 +953,7 @@ function sendToTelegram5Disabled(text) { return; } // Bot 5 is reserved for NEPT
 function sendToTelegram6(text) { enqueueTelegram(6, text); }
 function sendToTelegram7(text) { enqueueTelegram(7, text); }
 function sendToTelegram8(text) { enqueueTelegram(8, text); }
+function sendToTelegram8Html(text) { enqueueTelegram(8, text, { html: true }); }
 function sendToTelegram9(text) { enqueueTelegram(9, text); }
 function sendToTelegram10(text) { enqueueTelegram(10, text); }
 function sendToTelegram11(text) { enqueueTelegram(11, text); }
@@ -973,14 +963,6 @@ function sendToTelegram14(text) { enqueueTelegram(14, text); }
 function sendToTelegram15(text) { enqueueTelegram(15, text); }
 console.log("🟣 MANUAL @ ECOSYSTEM LOADED — Bot10 route active");
 
-// -----------------------------
-// BOT 8 MIRROR HELPER (SPECIAL SYMBOLS)
-// -----------------------------
-function mirrorToBot8IfSpecial(symbol, text) {
-    if (!symbol) return;
-    if (!SPECIAL_TOKENS.has(symbol)) return;
-    sendToTelegram8(text);
-}
 
 
 
@@ -1907,7 +1889,6 @@ function processCheck(symbol, group, ts, body) {
 //  Names kept only so we can reuse them later.
 // ==========================================================
 
-let salsaMemory = persisted.salsaMemory || {};
 let breadthState = persisted.breadthState || { events: [], lastFire: 0, lastLevel: 0 };
 let censusState = persisted.censusState || { zones: {}, lastFire: 0, lastShare: 0 };
 let tangoState = persisted.tangoState || {};
@@ -2161,163 +2142,6 @@ function processBreadth(symbol, group, ts, body = {}) {
     sendToTelegram2(lines.join("\n"));
     breadthState.lastFire = ts;
     breadthState.lastLevel = breadth;
-    saveState();
-}
-
-function processSalsa(symbol, group, ts, body = {}) {
-
-    if (!symbol || !group) return;
-
-    const rawGroup = String(group || "").trim().toUpperCase();
-
-    // SALSA now only tracks exact group 52Y.
-    if (rawGroup !== "52Y") return;
-
-    const SALSA_MIN_GAP_MS = 15 * 60 * 1000;       // 15 minutes
-    const SALSA_MAX_GAP_MS = 12 * 60 * 60 * 1000;  // 12 hours
-
-    function salsaCleanPrice(b) {
-        const raw =
-            b?.price ??
-            b?.close ??
-            b?.current_price ??
-            b?.alert_price ??
-            b?.level ??
-            "";
-
-        const n = Number(
-            String(raw)
-                .replace(/,/g, "")
-                .replace(/[^0-9.-]/g, "")
-        );
-
-        return Number.isFinite(n) && n > 0 ? String(n) : "n/a";
-    }
-
-    function salsaEventLine(e, index) {
-        return (
-            (index + 1) + ") " +
-            e.group +
-            " | Price " + (e.price ?? "n/a") +
-            " @ " + formatDateTime(e.time)
-        );
-    }
-
-    if (
-        !salsaMemory[symbol] ||
-        typeof salsaMemory[symbol] !== "object" ||
-        Array.isArray(salsaMemory[symbol])
-    ) {
-        salsaMemory[symbol] = {
-            events: [],
-            lastSentKey: ""
-        };
-    }
-
-    if (!Array.isArray(salsaMemory[symbol].events)) {
-        salsaMemory[symbol] = {
-            events: [],
-            lastSentKey: ""
-        };
-    }
-
-    const state = salsaMemory[symbol];
-
-    const current = {
-        group: rawGroup,
-        time: ts,
-        price: salsaCleanPrice(body)
-    };
-
-    const cutoff = ts - SALSA_MAX_GAP_MS - (10 * 60 * 1000);
-
-    state.events = state.events
-        .filter(e =>
-            e &&
-            e.group === "52Y" &&
-            typeof e.time === "number" &&
-            e.time >= cutoff
-        )
-        .sort((a, b) => a.time - b.time);
-
-    // Check all previous 52Y alerts within the 12h window.
-    const prior = state.events
-        .map(e => {
-            const gapMs = Math.abs(ts - e.time);
-
-            return {
-                event: e,
-                gapMs
-            };
-        })
-        .filter(x =>
-            x.gapMs >= SALSA_MIN_GAP_MS &&
-            x.gapMs <= SALSA_MAX_GAP_MS
-        )
-        .sort((a, b) => b.event.time - a.event.time)[0];
-
-    if (prior) {
-        const first = prior.event.time <= current.time ? prior.event : current;
-        const second = prior.event.time <= current.time ? current : prior.event;
-
-        const pairKey = [
-            first.group + ":" + first.price + ":" + first.time,
-            second.group + ":" + second.price + ":" + second.time
-        ].sort().join("|");
-
-        if (state.lastSentKey !== pairKey) {
-            const gapHours = Math.floor(prior.gapMs / 3600000);
-            const gapMin = Math.floor((prior.gapMs % 3600000) / 60000);
-            const gapSec = Math.floor((prior.gapMs % 60000) / 1000);
-
-            const gapText =
-                gapHours > 0
-                    ? gapHours + "h " + gapMin + "m " + gapSec + "s"
-                    : gapMin + "m " + gapSec + "s";
-
-            sendToTelegram8(
-                "💃 SALSA\n" +
-                "Symbol: " + symbol + "\n" +
-                "Group: 52Y\n" +
-                "Gap: " + gapText + "\n\n" +
-                "Alerts:\n" +
-                salsaEventLine(first, 0) + "\n" +
-                salsaEventLine(second, 1) + "\n\n" +
-                "Rule: exact 52Y repeat, 15 minutes to 12 hours"
-            );
-
-            state.lastSentKey = pairKey;
-        }
-    }
-
-    state.events.push(current);
-
-    if (state.events.length > 500) {
-        state.events = state.events.slice(-500);
-    }
-
-    if (Object.keys(salsaMemory).length > 5000) {
-        for (const sym of Object.keys(salsaMemory)) {
-            const st = salsaMemory[sym];
-
-            if (!st || typeof st !== "object" || !Array.isArray(st.events)) {
-                delete salsaMemory[sym];
-                continue;
-            }
-
-            st.events = st.events.filter(e =>
-                e &&
-                e.group === "52Y" &&
-                typeof e.time === "number" &&
-                e.time >= cutoff
-            );
-
-            if (!st.events.length) {
-                delete salsaMemory[sym];
-            }
-        }
-    }
-
     saveState();
 }
 
@@ -4209,43 +4033,7 @@ function processCobra(symbol, group, ts, body = {}) {
     saveState();
 }
 
-// ==========================================================
-// Bot 8
-//
-// Rule:
-//   - Normal ecosystem only; route ignores # groups before calling this
-//   - Same symbol
-//   - First alert starts a 1h search cycle
-//   - Any later alert with a DIFFERENT exact group completes the pair
-//   - Same exact group is ignored
-//   - If 1h expires with no different exact group, cycle restarts
-//
-// Valid:
-//   40L then 40M
-//   40L then 42L
-//   39A then 41Z
-//   A then B
-//
-// Invalid:
-//   40L then 40L
-//   39A then 39A
-//
-// Persistence:
-
-//   - lastSeenState is already persisted in state.json
-// ==========================================================
-
-
-
-
-
-
-
-
-
-
-
-
+// Bot 8 = 🦅 FALCON (ZigZag PA trade journal) — see the FALCON section near /incoming.
 
 // ==========================================================
 //  PETERFORGE PAYLOAD HELPERS
@@ -4919,6 +4707,446 @@ function processDollarEcosystem(symbol, group, ts, body) {
 }
 
 // ==========================================================
+//  🦅 FALCON — ZigZag PA trade journal                 -> Bot 8
+//
+//  Input: JSON alerts from the "ZigZag PA" TradingView strategy
+//         (condition = "ZigZag PA", event = "entry" | "exit").
+//  - Entry alert  -> trade stored as OPEN + Telegram message
+//  - Exit alert   -> same trade id marked CLOSED (TP/SL, pnl %) + running record
+//  - Fully isolated: FALCON alerts never feed any other bot.
+//
+//  History is kept in its own file on the persistent disk
+//  (/data/falcon_trades.json), separate from state.json, and never pruned.
+//
+//  Telegram commands in the Bot 8 chat:
+//    /stats        win rate, all time      /stats 7   last 7 days
+//    /open         open trades             /last 20   last 20 closed trades
+//    /export       full history as a CSV file
+//    (add a group name to filter, e.g. /stats 30 ZZPA)
+//
+//  One-time setup (connects the commands):  /falcon/setup?secret=YOUR_ALERT_SECRET
+//  Download history in a browser:           /falcon/trades.csv?secret=YOUR_ALERT_SECRET
+//  Test message:                            /test/falcon?secret=YOUR_ALERT_SECRET
+//  (If ALERT_SECRET is not set on Render, the ?secret= part isn't needed.)
+// ==========================================================
+
+const FALCON_FILE = (process.env.FALCON_FILE || "/data/falcon_trades.json").trim();
+
+function falconLoad() {
+    try {
+        if (fs.existsSync(FALCON_FILE)) {
+            const parsed = JSON.parse(fs.readFileSync(FALCON_FILE, "utf8"));
+            if (parsed && parsed.trades && typeof parsed.trades === "object") return parsed.trades;
+        }
+    } catch (err) {
+        console.error("⚠️ FALCON: could not read trade file:", err.message);
+    }
+    return {};
+}
+
+let falconTrades = falconLoad();
+console.log(`🦅 FALCON loaded: ${Object.keys(falconTrades).length} trades from ${FALCON_FILE}`);
+
+let falconSaveTimer = null;
+function falconSave() {
+    if (falconSaveTimer) return;
+    falconSaveTimer = setTimeout(() => {
+        falconSaveTimer = null;
+        try {
+            // write to a temp file then rename, so a crash mid-write can't corrupt the history
+            const tmp = FALCON_FILE + ".tmp";
+            fs.writeFileSync(tmp, JSON.stringify({ version: 1, trades: falconTrades }), "utf8");
+            fs.renameSync(tmp, FALCON_FILE);
+        } catch (err) {
+            console.error("❌ FALCON: failed to save trades:", err.message);
+        }
+    }, 500);
+}
+
+function isFalconPayload(body) {
+    if (!body || typeof body !== "object") return false;
+    const cond = String(body.condition || "").trim().toUpperCase();
+    const ev = String(body.event || "").trim().toLowerCase();
+    return cond === "ZIGZAG PA" && (ev === "entry" || ev === "exit");
+}
+
+function falconNum(v) {
+    const n = Number(v);
+    return Number.isFinite(n) ? n : null;
+}
+
+function falconTime(v) {
+    const n = Number(v);
+    return Number.isFinite(n) && n > 0 ? n : Date.now();
+}
+
+function falconSigned(n, dp = 2) {
+    const v = Number(n || 0);
+    return (v >= 0 ? "+" : "") + v.toFixed(dp) + "%";
+}
+
+function falconDuration(ms) {
+    if (!Number.isFinite(ms) || ms < 0) return "n/a";
+    const m = Math.round(ms / 60000);
+    if (m < 60) return m + "m";
+    const h = Math.floor(m / 60);
+    if (h < 48) return h + "h " + (m % 60) + "m";
+    return Math.floor(h / 24) + "d " + (h % 24) + "h";
+}
+
+function falconStats({ days = null, group = null } = {}) {
+    const cutoff = days ? Date.now() - days * 86400000 : 0;
+    const closed = Object.values(falconTrades).filter(t =>
+        t && t.status === "closed" &&
+        (!group || String(t.group).toUpperCase() === String(group).toUpperCase()) &&
+        Number(t.closedAt || 0) >= cutoff
+    );
+    const wins = closed.filter(t => Number(t.pnlPct || 0) > 0).length;
+    const total = closed.reduce((a, t) => a + Number(t.pnlPct || 0), 0);
+    return {
+        closed,
+        n: closed.length,
+        wins,
+        losses: closed.length - wins,
+        winRate: closed.length ? (100 * wins) / closed.length : null,
+        total
+    };
+}
+
+function falconRecordLine(s) {
+    if (!s.n) return "No closed trades yet.";
+    return `${s.wins}W / ${s.losses}L · win rate ${s.winRate.toFixed(1)}% · total ${falconSigned(s.total)}`;
+}
+
+function processFalcon(body) {
+    const e = tgEscape;
+    const ev = String(body.event).trim().toLowerCase();
+    const group = String(body.group || "ZZPA").trim();
+    const symbol = normalizeSymbol(body.symbol);
+    const id = String(body.id || `${body.symbol}-${body.time}`);
+    const side = String(body.side || "").toLowerCase();
+    const pattern = String(body.pattern || "");
+
+    if (ev === "entry") {
+        if (falconTrades[id]) {
+            console.log("🦅 FALCON duplicate entry ignored:", id);
+            return;
+        }
+
+        const t = {
+            id, group, symbol,
+            exchange: String(body.exchange || ""),
+            side, pattern,
+            preset: String(body.preset || ""),
+            chartTf: String(body.chart_tf || ""),
+            patternTf: String(body.pattern_tf || ""),
+            entry: falconNum(body.entry ?? body.price),
+            tp: falconNum(body.tp),
+            sl: falconNum(body.sl),
+            tpPct: falconNum(body.tp_pct),
+            slPct: falconNum(body.sl_pct),
+            openedAt: falconTime(body.time),
+            status: "open",
+            result: null,
+            exit: null,
+            pnlPct: null,
+            closedAt: null
+        };
+
+        falconTrades[id] = t;
+        falconSave();
+        console.log(`🦅 FALCON entry: ${side} ${symbol} ${pattern} @ ${t.entry}`);
+
+        const icon = side === "long" ? "🟢" : "🔴";
+        const [sTp, sSl] = side === "long" ? ["+", "-"] : ["-", "+"];
+
+        sendToTelegram8Html(
+            `🦅 <b>FALCON</b>  ${icon} <b>${e(side.toUpperCase())} ${e(symbol)}</b>\n` +
+            `Pattern: ${e(pattern || "n/a")}\n` +
+            `Entry ~ <code>${e(t.entry)}</code>\n` +
+            `TP <code>${e(t.tp)}</code> (${sTp}${e(t.tpPct)}%)\n` +
+            `SL <code>${e(t.sl)}</code> (${sSl}${e(t.slPct)}%)\n` +
+            `<i>${e(t.preset)} · ${e(group)} · ${e(formatDateTime(t.openedAt))}</i>`
+        );
+        return;
+    }
+
+    // ---- exit ----
+    let t = falconTrades[id];
+
+    if (t && t.status === "closed") {
+        console.log("🦅 FALCON duplicate exit ignored:", id);
+        return;
+    }
+
+    if (!t) {
+        // Entry alert was missed (e.g. during a deploy) — still log the result.
+        t = {
+            id, group, symbol,
+            exchange: String(body.exchange || ""),
+            side, pattern,
+            preset: String(body.preset || ""),
+            entry: falconNum(body.entry),
+            openedAt: null,
+            missedEntry: true
+        };
+        falconTrades[id] = t;
+    }
+
+    const pnl = falconNum(body.pnl_pct) ?? 0;
+
+    Object.assign(t, {
+        status: "closed",
+        result: body.result ? String(body.result) : null,
+        exit: falconNum(body.exit ?? body.price),
+        pnlPct: pnl,
+        closedAt: falconTime(body.time)
+    });
+
+    falconSave();
+    console.log(`🦅 FALCON exit: ${symbol} ${side} ${t.result} ${falconSigned(pnl)}`);
+
+    const s = falconStats({ group });
+    const icon = pnl > 0 ? "✅" : "❌";
+    const label = t.result === "TP" ? "TP hit" : t.result === "SL" ? "SL hit" : "Closed";
+    const held = t.openedAt ? ` · held ${falconDuration(t.closedAt - t.openedAt)}` : "";
+
+    sendToTelegram8Html(
+        `🦅 <b>FALCON</b>  ${icon} <b>${e(label)}: ${e(symbol)} ${e(side)}</b>  ${e(falconSigned(pnl))}\n` +
+        `Entry <code>${e(t.entry)}</code> → Exit <code>${e(t.exit)}</code>${e(held)}\n` +
+        `<i>Record (${e(group)}): ${e(falconRecordLine(s))}</i>`
+    );
+}
+
+// ---------------- Telegram commands ----------------
+
+function falconCmdStats(days, group) {
+    const e = tgEscape;
+    const s = falconStats({ days, group });
+    const lines = [
+        `🦅 <b>FALCON stats${group ? " (" + e(group) + ")" : ""} — ${days ? "last " + days + " days" : "all time"}</b>`,
+        e(falconRecordLine(s))
+    ];
+
+    if (s.n) {
+        const by = {};
+        for (const t of s.closed) {
+            const k = t.pattern || "?";
+            by[k] = by[k] || { w: 0, n: 0 };
+            by[k].n++;
+            if (Number(t.pnlPct || 0) > 0) by[k].w++;
+        }
+
+        lines.push("", "<b>By pattern</b>");
+        Object.entries(by)
+            .sort((a, b) => b[1].n - a[1].n)
+            .slice(0, 12)
+            .forEach(([k, v]) => lines.push(`${e(k)}: ${v.w}/${v.n} (${Math.round((100 * v.w) / v.n)}%)`));
+
+        lines.push("");
+        for (const side of ["long", "short"]) {
+            const rs = s.closed.filter(t => t.side === side);
+            if (rs.length) {
+                const w = rs.filter(t => Number(t.pnlPct || 0) > 0).length;
+                lines.push(`${side === "long" ? "Longs" : "Shorts"}: ${w}/${rs.length} (${Math.round((100 * w) / rs.length)}%)`);
+            }
+        }
+
+        const open = Object.values(falconTrades).filter(t => t.status === "open").length;
+        lines.push(`Open now: ${open}`);
+    }
+
+    return lines.join("\n");
+}
+
+function falconCmdOpen(group) {
+    const e = tgEscape;
+    const rows = Object.values(falconTrades)
+        .filter(t => t.status === "open" && (!group || String(t.group).toUpperCase() === group.toUpperCase()))
+        .sort((a, b) => (b.openedAt || 0) - (a.openedAt || 0));
+
+    if (!rows.length) return "🦅 No open trades.";
+
+    return "🦅 <b>Open trades</b>\n" + rows.slice(0, 30).map(t =>
+        `${t.side === "long" ? "🟢" : "🔴"} ${e(t.symbol)} @ ${e(t.entry)} · TP ${e(t.tp)} · SL ${e(t.sl)} · ${e(formatDateTime(t.openedAt))}`
+    ).join("\n");
+}
+
+function falconCmdLast(n, group) {
+    const e = tgEscape;
+    const rows = Object.values(falconTrades)
+        .filter(t => t.status === "closed" && (!group || String(t.group).toUpperCase() === group.toUpperCase()))
+        .sort((a, b) => (b.closedAt || 0) - (a.closedAt || 0))
+        .slice(0, n);
+
+    if (!rows.length) return "🦅 No closed trades yet.";
+
+    return `🦅 <b>Last ${rows.length} trades</b>\n` + rows.map(t =>
+        `${Number(t.pnlPct || 0) > 0 ? "✅" : "❌"} ${e(formatDateTime(t.closedAt))} · ${e(t.symbol)} ${e(t.side)} · ${e(falconSigned(t.pnlPct))} · ${e(t.pattern || "-")}`
+    ).join("\n");
+}
+
+function falconCsv(group) {
+    const cols = ["id", "group", "symbol", "exchange", "side", "pattern", "preset", "chartTf", "patternTf",
+        "entry", "tp", "sl", "tpPct", "slPct", "openedAt", "status", "result", "exit", "pnlPct", "closedAt", "missedEntry"];
+    const iso = v => (v ? new Date(v).toISOString() : "");
+    const cell = v => {
+        const s = String(v ?? "");
+        return /[",\n]/.test(s) ? `"${s.replace(/"/g, '""')}"` : s;
+    };
+
+    const rows = Object.values(falconTrades)
+        .filter(t => !group || String(t.group).toUpperCase() === group.toUpperCase())
+        .sort((a, b) => (a.openedAt || a.closedAt || 0) - (b.openedAt || b.closedAt || 0));
+
+    return [cols.join(",")].concat(rows.map(t =>
+        cols.map(c => cell(c === "openedAt" || c === "closedAt" ? iso(t[c]) : t[c])).join(",")
+    )).join("\n");
+}
+
+async function falconSendDocument(filename, content, caption) {
+    const { token, chat } = getTelegramCreds(8);
+    if (!token || !chat) return;
+
+    if (typeof globalThis.FormData !== "function" || typeof globalThis.Blob !== "function" || typeof globalThis.fetch !== "function") {
+        sendToTelegram8("🦅 /export needs Node 18 or newer on Render. Use /falcon/trades.csv in a browser instead.");
+        return;
+    }
+
+    try {
+        const fd = new globalThis.FormData();
+        fd.append("chat_id", chat);
+        if (caption) fd.append("caption", caption);
+        fd.append("document", new globalThis.Blob([content], { type: "text/csv" }), filename);
+
+        const res = await globalThis.fetch(`https://api.telegram.org/bot${token}/sendDocument`, { method: "POST", body: fd });
+        if (!res.ok) console.error("⚠️ FALCON export failed:", res.status, (await res.text()).slice(0, 300));
+    } catch (err) {
+        console.error("⚠️ FALCON export error:", err.message);
+    }
+}
+
+// Telegram webhook secret, derived from the Bot 8 token (no extra env var needed)
+function falconHookSecret() {
+    const { token } = getTelegramCreds(8);
+    return token ? crypto.createHash("sha256").update("falcon:" + token).digest("hex").slice(0, 48) : "";
+}
+
+app.post("/telegram/8", (req, res) => {
+    const secret = falconHookSecret();
+    if (!secret || req.get("x-telegram-bot-api-secret-token") !== secret) return res.sendStatus(403);
+
+    res.sendStatus(200);
+
+    try {
+        const u = req.body || {};
+        const msg = u.message || u.channel_post || {};
+        const text = String(msg.text || "").trim();
+        const chatId = String(msg.chat?.id ?? "");
+        const { chat } = getTelegramCreds(8);
+
+        if (!text.startsWith("/") || chatId !== String(chat)) return;
+
+        const parts = text.split(/\s+/);
+        const cmd = parts[0].split("@")[0].toLowerCase();
+        const args = parts.slice(1);
+        const num = Number(args.find(a => /^\d+$/.test(a)) || 0) || null;
+        const group = args.find(a => !/^\d+$/.test(a)) || null;
+
+        if (cmd === "/stats") {
+            sendToTelegram8Html(falconCmdStats(num, group));
+        } else if (cmd === "/open") {
+            sendToTelegram8Html(falconCmdOpen(group));
+        } else if (cmd === "/last") {
+            sendToTelegram8Html(falconCmdLast(Math.min(num || 10, 50), group));
+        } else if (cmd === "/export") {
+            const s = falconStats({ group });
+            const stamp = new Date().toISOString().slice(0, 10);
+            falconSendDocument(`falcon_trades_${stamp}.csv`, falconCsv(group), `🦅 FALCON history — ${falconRecordLine(s)}`);
+        } else if (cmd === "/help" || cmd === "/start") {
+            sendToTelegram8Html(
+                "🦅 <b>FALCON commands</b>\n" +
+                "/stats — win rate, all time\n/stats 7 — last 7 days\n" +
+                "/open — open trades\n/last 20 — last 20 closed trades\n" +
+                "/export — full history as a CSV file\n" +
+                "Add a group name to filter, e.g. /stats 30 ZZPA"
+            );
+        }
+    } catch (err) {
+        console.error("⚠️ FALCON command error:", err.message);
+    }
+});
+
+// One-time: connect Bot 8's commands to this server
+app.get("/falcon/setup", async (req, res) => {
+    if (!testSecretOk(req)) return res.status(401).send("❌ Wrong or missing ?secret=");
+
+    const { token } = getTelegramCreds(8);
+    if (!token) return res.status(400).send("❌ TELEGRAM_BOT_TOKEN_8 is not set on Render");
+
+    const base = (process.env.PUBLIC_URL || process.env.RENDER_EXTERNAL_URL || `https://${req.get("host")}`).replace(/\/+$/, "");
+    const api = m => `https://api.telegram.org/bot${token}/${m}`;
+
+    try {
+        const hook = await fetch(api("setWebhook"), {
+            method: "POST",
+            headers: { "Content-Type": "application/json" },
+            body: JSON.stringify({
+                url: `${base}/telegram/8`,
+                secret_token: falconHookSecret(),
+                allowed_updates: ["message", "channel_post"]
+            })
+        }).then(r => r.json());
+
+        const cmds = await fetch(api("setMyCommands"), {
+            method: "POST",
+            headers: { "Content-Type": "application/json" },
+            body: JSON.stringify({
+                commands: [
+                    { command: "stats", description: "Win rate and results" },
+                    { command: "open", description: "Open trades" },
+                    { command: "last", description: "Recent closed trades" },
+                    { command: "export", description: "Download full history (CSV)" },
+                    { command: "help", description: "List commands" }
+                ]
+            })
+        }).then(r => r.json());
+
+        res.send(
+            (hook.ok ? "✅" : "❌") + " Telegram webhook: " + (hook.description || JSON.stringify(hook)) + "\n" +
+            (cmds.ok ? "✅" : "❌") + " Commands menu: " + (cmds.description || JSON.stringify(cmds)) + "\n\n" +
+            "Webhook URL: " + base + "/telegram/8\nNow type /help in the Bot 8 chat."
+        );
+    } catch (err) {
+        res.status(500).send("❌ Setup failed: " + err.message);
+    }
+});
+
+app.get("/falcon/trades.csv", (req, res) => {
+    if (!testSecretOk(req)) return res.status(401).send("❌ Wrong or missing ?secret=");
+    res.set("Content-Type", "text/csv");
+    res.set("Content-Disposition", "attachment; filename=falcon_trades.csv");
+    res.send(falconCsv(req.query.group ? String(req.query.group) : null));
+});
+
+app.get("/test/falcon", (req, res) => {
+    if (!testSecretOk(req)) return res.status(401).send("❌ Wrong or missing ?secret=");
+
+    // Runs a fake entry + TP exit through the real FALCON logic, then removes it from the history.
+    const t0 = Date.now();
+    const id = "TEST-" + t0;
+    const base = { condition: "ZigZag PA", group: "TEST", id, symbol: "BINANCE:TESTUSDT.P", exchange: "BINANCE", side: "long", pattern: "Gartley", preset: "High win rate" };
+
+    processFalcon({ ...base, event: "entry", price: 1.0, entry: 1.0, tp: 1.012, sl: 0.98, tp_pct: 1.2, sl_pct: 2, time: t0 });
+    processFalcon({ ...base, event: "exit", price: 1.012, entry: 1.0, exit: 1.012, result: "TP", pnl_pct: 1.2, time: t0 + 95 * 60000 });
+
+    delete falconTrades[id];
+    falconSave();
+
+    res.send("✅ FALCON test sent to Bot 8 (entry + TP exit). Test trade not kept in history.");
+});
+
+// ==========================================================
 //  WEBHOOK HANDLER
 // ==========================================================
 
@@ -4946,6 +5174,13 @@ app.post("/incoming", (req, res) => {
     }
 }
 
+
+        // 🦅 FALCON (Bot 8): ZigZag PA trade journal. Isolated — never feeds any other bot,
+        // and runs before the duplicate-hash check so an exit + new entry on the same bar both get through.
+        if (isFalconPayload(body)) {
+            processFalcon(body);
+            return res.sendStatus(200);
+        }
 
         const group  = (body.group || "").trim();
         const symbol = normalizeSymbol(body.symbol);
@@ -5000,9 +5235,6 @@ app.post("/incoming", (req, res) => {
         processZebraEcosystem(symbol, group, ts, body);
         // 💥 BAZOOKA (Bot4): 17G / 62H / 44U full-match alert + trail.
         processBazooka(symbol, group, ts, body);
-        // 💃 SALSA global 52Y 15m-to-12h detector.
-        // Runs before isolated ecosystem returns so normal, #, ~, @, ^ and $ can all be caught.
-        processSalsa(symbol, group, ts, body);
         // 🌊 BREADTH global market-wide bias detector.
         // Must run on EVERY alert regardless of ecosystem, so it sits with the other globals.
         // 🧭 CENSUS position reports are not trading setups - they only feed the head count,
@@ -5085,7 +5317,6 @@ if (!isHash) {
         processSideFlip(symbol, group, ts);
         // processGamma(symbol, group, ts); // disabled by request
         // processYaba moved to global $ cross-ecosystem detector
-        // processSalsa moved to global Bot8 price-time detector
         processTango(symbol, group, ts);
         processCobra(symbol, group, ts, body); // 🐍 Bot7: 2+ different normal groups within 30m
         // processZulu(symbol, group, ts); // disabled by request
@@ -5206,6 +5437,7 @@ saveState();
 //    /test/neptune                          -> fake CENSUS moves -> Bot 5
 //    /test/cobra?secret=YOUR_ALERT_SECRET  -> runs 2 fake NORMAL alerts
 //                                             through the real COBRA logic
+//    /test/falcon?secret=YOUR_ALERT_SECRET -> fake ZigZag entry + TP exit -> Bot 8
 //
 //  If ALERT_SECRET is not set on Render, the ?secret= part isn't needed.
 // ==========================================================
