@@ -110,7 +110,6 @@ function loadState() {
                 mamamiaHashMemory: parsed.mamamiaHashMemory || {},
                 breadthState: parsed.breadthState || { events: [], lastFire: 0, lastLevel: 0 },
                 censusState: parsed.censusState || { zones: {}, lastFire: 0, lastShare: 0 },
-                neptuneMemory: parsed.neptuneMemory || {},
                 zuluState: parsed.zuluState || {},
                 sideFlipMemory: parsed.sideFlipMemory || {},
                 mambaMemory: parsed.mambaMemory || {},
@@ -174,7 +173,6 @@ function loadState() {
         mamamiaHashMemory: {},
         breadthState: { events: [], lastFire: 0, lastLevel: 0 },
         censusState: { zones: {}, lastFire: 0, lastShare: 0 },
-        neptuneMemory: {},
         zuluState: {},
         sideFlipMemory: {},
         mambaMemory: {},
@@ -244,7 +242,6 @@ function buildStateSnapshot() {
         mamamiaHashMemory,
         breadthState,
         censusState,
-        neptuneMemory,
         zuluState,
         sideFlipMemory,
         mambaMemory,
@@ -949,7 +946,7 @@ function sendToTelegram3Html(text) { enqueueTelegram(3, text, { html: true }); }
 function sendToTelegram4(text) { enqueueTelegram(4, text); }
 function sendToTelegram5(text) { enqueueTelegram(5, text); }
 function sendToTelegram5Html(text) { enqueueTelegram(5, text, { html: true }); }
-function sendToTelegram5Disabled(text) { return; } // Bot 5 is reserved for NEPTUNE
+function sendToTelegram5Disabled(text) { return; } // Bot 5 is reserved for OWL
 function sendToTelegram6(text) { enqueueTelegram(6, text); }
 function sendToTelegram7(text) { enqueueTelegram(7, text); }
 function sendToTelegram8(text) { enqueueTelegram(8, text); }
@@ -1155,7 +1152,7 @@ const BAZOOKA_TRAIL_RESET_MS =
 
 const BAZOOKA_STATE_VERSION = 4;
 
-// 🎯 FOCUS MODE: only BREADTH + CENSUS (Bot2), BLACKPANTHER (Bot3), BAZOOKA (Bot4), NEPTUNE (Bot5) and COBRA (Bot7) run.
+// 🎯 FOCUS MODE: only BREADTH + CENSUS (Bot2), BLACKPANTHER (Bot3), BAZOOKA (Bot4), OWL (Bot5) and COBRA (Bot7) run.
 // Every other bot is paused. Set FOCUS_MODE=0 on Render to run every bot again.
 const FOCUS_MODE = (process.env.FOCUS_MODE || "1").trim() !== "0";
 const BAZOOKA_MAX_TRAIL = 200;   // stored per symbol + group
@@ -1170,7 +1167,7 @@ for (const key of Object.keys(bazookaState)) {
 }
 
 console.log("💥 BAZOOKA LOADED — Bot4 alert + trail | full match only | groups: " + [...BAZOOKA_GROUPS].join(", "));
-console.log(FOCUS_MODE ? "🎯 FOCUS MODE: running Bot2 BREADTH+CENSUS, Bot3 BLACKPANTHER, Bot4 BAZOOKA, Bot5 NEPTUNE, Bot7 COBRA — all other bots paused" : "▶️ All bots active (FOCUS_MODE=0)");
+console.log(FOCUS_MODE ? "🎯 FOCUS MODE: running Bot2 BREADTH+CENSUS, Bot3 BLACKPANTHER, Bot4 BAZOOKA, Bot5 OWL, Bot7 COBRA — all other bots paused" : "▶️ All bots active (FOCUS_MODE=0)");
 
 function bazookaNum(v) {
     const n = Number(String(v ?? "").replace(/,/g, "").trim());
@@ -2150,217 +2147,6 @@ function processTango(symbol, group, ts, body) {
 }
 
 // ==========================================================
-//  🌊 NEPTUNE — CENSUS ZONE ALERTS + TRAIL          -> Bot 5
-//
-//  Only alerts with group "CENSUS", and only these zone moves
-//  (either direction), kept apart as two separate sides:
-//
-//    🔺 ABOVE / TOP        TOP → ABOVE   or   ABOVE → TOP
-//    🔻 BELOW / PULLBACK   PULLBACK → BELOW   or   BELOW → PULLBACK
-//
-//  Every other move (MID → TOP, PULLBACK → MID ...) is ignored.
-//
-//  One message per alert: the details on top and, underneath,
-//  the trail of every alert for that symbol + side so far.
-//  The trail starts fresh after NEPTUNE_TRAIL_RESET_HOURS
-//  (default 24) with no new alert for that symbol + side.
-//  The same bar arriving twice (e.g. BINANCE + BYBIT) counts once.
-//
-//  Fully separate from every other bot: own settings and memory.
-// ==========================================================
-
-const NEPTUNE_TRAIL_RESET_MS =
-    (Number(process.env.NEPTUNE_TRAIL_RESET_HOURS) || 24) * 60 * 60 * 1000;
-
-const NEPTUNE_STATE_VERSION = 2;
-const NEPTUNE_MAX_TRAIL = 200;   // stored per symbol + side
-const NEPTUNE_MAX_LINES = 25;    // shown in one Telegram message
-
-const NEPTUNE_SIDES = {
-    TOP: {
-        zones: ["ABOVE", "TOP"],
-        title: "🔺 <b>NEPTUNE · ABOVE / TOP</b>"
-    },
-    BOTTOM: {
-        zones: ["BELOW", "PULLBACK"],
-        title: "🔻 <b>NEPTUNE · BELOW / PULLBACK</b>"
-    }
-};
-
-let neptuneMemory = persisted.neptuneMemory || {};
-
-// Drop anything saved by the old NEPTUNE.
-for (const key of Object.keys(neptuneMemory)) {
-    const st = neptuneMemory[key];
-    if (!st || st.v !== NEPTUNE_STATE_VERSION || !Array.isArray(st.trail)) delete neptuneMemory[key];
-}
-
-console.log("🌊 NEPTUNE LOADED — Bot5 | CENSUS only | ABOVE↔TOP and BELOW↔PULLBACK");
-
-function neptuneSide(zone, prevZone) {
-    for (const [side, cfg] of Object.entries(NEPTUNE_SIDES)) {
-        if (zone !== prevZone && cfg.zones.includes(zone) && cfg.zones.includes(prevZone)) {
-            return side;
-        }
-    }
-    return null;
-}
-
-function npNum(v) {
-    const n = Number(String(v ?? "").replace(/,/g, "").trim());
-    return Number.isFinite(n) ? n : null;
-}
-
-function npHm(ts) {
-    return new Date(ts).toLocaleTimeString("en-GB", {
-        timeZone: "Europe/London",
-        hour: "2-digit",
-        minute: "2-digit"
-    });
-}
-
-function npDay(ts) {
-    const parts = new Intl.DateTimeFormat("en-GB", {
-        timeZone: "Europe/London",
-        day: "numeric",
-        month: "numeric"
-    }).formatToParts(new Date(ts));
-    const day = parts.find(p => p.type === "day")?.value || "";
-    const month = Number(parts.find(p => p.type === "month")?.value || 1);
-    return day + " " + ["Jan","Feb","Mar","Apr","May","Jun","Jul","Aug","Sep","Oct","Nov","Dec"][month - 1];
-}
-
-function npGap(ms) {
-    const safe = Math.max(0, ms);
-    const totalMin = Math.floor(safe / 60000);
-    const h = Math.floor(totalMin / 60);
-    if (h > 0) return h + "h " + (totalMin % 60) + "m";
-    return totalMin + "m " + Math.floor((safe % 60000) / 1000) + "s";
-}
-
-function npPct(from, to) {
-    if (!from || !to) return "";
-    const pct = ((to - from) / from) * 100;
-    return (pct >= 0 ? "+" : "") + pct.toFixed(2) + "%";
-}
-
-function processNeptune(symbol, group, ts, body = {}) {
-    if (!symbol) return;
-    if (String(group || body.group || "").trim().toUpperCase() !== "CENSUS") return;
-
-    const zone = String(body.zone || "").trim().toUpperCase();
-    const prevZone = String(body.prev_zone || "").trim().toUpperCase();
-    const side = neptuneSide(zone, prevZone);
-    if (!side) return;
-
-    const key = symbol + "|" + side;
-    let state = neptuneMemory[key];
-
-    // Fresh trail if none yet, or it went quiet for too long.
-    if (
-        !state ||
-        !state.trail.length ||
-        ts - state.trail[state.trail.length - 1].time > NEPTUNE_TRAIL_RESET_MS
-    ) {
-        state = neptuneMemory[key] = { v: NEPTUNE_STATE_VERSION, trail: [] };
-    }
-
-    const barTime = npNum(body.time) || ts;
-    if (state.trail.some(e => e.barTime === barTime && e.zone === zone)) return;   // duplicate copy
-
-    const current = {
-        time: ts,
-        barTime,
-        zone,
-        prevZone,
-        price: npNum(body.price ?? body.close),
-        ratio: npNum(body.ratio)
-    };
-
-    state.trail.push(current);
-
-    if (state.trail.length > NEPTUNE_MAX_TRAIL) {
-        state.trail = state.trail.slice(-NEPTUNE_MAX_TRAIL);
-    }
-
-    const trail = state.trail;
-    const first = trail[0];
-    const shown = trail.slice(-NEPTUNE_MAX_LINES);
-    const hidden = trail.length - shown.length;
-
-    // ---------- trail table ----------
-    const rows = shown.map((e, i) => {
-        const n = hidden + i + 1;
-        return {
-            n: String(n),
-            time: npHm(e.time),
-            price: e.price === null || e.price === undefined ? "n/a" : String(e.price),
-            chg: n === 1 ? "-" : (npPct(first.price, e.price) || "-"),
-            zone: e.zone,
-            day: npDay(e.time),
-            isNew: e === current && trail.length > 1
-        };
-    });
-
-    const cols = [
-        { key: "n", title: "#", right: true },
-        { key: "time", title: "Time", right: false },
-        { key: "price", title: "Price", right: true },
-        { key: "chg", title: "Chg", right: true },
-        { key: "zone", title: "Now", right: false }
-    ];
-
-    for (const c of cols) {
-        c.width = Math.max(c.title.length, ...rows.map(r => r[c.key].length));
-    }
-
-    const fmtRow = r => cols
-        .map(c => c.right ? r[c.key].padStart(c.width) : r[c.key].padEnd(c.width))
-        .join("  ")
-        .trimEnd();
-
-    const table = [fmtRow(Object.fromEntries(cols.map(c => [c.key, c.title])))];
-    if (hidden > 0) table.push("… " + hidden + " earlier");
-
-    rows.forEach((r, i) => {
-        if (i > 0 && r.day !== rows[i - 1].day) table.push("── " + r.day + " ──");
-        table.push(fmtRow(r) + (r.isNew ? "  ◀" : ""));
-    });
-
-    // ---------- header ----------
-    const pctSinceFirst = trail.length > 1 ? npPct(first.price, current.price) : "";
-    const tf = body.tf ? " " + tgEscape(body.tf) : "";
-
-    const msg =
-        NEPTUNE_SIDES[side].title + "\n" +
-        "<b>" + tgEscape(symbol) + "</b>  ·  CENSUS" + tf + "\n" +
-        "Move <b>" + tgEscape(prevZone) + " → " + tgEscape(zone) + "</b>" +
-        (current.ratio !== null ? "  ·  ratio " + tgEscape(current.ratio) : "") + "\n" +
-        "Price <b>" + tgEscape(current.price ?? "n/a") + "</b>" +
-        (pctSinceFirst ? "  (" + tgEscape(pctSinceFirst) + " since #1)" : "") + "\n" +
-        "\n<pre>" + tgEscape(table.join("\n")) + "</pre>\n" +
-        "<i>" +
-        (trail.length > 1
-            ? trail.length + " alerts over " + npGap(current.time - first.time) + " · started " + npDay(first.time) + " " + npHm(first.time)
-            : "First alert · " + npDay(first.time) + " " + npHm(first.time)) +
-        "</i>";
-
-    sendToTelegram5Html(msg);
-
-    // Tidy up long-dead trails.
-    if (Object.keys(neptuneMemory).length > 3000) {
-        for (const k of Object.keys(neptuneMemory)) {
-            const t = neptuneMemory[k]?.trail;
-            if (!Array.isArray(t) || !t.length || ts - t[t.length - 1].time > NEPTUNE_TRAIL_RESET_MS) {
-                delete neptuneMemory[k];
-            }
-        }
-    }
-
-    saveState();
-}
-
-// ==========================================================
 //  ZULU
 
 // ==========================================================
@@ -2535,7 +2321,7 @@ function processAnyTwo(symbol, group, ts) {
                     )
                     .join("\n");
 
-                sendToTelegram5Disabled(   // muted: Bot 5 is NEPTUNE only
+                sendToTelegram5Disabled(   // muted: Bot 5 is OWL only
                     `🔁 ANY_TWO\n` +
                     `Symbol: ${symbol}\n` +
                     `Count: ${events.length}\n` +
@@ -5147,6 +4933,522 @@ app.get("/test/falcon", (req, res) => {
 });
 
 // ==========================================================
+//  🦉 OWL — ZigZag PA TP1/TP2 trade journal            -> Bot 5
+//
+//  Input: JSON alerts from the "ZigZag PA" TradingView strategy
+//         (condition = "ZigZag PA TP2", event = "entry" | "tp1" | "exit").
+//  - Entry alert  -> trade stored as OPEN + Telegram message
+//  - TP1 alert    -> part closed at TP1, stop moved to entry, rest running to TP2
+//  - Exit alert   -> same trade id marked CLOSED (TP2 / TP1+BE / SL, pnl % of the
+//                    whole position, max run) + running record
+//  - Fully isolated: OWL alerts never feed any other bot.
+//
+//  History is kept in its own file on the persistent disk
+//  (/data/owl_trades.json), separate from state.json, and never pruned.
+//
+//  Telegram commands in the Bot 5 chat:
+//    /stats        win rate, all time      /stats 7   last 7 days
+//    /open         open trades             /last 20   last 20 closed trades
+//    /export       full history as a CSV file
+//    (add a group name to filter, e.g. /stats 30 ZZPA2)
+//
+//  One-time setup (connects the commands):  /owl/setup?secret=YOUR_ALERT_SECRET
+//  Download history in a browser:           /owl/trades.csv?secret=YOUR_ALERT_SECRET
+//  Test message:                            /test/owl?secret=YOUR_ALERT_SECRET
+//  (If ALERT_SECRET is not set on Render, the ?secret= part isn't needed.)
+// ==========================================================
+
+const OWL_FILE = (process.env.OWL_FILE || "/data/owl_trades.json").trim();
+
+function owlLoad() {
+    try {
+        if (fs.existsSync(OWL_FILE)) {
+            const parsed = JSON.parse(fs.readFileSync(OWL_FILE, "utf8"));
+            if (parsed && parsed.trades && typeof parsed.trades === "object") return parsed.trades;
+        }
+    } catch (err) {
+        console.error("⚠️ OWL: could not read trade file:", err.message);
+    }
+    return {};
+}
+
+let owlTrades = owlLoad();
+console.log(`🦉 OWL loaded: ${Object.keys(owlTrades).length} trades from ${OWL_FILE}`);
+
+let owlSaveTimer = null;
+function owlSave() {
+    if (owlSaveTimer) return;
+    owlSaveTimer = setTimeout(() => {
+        owlSaveTimer = null;
+        try {
+            // write to a temp file then rename, so a crash mid-write can't corrupt the history
+            const tmp = OWL_FILE + ".tmp";
+            fs.writeFileSync(tmp, JSON.stringify({ version: 1, trades: owlTrades }), "utf8");
+            fs.renameSync(tmp, OWL_FILE);
+        } catch (err) {
+            console.error("❌ OWL: failed to save trades:", err.message);
+        }
+    }, 500);
+}
+
+function isOwlPayload(body) {
+    if (!body || typeof body !== "object") return false;
+    const cond = String(body.condition || "").trim().toUpperCase();
+    const ev = String(body.event || "").trim().toLowerCase();
+    return cond === "ZIGZAG PA TP2" && (ev === "entry" || ev === "tp1" || ev === "exit");
+}
+
+function owlNum(v) {
+    const n = Number(v);
+    return Number.isFinite(n) ? n : null;
+}
+
+function owlTime(v) {
+    const n = Number(v);
+    return Number.isFinite(n) && n > 0 ? n : Date.now();
+}
+
+function owlSigned(n, dp = 2) {
+    const v = Number(n || 0);
+    return (v >= 0 ? "+" : "") + v.toFixed(dp) + "%";
+}
+
+function owlDuration(ms) {
+    if (!Number.isFinite(ms) || ms < 0) return "n/a";
+    const m = Math.round(ms / 60000);
+    if (m < 60) return m + "m";
+    const h = Math.floor(m / 60);
+    if (h < 48) return h + "h " + (m % 60) + "m";
+    return Math.floor(h / 24) + "d " + (h % 24) + "h";
+}
+
+function owlEntered(t) {
+    return t && t.openedAt ? formatDateTime(t.openedAt) : "unknown (entry alert was missed)";
+}
+
+function owlStats({ days = null, group = null } = {}) {
+    const cutoff = days ? Date.now() - days * 86400000 : 0;
+    const closed = Object.values(owlTrades).filter(t =>
+        t && t.status === "closed" &&
+        (!group || String(t.group).toUpperCase() === String(group).toUpperCase()) &&
+        Number(t.closedAt || 0) >= cutoff
+    );
+    const wins = closed.filter(t => Number(t.pnlPct || 0) > 0).length;
+    const total = closed.reduce((a, t) => a + Number(t.pnlPct || 0), 0);
+    return {
+        closed,
+        n: closed.length,
+        wins,
+        losses: closed.length - wins,
+        winRate: closed.length ? (100 * wins) / closed.length : null,
+        total
+    };
+}
+
+function owlRecordLine(s) {
+    if (!s.n) return "No closed trades yet.";
+    return `${s.wins}W / ${s.losses}L · win rate ${s.winRate.toFixed(1)}% · total ${owlSigned(s.total)}`;
+}
+
+function processOwl(body) {
+    const e = tgEscape;
+    const ev = String(body.event).trim().toLowerCase();
+    const group = String(body.group || "ZZPA2").trim();
+    const symbol = normalizeSymbol(body.symbol);
+    const id = String(body.id || `${body.symbol}-${body.time}`);
+    const side = String(body.side || "").toLowerCase();
+    const pattern = String(body.pattern || "");
+
+    if (ev === "entry") {
+        if (owlTrades[id]) {
+            console.log("🦉 OWL duplicate entry ignored:", id);
+            return;
+        }
+
+        const t = {
+            id, group, symbol,
+            exchange: String(body.exchange || ""),
+            side, pattern,
+            preset: String(body.preset || ""),
+            chartTf: String(body.chart_tf || ""),
+            patternTf: String(body.pattern_tf || ""),
+            entry: owlNum(body.entry ?? body.price),
+            tp: owlNum(body.tp),
+            sl: owlNum(body.sl),
+            tpPct: owlNum(body.tp_pct),
+            slPct: owlNum(body.sl_pct),
+            tp2: owlNum(body.tp2),
+            tp2Pct: owlNum(body.tp2_pct),
+            tp1Share: owlNum(body.tp1_share),
+            tp1Hit: false,
+            tp1At: null,
+            maxRunPct: null,
+            openedAt: owlTime(body.time),
+            status: "open",
+            result: null,
+            exit: null,
+            pnlPct: null,
+            closedAt: null
+        };
+
+        owlTrades[id] = t;
+        owlSave();
+        console.log(`🦉 OWL entry: ${side} ${symbol} ${pattern} @ ${t.entry}`);
+
+        const icon = side === "long" ? "🟢" : "🔴";
+        const [sTp, sSl] = side === "long" ? ["+", "-"] : ["-", "+"];
+
+        sendToTelegram5Html(
+            `🦉 <b>OWL</b>  ${icon} <b>${e(side.toUpperCase())}</b>\n` +
+            `SYMBOL : <b>${e(symbol)}</b>\n` +
+            `Pattern: ${e(pattern || "n/a")}\n` +
+            `Entry ~ <code>${e(t.entry)}</code>\n` +
+            (t.tp2 !== null
+                ? `TP1 <code>${e(t.tp)}</code> (${sTp}${e(t.tpPct)}%, close ${e(t.tp1Share)}%)\n` +
+                  `TP2 <code>${e(t.tp2)}</code> (${sTp}${e(t.tp2Pct)}%)\n`
+                : `TP <code>${e(t.tp)}</code> (${sTp}${e(t.tpPct)}%)\n`) +
+            `SL <code>${e(t.sl)}</code> (${sSl}${e(t.slPct)}%)\n` +
+            `\n` +
+            `<i>${e(t.preset)} · ${e(group)} · ${e(formatDateTime(t.openedAt))}</i>`
+        );
+        return;
+    }
+
+    // ---- TP1 (partial) ----
+    if (ev === "tp1") {
+        let t = owlTrades[id];
+        if (t && t.tp1Hit) {
+            console.log("🦉 OWL duplicate TP1 ignored:", id);
+            return;
+        }
+        if (!t) {
+            t = { id, group, symbol, exchange: String(body.exchange || ""), side, pattern,
+                  preset: String(body.preset || ""), entry: owlNum(body.entry), openedAt: null,
+                  status: "open", missedEntry: true };
+            owlTrades[id] = t;
+        }
+        t.tp1Hit = true;
+        t.tp1At = owlTime(body.time);
+        t.tp1Pnl = owlNum(body.leg_pnl_pct);
+        if (owlNum(body.new_stop) !== null) t.sl = owlNum(body.new_stop);
+        owlSave();
+        console.log(`🦉 OWL TP1: ${symbol} ${side} ${owlSigned(t.tp1Pnl)}`);
+
+        const stopTxt = owlNum(body.new_stop) !== null && owlNum(body.entry) !== null &&
+            Math.abs(owlNum(body.new_stop) - owlNum(body.entry)) < 1e-12
+            ? "stop moved to entry" : `stop now <code>${e(body.new_stop)}</code>`;
+
+        sendToTelegram5Html(
+            `🦉 <b>OWL</b>  🎯 <b>TP1 hit: ${e(side)}</b>  ${e(owlSigned(t.tp1Pnl))} on ${e(body.closed_share ?? "")}%\n` +
+            `SYMBOL : <b>${e(symbol)}</b>\n` +
+            `Entered: ${e(owlEntered(t))}\n` +
+            `${stopTxt} · rest running to TP2 <code>${e(body.tp2)}</code>`
+        );
+        return;
+    }
+
+    // ---- exit ----
+    let t = owlTrades[id];
+
+    if (t && t.status === "closed") {
+        console.log("🦉 OWL duplicate exit ignored:", id);
+        return;
+    }
+
+    if (!t) {
+        // Entry alert was missed (e.g. during a deploy) — still log the result.
+        t = {
+            id, group, symbol,
+            exchange: String(body.exchange || ""),
+            side, pattern,
+            preset: String(body.preset || ""),
+            entry: owlNum(body.entry),
+            openedAt: null,
+            missedEntry: true
+        };
+        owlTrades[id] = t;
+    }
+
+    const pnl = owlNum(body.pnl_pct) ?? 0;
+
+    Object.assign(t, {
+        status: "closed",
+        result: body.result ? String(body.result) : null,
+        exit: owlNum(body.exit ?? body.price),
+        pnlPct: pnl,
+        maxRunPct: owlNum(body.max_run_pct),
+        tp1Hit: t.tp1Hit || String(body.tp1_hit || "") === "yes",
+        closedAt: owlTime(body.time)
+    });
+
+    owlSave();
+    console.log(`🦉 OWL exit: ${symbol} ${side} ${t.result} ${owlSigned(pnl)}`);
+
+    const s = owlStats({ group });
+    const icon = pnl > 0 ? "✅" : "❌";
+    const label = {
+        "TP": "TP hit", "TP2": "TP2 hit", "SL": "SL hit", "BE": "Stopped at entry",
+        "TP1+BE": "TP1, then rest stopped at entry", "TP1+SL": "TP1, then rest stopped out"
+    }[t.result] || "Closed";
+    const run = t.maxRunPct !== null && t.maxRunPct !== undefined ? ` · max run ${owlSigned(t.maxRunPct)}` : "";
+    const held = t.openedAt ? ` · held ${owlDuration(t.closedAt - t.openedAt)}` : "";
+
+    sendToTelegram5Html(
+        `🦉 <b>OWL</b>  ${icon} <b>${e(label)}: ${e(side)}</b>  ${e(owlSigned(pnl))}\n` +
+        `SYMBOL : <b>${e(symbol)}</b>\n` +
+        `Entered: ${e(owlEntered(t))}\n` +
+        `Entry <code>${e(t.entry)}</code> → Exit <code>${e(t.exit)}</code>${e(held)}${e(run)}\n` +
+        `\n` +
+        `<i>Record (${e(group)}): ${e(owlRecordLine(s))}</i>`
+    );
+}
+
+// ---------------- Telegram commands ----------------
+
+function owlCmdStats(days, group) {
+    const e = tgEscape;
+    const s = owlStats({ days, group });
+    const lines = [
+        `🦉 <b>OWL stats${group ? " (" + e(group) + ")" : ""} — ${days ? "last " + days + " days" : "all time"}</b>`,
+        e(owlRecordLine(s))
+    ];
+
+    if (s.n) {
+        const by = {};
+        for (const t of s.closed) {
+            const k = t.pattern || "?";
+            by[k] = by[k] || { w: 0, n: 0 };
+            by[k].n++;
+            if (Number(t.pnlPct || 0) > 0) by[k].w++;
+        }
+
+        lines.push("", "<b>By pattern</b>");
+        Object.entries(by)
+            .sort((a, b) => b[1].n - a[1].n)
+            .slice(0, 12)
+            .forEach(([k, v]) => lines.push(`${e(k)}: ${v.w}/${v.n} (${Math.round((100 * v.w) / v.n)}%)`));
+
+        lines.push("");
+        for (const side of ["long", "short"]) {
+            const rs = s.closed.filter(t => t.side === side);
+            if (rs.length) {
+                const w = rs.filter(t => Number(t.pnlPct || 0) > 0).length;
+                lines.push(`${side === "long" ? "Longs" : "Shorts"}: ${w}/${rs.length} (${Math.round((100 * w) / rs.length)}%)`);
+            }
+        }
+
+        const cnt = r => s.closed.filter(t => t.result === r).length;
+        const tp2 = cnt("TP2"), tp1be = cnt("TP1+BE") + cnt("TP1+SL");
+        lines.push("", "<b>Outcomes</b>");
+        if (tp2 + tp1be > 0) {
+            lines.push(`TP2: ${tp2} · TP1 then entry: ${tp1be} · SL: ${cnt("SL")}` + (cnt("BE") ? ` · stopped at entry: ${cnt("BE")}` : ""));
+            lines.push(`Reached TP2 after TP1: ${tp2}/${tp2 + tp1be} (${Math.round((100 * tp2) / (tp2 + tp1be))}%)`);
+        } else {
+            lines.push(`TP: ${cnt("TP")} · SL: ${cnt("SL")}` + (cnt("BE") ? ` · stopped at entry: ${cnt("BE")}` : ""));
+        }
+        const losses = s.closed.filter(t => Number(t.pnlPct || 0) < 0);
+        if (losses.length) lines.push(`Average loss: ${owlSigned(losses.reduce((a, t) => a + Number(t.pnlPct), 0) / losses.length)}`);
+        const runs = s.closed.map(t => t.maxRunPct).filter(v => v !== null && v !== undefined);
+        if (runs.length) lines.push(`Average max run: ${owlSigned(runs.reduce((a, v) => a + Number(v), 0) / runs.length)}`);
+
+        const open = Object.values(owlTrades).filter(t => t.status === "open").length;
+        lines.push(`Open now: ${open}`);
+    }
+
+    return lines.join("\n");
+}
+
+function owlCmdOpen(group) {
+    const e = tgEscape;
+    const rows = Object.values(owlTrades)
+        .filter(t => t.status === "open" && (!group || String(t.group).toUpperCase() === group.toUpperCase()))
+        .sort((a, b) => (b.openedAt || 0) - (a.openedAt || 0));
+
+    if (!rows.length) return "🦉 No open trades.";
+
+    return "🦉 <b>Open trades</b>\n" + rows.slice(0, 30).map(t =>
+        `${t.side === "long" ? "🟢" : "🔴"} ${e(t.symbol)} @ ${e(t.entry)} · ${t.tp1Hit ? "TP1 ✅ · TP2 " + e(t.tp2) : "TP " + e(t.tp)} · SL ${e(t.sl)} · ${e(formatDateTime(t.openedAt))}`
+    ).join("\n");
+}
+
+function owlCmdLast(n, group) {
+    const e = tgEscape;
+    const rows = Object.values(owlTrades)
+        .filter(t => t.status === "closed" && (!group || String(t.group).toUpperCase() === group.toUpperCase()))
+        .sort((a, b) => (b.closedAt || 0) - (a.closedAt || 0))
+        .slice(0, n);
+
+    if (!rows.length) return "🦉 No closed trades yet.";
+
+    return `🦉 <b>Last ${rows.length} trades</b>\n` + rows.map(t =>
+        `${Number(t.pnlPct || 0) > 0 ? "✅" : Number(t.pnlPct || 0) < 0 ? "❌" : "➖"} ${e(formatDateTime(t.closedAt))} · ${e(t.symbol)} ${e(t.side)} · ${e(owlSigned(t.pnlPct))} · ${e(t.result || "")} · ${e(t.pattern || "-")}`
+    ).join("\n");
+}
+
+function owlCsv(group) {
+    const cols = ["id", "group", "symbol", "exchange", "side", "pattern", "preset", "chartTf", "patternTf",
+        "entry", "tp", "sl", "tpPct", "slPct", "tp2", "tp2Pct", "tp1Share", "tp1Hit", "tp1At", "openedAt", "status",
+        "result", "exit", "pnlPct", "maxRunPct", "closedAt", "missedEntry"];
+    const iso = v => (v ? new Date(v).toISOString() : "");
+    const cell = v => {
+        const s = String(v ?? "");
+        return /[",\n]/.test(s) ? `"${s.replace(/"/g, '""')}"` : s;
+    };
+
+    const rows = Object.values(owlTrades)
+        .filter(t => !group || String(t.group).toUpperCase() === group.toUpperCase())
+        .sort((a, b) => (a.openedAt || a.closedAt || 0) - (b.openedAt || b.closedAt || 0));
+
+    return [cols.join(",")].concat(rows.map(t =>
+        cols.map(c => cell(c === "openedAt" || c === "closedAt" || c === "tp1At" ? iso(t[c]) : t[c])).join(",")
+    )).join("\n");
+}
+
+async function owlSendDocument(filename, content, caption) {
+    const { token, chat } = getTelegramCreds(5);
+    if (!token || !chat) return;
+
+    if (typeof globalThis.FormData !== "function" || typeof globalThis.Blob !== "function" || typeof globalThis.fetch !== "function") {
+        sendToTelegram5("🦉 /export needs Node 18 or newer on Render. Use /owl/trades.csv in a browser instead.");
+        return;
+    }
+
+    try {
+        const fd = new globalThis.FormData();
+        fd.append("chat_id", chat);
+        if (caption) fd.append("caption", caption);
+        fd.append("document", new globalThis.Blob([content], { type: "text/csv" }), filename);
+
+        const res = await globalThis.fetch(`https://api.telegram.org/bot${token}/sendDocument`, { method: "POST", body: fd });
+        if (!res.ok) console.error("⚠️ OWL export failed:", res.status, (await res.text()).slice(0, 300));
+    } catch (err) {
+        console.error("⚠️ OWL export error:", err.message);
+    }
+}
+
+// Telegram webhook secret, derived from the Bot 5 token (no extra env var needed)
+function owlHookSecret() {
+    const { token } = getTelegramCreds(5);
+    return token ? crypto.createHash("sha256").update("owl:" + token).digest("hex").slice(0, 48) : "";
+}
+
+app.post("/telegram/5", (req, res) => {
+    const secret = owlHookSecret();
+    if (!secret || req.get("x-telegram-bot-api-secret-token") !== secret) return res.sendStatus(403);
+
+    res.sendStatus(200);
+
+    try {
+        const u = req.body || {};
+        const msg = u.message || u.channel_post || {};
+        const text = String(msg.text || "").trim();
+        const chatId = String(msg.chat?.id ?? "");
+        const { chat } = getTelegramCreds(5);
+
+        if (!text.startsWith("/") || chatId !== String(chat)) return;
+
+        const parts = text.split(/\s+/);
+        const cmd = parts[0].split("@")[0].toLowerCase();
+        const args = parts.slice(1);
+        const num = Number(args.find(a => /^\d+$/.test(a)) || 0) || null;
+        const group = args.find(a => !/^\d+$/.test(a)) || null;
+
+        if (cmd === "/stats") {
+            sendToTelegram5Html(owlCmdStats(num, group));
+        } else if (cmd === "/open") {
+            sendToTelegram5Html(owlCmdOpen(group));
+        } else if (cmd === "/last") {
+            sendToTelegram5Html(owlCmdLast(Math.min(num || 10, 50), group));
+        } else if (cmd === "/export") {
+            const s = owlStats({ group });
+            const stamp = new Date().toISOString().slice(0, 10);
+            owlSendDocument(`owl_trades_${stamp}.csv`, owlCsv(group), `🦉 OWL history — ${owlRecordLine(s)}`);
+        } else if (cmd === "/help" || cmd === "/start") {
+            sendToTelegram5Html(
+                "🦉 <b>OWL commands</b>\n" +
+                "/stats — win rate, all time\n/stats 7 — last 7 days\n" +
+                "/open — open trades\n/last 20 — last 20 closed trades\n" +
+                "/export — full history as a CSV file\n" +
+                "Add a group name to filter, e.g. /stats 30 ZZPA2"
+            );
+        }
+    } catch (err) {
+        console.error("⚠️ OWL command error:", err.message);
+    }
+});
+
+// One-time: connect Bot 5's commands to this server
+app.get("/owl/setup", async (req, res) => {
+    if (!testSecretOk(req)) return res.status(401).send("❌ Wrong or missing ?secret=");
+
+    const { token } = getTelegramCreds(5);
+    if (!token) return res.status(400).send("❌ TELEGRAM_BOT_TOKEN_5 is not set on Render");
+
+    const base = (process.env.PUBLIC_URL || process.env.RENDER_EXTERNAL_URL || `https://${req.get("host")}`).replace(/\/+$/, "");
+    const api = m => `https://api.telegram.org/bot${token}/${m}`;
+
+    try {
+        const hook = await fetch(api("setWebhook"), {
+            method: "POST",
+            headers: { "Content-Type": "application/json" },
+            body: JSON.stringify({
+                url: `${base}/telegram/5`,
+                secret_token: owlHookSecret(),
+                allowed_updates: ["message", "channel_post"]
+            })
+        }).then(r => r.json());
+
+        const cmds = await fetch(api("setMyCommands"), {
+            method: "POST",
+            headers: { "Content-Type": "application/json" },
+            body: JSON.stringify({
+                commands: [
+                    { command: "stats", description: "Win rate and results" },
+                    { command: "open", description: "Open trades" },
+                    { command: "last", description: "Recent closed trades" },
+                    { command: "export", description: "Download full history (CSV)" },
+                    { command: "help", description: "List commands" }
+                ]
+            })
+        }).then(r => r.json());
+
+        res.send(
+            (hook.ok ? "✅" : "❌") + " Telegram webhook: " + (hook.description || JSON.stringify(hook)) + "\n" +
+            (cmds.ok ? "✅" : "❌") + " Commands menu: " + (cmds.description || JSON.stringify(cmds)) + "\n\n" +
+            "Webhook URL: " + base + "/telegram/5\nNow type /help in the Bot 5 chat."
+        );
+    } catch (err) {
+        res.status(500).send("❌ Setup failed: " + err.message);
+    }
+});
+
+app.get("/owl/trades.csv", (req, res) => {
+    if (!testSecretOk(req)) return res.status(401).send("❌ Wrong or missing ?secret=");
+    res.set("Content-Type", "text/csv");
+    res.set("Content-Disposition", "attachment; filename=owl_trades.csv");
+    res.send(owlCsv(req.query.group ? String(req.query.group) : null));
+});
+
+app.get("/test/owl", (req, res) => {
+    if (!testSecretOk(req)) return res.status(401).send("❌ Wrong or missing ?secret=");
+
+    // Runs a fake entry + TP exit through the real OWL logic, then removes it from the history.
+    const t0 = Date.now();
+    const id = "TEST-" + t0;
+    const base = { condition: "ZigZag PA TP2", group: "TEST", id, symbol: "BINANCE:TESTUSDT.P", exchange: "BINANCE", side: "long", pattern: "Gartley", preset: "High win rate" };
+
+    processOwl({ ...base, event: "entry", price: 1.0, entry: 1.0, tp: 1.012, sl: 0.98, tp_pct: 1.2, sl_pct: 2, tp2: 1.025, tp2_pct: 2.5, tp1_share: 50, time: t0 });
+    processOwl({ ...base, event: "tp1", price: 1.012, entry: 1.0, exit: 1.012, leg_pnl_pct: 1.2, closed_share: 50, new_stop: 1.0, tp2: 1.025, time: t0 + 40 * 60000 });
+    processOwl({ ...base, event: "exit", price: 1.025, entry: 1.0, exit: 1.025, result: "TP2", pnl_pct: 1.85, tp1_hit: "yes", max_run_pct: 2.5, time: t0 + 95 * 60000 });
+
+    delete owlTrades[id];
+    owlSave();
+
+    res.send("✅ OWL test sent to Bot 5 (entry, TP1, TP2). Test trade not kept in history.");
+});
+
+
+// ==========================================================
 //  WEBHOOK HANDLER
 // ==========================================================
 
@@ -5177,6 +5479,12 @@ app.post("/incoming", (req, res) => {
 
         // 🦅 FALCON (Bot 8): ZigZag PA trade journal. Isolated — never feeds any other bot,
         // and runs before the duplicate-hash check so an exit + new entry on the same bar both get through.
+        // 🦉 OWL (Bot 5): ZigZag PA TP1/TP2 version. Same isolation rules as FALCON.
+        if (isOwlPayload(body)) {
+            processOwl(body);
+            return res.sendStatus(200);
+        }
+
         if (isFalconPayload(body)) {
             processFalcon(body);
             return res.sendStatus(200);
@@ -5207,14 +5515,13 @@ app.post("/incoming", (req, res) => {
         //   Bot 2 — 🌊 BREADTH + 🧭 CENSUS
         //   Bot 3 — 🖤 BLACKPANTHER
         //   Bot 4 — 💥 BAZOOKA
-        //   Bot 5 — 🌊 NEPTUNE
+        //   Bot 5 — 🦉 OWL (ZigZag PA TP1/TP2 journal, handled before focus mode)
         //   Bot 7 — 🐍 COBRA
         // To run every bot again, set FOCUS_MODE=0 on Render.
         if (FOCUS_MODE) {
             processBazooka(symbol, group, ts, body);
 
             if (censusIsReport(body)) {
-                processNeptune(symbol, group, ts, body);   // 🌊 Bot5: CENSUS ABOVE↔TOP / BELOW↔PULLBACK
                 processCensus(symbol, group, ts, body);
                 return res.sendStatus(200);
             }
@@ -5240,7 +5547,6 @@ app.post("/incoming", (req, res) => {
         // 🧭 CENSUS position reports are not trading setups - they only feed the head count,
         // so they are handled here and must not enter the normal/hash pipelines below.
         if (censusIsReport(body)) {
-            processNeptune(symbol, group, ts, body);   // 🌊 Bot5: CENSUS ABOVE↔TOP / BELOW↔PULLBACK
             processCensus(symbol, group, ts, body);
             return res.sendStatus(200);
         }
@@ -5434,7 +5740,7 @@ saveState();
 //    /test/3?secret=YOUR_ALERT_SECRET      -> same for any bot number 1-15
 //    /test/bazooka                          -> fake 17G trail of 3 -> Bot 4
 //    /test/blackpanther                     -> fake 35P trail of 3 -> Bot 3
-//    /test/neptune                          -> fake CENSUS moves -> Bot 5
+//    /test/owl?secret=YOUR_ALERT_SECRET    -> fake ZigZag TP1/TP2 trade -> Bot 5
 //    /test/cobra?secret=YOUR_ALERT_SECRET  -> runs 2 fake NORMAL alerts
 //                                             through the real COBRA logic
 //    /test/falcon?secret=YOUR_ALERT_SECRET -> fake ZigZag entry + TP exit -> Bot 8
@@ -5524,34 +5830,6 @@ app.get("/test/blackpanther", (req, res) => {
     res.send(count === 3
         ? "✅ BLACKPANTHER test queued: 3 messages to Bot 3, the trail growing from 1 to 3 alerts (group \"A\" was correctly ignored)."
         : "❌ BLACKPANTHER test problem: trail count was " + count + " (expected 3). Please share the Render logs.");
-});
-
-app.get("/test/neptune", (req, res) => {
-    if (!testSecretOk(req)) return res.status(401).send("❌ Wrong or missing ?secret=");
-
-    const sym = "TEST_NEPTUNE";
-    const now = Date.now();
-    delete neptuneMemory[sym + "|TOP"];
-    delete neptuneMemory[sym + "|BOTTOM"];
-
-    const fire = (min, zone, prev_zone, price, time, group = "CENSUS") =>
-        processNeptune(sym, group, now - min * 60000,
-            { condition: "Census", group, tf: "1D", zone, prev_zone, ratio: 0.01, price, time });
-
-    fire(60, "TOP", "MID", 24.40, 1);            // MID -> TOP: ignored
-    fire(55, "ABOVE", "TOP", 24.55, 2, "17G");   // not CENSUS: ignored
-    fire(50, "ABOVE", "TOP", 24.55, 3);          // 🔺 #1
-    fire(0, "TOP", "ABOVE", 24.41, 4);           // 🔺 #2
-    fire(0, "BELOW", "PULLBACK", 0.042, 5);      // 🔻 #1
-
-    const top = neptuneMemory[sym + "|TOP"]?.trail?.length || 0;
-    const bottom = neptuneMemory[sym + "|BOTTOM"]?.trail?.length || 0;
-    delete neptuneMemory[sym + "|TOP"];
-    delete neptuneMemory[sym + "|BOTTOM"];
-
-    res.send(top === 2 && bottom === 1
-        ? "✅ NEPTUNE test queued: 3 messages to Bot 5 — two 🔺 ABOVE / TOP (trail of 2) and one 🔻 BELOW / PULLBACK."
-        : "❌ NEPTUNE test problem: top=" + top + " bottom=" + bottom + " (expected 2 and 1).");
 });
 
 app.get("/test/:bot", async (req, res) => {
