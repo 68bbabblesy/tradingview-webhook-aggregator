@@ -4604,6 +4604,47 @@ function falconRecordLine(s) {
     return `${s.wins}W / ${s.losses}L · win rate ${s.winRate.toFixed(1)}% · total ${falconSigned(s.total)}`;
 }
 
+// ---- Crowd: other coins signalling the same direction just before this one ----
+// Backtest (989 trades, 36 coins): entries with 2+ other coins on the same side in the
+// previous 30 min won ~78% vs ~64% for entries on their own. More coins live -> default 3.
+const CROWD_MIN = Number((process.env.CROWD_MIN || "3").trim());
+const CROWD_WINDOW_MS = Number((process.env.CROWD_WINDOW_MIN || "30").trim()) * 60 * 1000;
+
+function crowdCount(store, t) {
+    if (!t || !t.openedAt) return 0;
+    const syms = new Set();
+    for (const o of Object.values(store)) {
+        if (!o || o.id === t.id || o.symbol === t.symbol || o.side !== t.side || !o.openedAt) continue;
+        if (o.openedAt <= t.openedAt && o.openedAt >= t.openedAt - CROWD_WINDOW_MS) syms.add(o.symbol);
+    }
+    return syms.size;
+}
+
+function crowdLine(n, side) {
+    const dir = String(side || "").toUpperCase();
+    const coins = n === 1 ? "coin" : "coins";
+    return n >= CROWD_MIN
+        ? `🔥 Crowd: ${n} other ${coins} went ${dir} in the last ${CROWD_WINDOW_MS / 60000} min`
+        : `Crowd: ${n} other ${coins} went ${dir} in the last ${CROWD_WINDOW_MS / 60000} min`;
+}
+
+function crowdStatsLines(closed) {
+    const withC = closed.filter(t => Number(t.crowd ?? -1) >= CROWD_MIN);
+    const without = closed.filter(t => t.crowd !== undefined && t.crowd !== null && Number(t.crowd) < CROWD_MIN);
+    const fmt = rs => {
+        if (!rs.length) return "0 trades";
+        const w = rs.filter(t => Number(t.pnlPct || 0) > 0).length;
+        const tot = rs.reduce((a, t) => a + Number(t.pnlPct || 0), 0);
+        return `${w}/${rs.length} (${Math.round((100 * w) / rs.length)}%) · avg ${(tot / rs.length >= 0 ? "+" : "") + (tot / rs.length).toFixed(2)}%`;
+    };
+    return [
+        "",
+        `<b>Crowd (${CROWD_MIN}+ other coins same side in ${CROWD_WINDOW_MS / 60000} min)</b>`,
+        `🔥 With crowd: ${fmt(withC)}`,
+        `On its own: ${fmt(without)}`
+    ];
+}
+
 function processFalcon(body) {
     const e = tgEscape;
     const ev = String(body.event).trim().toLowerCase();
@@ -4639,9 +4680,10 @@ function processFalcon(body) {
             closedAt: null
         };
 
+        t.crowd = crowdCount(falconTrades, t);
         falconTrades[id] = t;
         falconSave();
-        console.log(`🦅 FALCON entry: ${side} ${symbol} ${pattern} @ ${t.entry}`);
+        console.log(`🦅 FALCON entry: ${side} ${symbol} ${pattern} @ ${t.entry} | crowd ${t.crowd}`);
 
         const icon = side === "long" ? "🟢" : "🔴";
         const [sTp, sSl] = side === "long" ? ["+", "-"] : ["-", "+"];
@@ -4649,6 +4691,7 @@ function processFalcon(body) {
         sendToTelegram8Html(
             `🦅 <b>FALCON</b>  ${icon} <b>${e(side.toUpperCase())} ${e(symbol)}</b>\n` +
             `Pattern: ${e(pattern || "n/a")}\n` +
+            `${e(crowdLine(t.crowd, side))}\n` +
             `Entry ~ <code>${e(t.entry)}</code>\n` +
             `TP <code>${e(t.tp)}</code> (${sTp}${e(t.tpPct)}%)\n` +
             `SL <code>${e(t.sl)}</code> (${sSl}${e(t.slPct)}%)\n` +
@@ -4698,7 +4741,8 @@ function processFalcon(body) {
     const held = t.openedAt ? ` · held ${falconDuration(t.closedAt - t.openedAt)}` : "";
 
     sendToTelegram8Html(
-        `🦅 <b>FALCON</b>  ${icon} <b>${e(label)}: ${e(symbol)} ${e(side)}</b>  ${e(falconSigned(pnl))}\n` +
+        `🦅 <b>FALCON</b>  ${icon} <b>${e(label)}: ${e(symbol)} ${e(side)}</b>  ${e(falconSigned(pnl))}` +
+        (t.crowd !== undefined && t.crowd !== null && t.crowd >= CROWD_MIN ? "  🔥" : "") + `\n` +
         `Entry <code>${e(t.entry)}</code> → Exit <code>${e(t.exit)}</code>${e(held)}\n` +
         `<i>Record (${e(group)}): ${e(falconRecordLine(s))}</i>`
     );
@@ -4738,8 +4782,10 @@ function falconCmdStats(days, group) {
             }
         }
 
+        lines.push(...crowdStatsLines(s.closed));
+
         const open = Object.values(falconTrades).filter(t => t.status === "open").length;
-        lines.push(`Open now: ${open}`);
+        lines.push("", `Open now: ${open}`);
     }
 
     return lines.join("\n");
@@ -4774,7 +4820,7 @@ function falconCmdLast(n, group) {
 
 function falconCsv(group) {
     const cols = ["id", "group", "symbol", "exchange", "side", "pattern", "preset", "chartTf", "patternTf",
-        "entry", "tp", "sl", "tpPct", "slPct", "openedAt", "status", "result", "exit", "pnlPct", "closedAt", "missedEntry"];
+        "entry", "tp", "sl", "tpPct", "slPct", "openedAt", "status", "result", "exit", "pnlPct", "closedAt", "missedEntry", "crowd"];
     const iso = v => (v ? new Date(v).toISOString() : "");
     const cell = v => {
         const s = String(v ?? "");
@@ -4818,6 +4864,30 @@ function falconHookSecret() {
     return token ? crypto.createHash("sha256").update("falcon:" + token).digest("hex").slice(0, 48) : "";
 }
 
+// Save the current history (CSV to the chat + backup file on disk), then start a fresh record
+async function falconArchive() {
+    const n = Object.keys(falconTrades).length;
+    const s = falconStats();
+    const stamp = new Date().toISOString().replace(/[:.]/g, "-").slice(0, 19);
+    const csv = falconCsv(null);
+
+    try {
+        fs.writeFileSync(FALCON_FILE.replace(/\.json$/, "") + `_archive_${stamp}.json`,
+            JSON.stringify({ version: 1, archivedAt: Date.now(), trades: falconTrades }), "utf8");
+    } catch (err) {
+        console.error("❌ FALCON: archive backup failed, record NOT cleared:", err.message);
+        sendToTelegram8("🦅 Archive failed (could not write the backup file), so nothing was cleared. Check the Render logs.");
+        return;
+    }
+
+    await falconSendDocument(`falcon_archive_${stamp}.csv`, csv, `🦅 FALCON archive — ${n} trades — ${falconRecordLine(s)}`);
+
+    falconTrades = {};
+    falconSave();
+    console.log(`🦅 FALCON record archived and reset (${n} trades)`);
+    sendToTelegram8Html(`🦅 <b>FALCON record reset</b>\n${n} ${n === 1 ? "trade" : "trades"} archived (CSV above, backup kept on the server).\nNew stats start from now.`);
+}
+
 app.post("/telegram/8", (req, res) => {
     const secret = falconHookSecret();
     if (!secret || req.get("x-telegram-bot-api-secret-token") !== secret) return res.sendStatus(403);
@@ -4849,12 +4919,24 @@ app.post("/telegram/8", (req, res) => {
             const s = falconStats({ group });
             const stamp = new Date().toISOString().slice(0, 10);
             falconSendDocument(`falcon_trades_${stamp}.csv`, falconCsv(group), `🦅 FALCON history — ${falconRecordLine(s)}`);
+        } else if (cmd === "/archive") {
+            const n = Object.keys(falconTrades).length;
+            if (args.map(a => a.toLowerCase()).includes("confirm")) {
+                falconArchive().catch(err => console.error("❌ FALCON archive error:", err.message));
+            } else {
+                sendToTelegram8Html(
+                    `🦅 <b>Reset the record?</b>\n` +
+                    `This saves all ${n} ${n === 1 ? "trade" : "trades"} as a CSV here and as a backup on the server, then starts the stats from zero.\n\n` +
+                    `To go ahead, send: <code>/archive confirm</code>`
+                );
+            }
         } else if (cmd === "/help" || cmd === "/start") {
             sendToTelegram8Html(
                 "🦅 <b>FALCON commands</b>\n" +
                 "/stats — win rate, all time\n/stats 7 — last 7 days\n" +
                 "/open — open trades\n/last 20 — last 20 closed trades\n" +
                 "/export — full history as a CSV file\n" +
+                "/archive — save the history and reset the stats to zero\n" +
                 "Add a group name to filter, e.g. /stats 30 ZZPA"
             );
         }
@@ -4893,6 +4975,7 @@ app.get("/falcon/setup", async (req, res) => {
                     { command: "open", description: "Open trades" },
                     { command: "last", description: "Recent closed trades" },
                     { command: "export", description: "Download full history (CSV)" },
+                    { command: "archive", description: "Save history and reset stats" },
                     { command: "help", description: "List commands" }
                 ]
             })
@@ -5091,9 +5174,10 @@ function processOwl(body) {
             closedAt: null
         };
 
+        t.crowd = crowdCount(owlTrades, t);
         owlTrades[id] = t;
         owlSave();
-        console.log(`🦉 OWL entry: ${side} ${symbol} ${pattern} @ ${t.entry}`);
+        console.log(`🦉 OWL entry: ${side} ${symbol} ${pattern} @ ${t.entry} | crowd ${t.crowd}`);
 
         const icon = side === "long" ? "🟢" : "🔴";
         const [sTp, sSl] = side === "long" ? ["+", "-"] : ["-", "+"];
@@ -5102,6 +5186,7 @@ function processOwl(body) {
             `🦉 <b>OWL</b>  ${icon} <b>${e(side.toUpperCase())}</b>\n` +
             `SYMBOL : <b>${e(symbol)}</b>\n` +
             `Pattern: ${e(pattern || "n/a")}\n` +
+            `${e(crowdLine(t.crowd, side))}\n` +
             `Entry ~ <code>${e(t.entry)}</code>\n` +
             (t.tp2 !== null
                 ? `TP1 <code>${e(t.tp)}</code> (${sTp}${e(t.tpPct)}%, close ${e(t.tp1Share)}%)\n` +
@@ -5196,7 +5281,7 @@ function processOwl(body) {
     sendToTelegram5Html(
         `🦉 <b>OWL</b>  ${icon} <b>${e(label)}: ${e(side)}</b>  ${e(owlSigned(pnl))}\n` +
         `SYMBOL : <b>${e(symbol)}</b>\n` +
-        `Entered: ${e(owlEntered(t))}\n` +
+        `Entered: ${e(owlEntered(t))}` + (t.crowd !== undefined && t.crowd !== null ? ` · crowd ${t.crowd}${t.crowd >= CROWD_MIN ? " 🔥" : ""}` : "") + `\n` +
         `Entry <code>${e(t.entry)}</code> → Exit <code>${e(t.exit)}</code>${e(held)}${e(run)}\n` +
         `\n` +
         `<i>Record (${e(group)}): ${e(owlRecordLine(s))}</i>`
@@ -5251,8 +5336,10 @@ function owlCmdStats(days, group) {
         const runs = s.closed.map(t => t.maxRunPct).filter(v => v !== null && v !== undefined);
         if (runs.length) lines.push(`Average max run: ${owlSigned(runs.reduce((a, v) => a + Number(v), 0) / runs.length)}`);
 
+        lines.push(...crowdStatsLines(s.closed));
+
         const open = Object.values(owlTrades).filter(t => t.status === "open").length;
-        lines.push(`Open now: ${open}`);
+        lines.push("", `Open now: ${open}`);
     }
 
     return lines.join("\n");
@@ -5288,7 +5375,7 @@ function owlCmdLast(n, group) {
 function owlCsv(group) {
     const cols = ["id", "group", "symbol", "exchange", "side", "pattern", "preset", "chartTf", "patternTf",
         "entry", "tp", "sl", "tpPct", "slPct", "tp2", "tp2Pct", "tp1Share", "tp1Hit", "tp1At", "openedAt", "status",
-        "result", "exit", "pnlPct", "maxRunPct", "closedAt", "missedEntry"];
+        "result", "exit", "pnlPct", "maxRunPct", "closedAt", "missedEntry", "crowd"];
     const iso = v => (v ? new Date(v).toISOString() : "");
     const cell = v => {
         const s = String(v ?? "");
@@ -5332,6 +5419,30 @@ function owlHookSecret() {
     return token ? crypto.createHash("sha256").update("owl:" + token).digest("hex").slice(0, 48) : "";
 }
 
+// Save the current history (CSV to the chat + backup file on disk), then start a fresh record
+async function owlArchive() {
+    const n = Object.keys(owlTrades).length;
+    const s = owlStats();
+    const stamp = new Date().toISOString().replace(/[:.]/g, "-").slice(0, 19);
+    const csv = owlCsv(null);
+
+    try {
+        fs.writeFileSync(OWL_FILE.replace(/\.json$/, "") + `_archive_${stamp}.json`,
+            JSON.stringify({ version: 1, archivedAt: Date.now(), trades: owlTrades }), "utf8");
+    } catch (err) {
+        console.error("❌ OWL: archive backup failed, record NOT cleared:", err.message);
+        sendToTelegram5("🦉 Archive failed (could not write the backup file), so nothing was cleared. Check the Render logs.");
+        return;
+    }
+
+    await owlSendDocument(`owl_archive_${stamp}.csv`, csv, `🦉 OWL archive — ${n} trades — ${owlRecordLine(s)}`);
+
+    owlTrades = {};
+    owlSave();
+    console.log(`🦉 OWL record archived and reset (${n} trades)`);
+    sendToTelegram5Html(`🦉 <b>OWL record reset</b>\n${n} ${n === 1 ? "trade" : "trades"} archived (CSV above, backup kept on the server).\nNew stats start from now.`);
+}
+
 app.post("/telegram/5", (req, res) => {
     const secret = owlHookSecret();
     if (!secret || req.get("x-telegram-bot-api-secret-token") !== secret) return res.sendStatus(403);
@@ -5363,12 +5474,24 @@ app.post("/telegram/5", (req, res) => {
             const s = owlStats({ group });
             const stamp = new Date().toISOString().slice(0, 10);
             owlSendDocument(`owl_trades_${stamp}.csv`, owlCsv(group), `🦉 OWL history — ${owlRecordLine(s)}`);
+        } else if (cmd === "/archive") {
+            const n = Object.keys(owlTrades).length;
+            if (args.map(a => a.toLowerCase()).includes("confirm")) {
+                owlArchive().catch(err => console.error("❌ OWL archive error:", err.message));
+            } else {
+                sendToTelegram5Html(
+                    `🦉 <b>Reset the record?</b>\n` +
+                    `This saves all ${n} ${n === 1 ? "trade" : "trades"} as a CSV here and as a backup on the server, then starts the stats from zero.\n\n` +
+                    `To go ahead, send: <code>/archive confirm</code>`
+                );
+            }
         } else if (cmd === "/help" || cmd === "/start") {
             sendToTelegram5Html(
                 "🦉 <b>OWL commands</b>\n" +
                 "/stats — win rate, all time\n/stats 7 — last 7 days\n" +
                 "/open — open trades\n/last 20 — last 20 closed trades\n" +
                 "/export — full history as a CSV file\n" +
+                "/archive — save the history and reset the stats to zero\n" +
                 "Add a group name to filter, e.g. /stats 30 ZZPA2"
             );
         }
@@ -5407,6 +5530,7 @@ app.get("/owl/setup", async (req, res) => {
                     { command: "open", description: "Open trades" },
                     { command: "last", description: "Recent closed trades" },
                     { command: "export", description: "Download full history (CSV)" },
+                    { command: "archive", description: "Save history and reset stats" },
                     { command: "help", description: "List commands" }
                 ]
             })
