@@ -108,8 +108,7 @@ function loadState() {
                 blackPantherMemory: parsed.blackPantherMemory || {},
                 gammaMemory: parsed.gammaMemory || {},
                 mamamiaHashMemory: parsed.mamamiaHashMemory || {},
-                breadthState: parsed.breadthState || { events: [], lastFire: 0, lastLevel: 0 },
-                censusState: parsed.censusState || { zones: {}, lastFire: 0, lastShare: 0 },
+                expansionState: parsed.expansionState || { hits: {}, lastFire: 0 },
                 zuluState: parsed.zuluState || {},
                 sideFlipMemory: parsed.sideFlipMemory || {},
                 mambaMemory: parsed.mambaMemory || {},
@@ -171,8 +170,7 @@ function loadState() {
         blackPantherMemory: {},
         gammaMemory: {},
         mamamiaHashMemory: {},
-        breadthState: { events: [], lastFire: 0, lastLevel: 0 },
-        censusState: { zones: {}, lastFire: 0, lastShare: 0 },
+        expansionState: { hits: {}, lastFire: 0 },
         zuluState: {},
         sideFlipMemory: {},
         mambaMemory: {},
@@ -240,8 +238,7 @@ function buildStateSnapshot() {
         blackPantherMemory,
         gammaMemory,
         mamamiaHashMemory,
-        breadthState,
-        censusState,
+        expansionState,
         zuluState,
         sideFlipMemory,
         mambaMemory,
@@ -335,8 +332,7 @@ function pruneStateBeforeSave() {
     pruneCobraRepeatState(cobraComboState, ts, 30 * 60 * 1000);
 
     // Keep the breadth window small.
-    try { breadthPrune(ts); } catch {}
-    try { censusPrune(ts); } catch {}
+    try { expansionPrune(ts); } catch {}
 
     // Telegram outbox cap.
     if (Array.isArray(telegramOutbox) && telegramOutbox.length > TELEGRAM_OUTBOX_MAX) {
@@ -930,7 +926,7 @@ function sendToTelegram1(text) { enqueueTelegram(1, text); }
 function sendToTelegram2(text) { enqueueTelegram(2, text); }
 
 /* ─────────────────────────────────────────────────────────────────────────────
-   Bot 2 is now the BREADTH bot only. Bundle / Zebra / Dollar used to notify here
+   Bot 2 is now the EXPANSION bot only. Bundle / Zebra / Dollar used to notify here
    and are disabled at your request. Their message-building code is untouched —
    it just goes to a sink instead of Telegram. To bring any of them back, swap
    sendToTelegram2Disabled(...) back to sendToTelegram2(...) at the call site.
@@ -1152,7 +1148,7 @@ const BAZOOKA_TRAIL_RESET_MS =
 
 const BAZOOKA_STATE_VERSION = 4;
 
-// 🎯 FOCUS MODE: only BREADTH + CENSUS (Bot2), BLACKPANTHER (Bot3), BAZOOKA (Bot4), OWL (Bot5) and COBRA (Bot7) run.
+// 🎯 FOCUS MODE: only EXPANSION (Bot2), BLACKPANTHER (Bot3), BAZOOKA (Bot4), OWL (Bot5) and COBRA (Bot7) run.
 // Every other bot is paused. Set FOCUS_MODE=0 on Render to run every bot again.
 const FOCUS_MODE = (process.env.FOCUS_MODE || "1").trim() !== "0";
 const BAZOOKA_MAX_TRAIL = 200;   // stored per symbol + group
@@ -1167,7 +1163,7 @@ for (const key of Object.keys(bazookaState)) {
 }
 
 console.log("💥 BAZOOKA LOADED — Bot4 alert + trail | full match only | groups: " + [...BAZOOKA_GROUPS].join(", "));
-console.log(FOCUS_MODE ? "🎯 FOCUS MODE: running Bot2 BREADTH+CENSUS, Bot3 BLACKPANTHER, Bot4 BAZOOKA, Bot5 OWL, Bot7 COBRA — all other bots paused" : "▶️ All bots active (FOCUS_MODE=0)");
+console.log(FOCUS_MODE ? "🎯 FOCUS MODE: running Bot2 EXPANSION, Bot3 BLACKPANTHER, Bot4 BAZOOKA, Bot5 OWL, Bot7 COBRA — all other bots paused" : "▶️ All bots active (FOCUS_MODE=0)");
 
 function bazookaNum(v) {
     const n = Number(String(v ?? "").replace(/,/g, "").trim());
@@ -1400,7 +1396,7 @@ let gammaMemory = persisted.gammaMemory || {};
 //  filter: 13 of 18 counts just the same as 18 of 18.
 //
 //  Groups without both (e.g. "A", "#12", no group) are ignored,
-//  which keeps BREADTH / CENSUS style payloads out.
+//  which keeps EXPANSION style payloads out.
 //
 //  One message per alert: the alert details on top, and the
 //  trail of every alert for that symbol + group so far below.
@@ -1886,8 +1882,7 @@ function processCheck(symbol, group, ts, body) {
 //  Names kept only so we can reuse them later.
 // ==========================================================
 
-let breadthState = persisted.breadthState || { events: [], lastFire: 0, lastLevel: 0 };
-let censusState = persisted.censusState || { zones: {}, lastFire: 0, lastShare: 0 };
+let expansionState = persisted.expansionState || { hits: {}, lastFire: 0 };
 let tangoState = persisted.tangoState || {};
 let gandoState = persisted.gandoState || {};
 
@@ -1913,234 +1908,6 @@ function getFamily(group) {
 }
 
 
-/* ─────────────────────────────────────────────────────────────────────────────
-   🌊 BREADTH  —  market-wide bias detector
-   Individual alerts cannot tell you the market bias: each one looks the same
-   whether the whole watchlist is falling or just that symbol. Breadth can,
-   because it counts how many DISTINCT symbols are alerting at once.
-   Normal is ~3 distinct symbols per 30 min. On 28 Sep 2026 it reached 64, with
-   80% of them pullback-zone alerts — that was a market-wide decline in progress.
-   Descriptive, not predictive: it tells you what IS happening, not what comes
-   next. Sized to the whole watchlist, so it runs on EVERY incoming alert.
-───────────────────────────────────────────────────────────────────────────── */
-const BREADTH_ENABLED      = (process.env.BREADTH_ENABLED || "1").trim() !== "0";
-const BREADTH_WINDOW_MS    = Number((process.env.BREADTH_WINDOW_MIN || "30").trim()) * 60 * 1000;
-const BREADTH_THRESHOLD    = Number((process.env.BREADTH_THRESHOLD || "15").trim());
-const BREADTH_STEP         = Number((process.env.BREADTH_STEP || "20").trim());
-const BREADTH_COOLDOWN_MS  = Number((process.env.BREADTH_COOLDOWN_MIN || "20").trim()) * 60 * 1000;
-const BREADTH_MAX_EVENTS   = 4000;
-
-// Classify an alert by the ZONE ITS RANGE DEFINES, not by the levels it matched.
-// The matched-level list contains whatever each timeframe happened to be on, which
-// is noisy; the band edges / clause ranges are what the alert was actually asking for.
-function breadthZone(body = {}) {
-    const ranges = [
-        body.band_top, body.band_bottom,
-        body.clause_a_range, body.clause_b_range,
-        body.a_range, body.b_range,
-        body.deep_threshold, body.retracement_threshold
-    ].map(v => (v === undefined || v === null) ? "" : String(v)).join(" ").toLowerCase();
-
-    // "EXT x" and small ratios sit at the previous high; 0.35-1.05 is a pull back
-    // into the range. A band spanning the high (e.g. 0.05 .. EXT 0.04) is zero-zone.
-    const plain = [];
-    const ext = [];
-    const re = /(ext\s*)?(\d*\.?\d+)/g;
-    let m;
-    while ((m = re.exec(ranges)) !== null) {
-        const n = Number(m[2]);
-        if (!Number.isFinite(n)) continue;
-        if (m[1]) ext.push(n); else plain.push(n);
-    }
-
-    const hasPullback = plain.some(n => n >= 0.35 && n <= 1.05);
-    const nearHigh    = ext.length > 0 || plain.some(n => n <= 0.12);
-
-    if (hasPullback && !nearHigh) return "pullback";
-    if (nearHigh && !hasPullback) return "zero";
-    if (nearHigh && hasPullback)  return "zero";   // band straddling the high
-    return "other";
-}
-
-function breadthPrune(ts) {
-    const cutoff = ts - BREADTH_WINDOW_MS;
-    let arr = Array.isArray(breadthState.events) ? breadthState.events : [];
-    arr = arr.filter(e => e && e.t >= cutoff);
-    if (arr.length > BREADTH_MAX_EVENTS) arr = arr.slice(-BREADTH_MAX_EVENTS);
-    breadthState.events = arr;
-    return arr;
-}
-
-
-/* ─────────────────────────────────────────────────────────────────────────────
-   🧭 CENSUS  —  live position of every watchlist symbol
-   Fed by the CENSUS_REPORTER script on each symbol, which reports only when a
-   symbol CHANGES zone. Unlike breadth (which counts setup alerts, and so only
-   sees symbols that happened to fire) this is a true head count: we always know
-   where every reporting symbol currently sits.
-   Zones, by ratio from the reference timeframe's previous range:
-     ABOVE (<0) · TOP (0-0.12) · MID (0.12-0.35) · PULLBACK (0.35-1) · BELOW (>1)
-───────────────────────────────────────────────────────────────────────────── */
-const CENSUS_ENABLED       = (process.env.CENSUS_ENABLED || "1").trim() !== "0";
-const CENSUS_STALE_MS      = Number((process.env.CENSUS_STALE_HOURS || "12").trim()) * 60 * 60 * 1000;
-const CENSUS_MIN_SYMBOLS   = Number((process.env.CENSUS_MIN_SYMBOLS || "20").trim());
-const CENSUS_SHARE_TRIGGER = Number((process.env.CENSUS_SHARE || "0.6").trim());
-const CENSUS_SHARE_STEP    = Number((process.env.CENSUS_SHARE_STEP || "0.15").trim());
-const CENSUS_COOLDOWN_MS   = Number((process.env.CENSUS_COOLDOWN_MIN || "20").trim()) * 60 * 1000;
-// After a restart the picture rebuilds one symbol at a time, so the first few reports can
-// look like 100% of a tiny sample. Stay quiet until enough of the watchlist has checked in.
-const CENSUS_WARMUP_MS     = Number((process.env.CENSUS_WARMUP_MIN || "20").trim()) * 60 * 1000;
-const CENSUS_BOOT_TS       = Date.now();
-
-function censusPrune(ts) {
-    const z = censusState.zones || {};
-    for (const s of Object.keys(z)) {
-        if (!z[s] || (ts - (z[s].t || 0)) > CENSUS_STALE_MS) delete z[s];
-    }
-    censusState.zones = z;
-    return z;
-}
-
-function censusIsReport(body = {}) {
-    return String(body.condition || "").toLowerCase() === "census";
-}
-
-function processCensus(symbol, group, ts, body = {}) {
-    if (!CENSUS_ENABLED || !symbol || !censusIsReport(body)) return true;
-
-    if (!censusState || typeof censusState !== "object") {
-        censusState = { zones: {}, lastFire: 0, lastShare: 0 };
-    }
-    if (!censusState.zones || typeof censusState.zones !== "object") censusState.zones = {};
-
-    const zone = String(body.zone || "").toUpperCase();
-    if (!zone) return true;
-    censusState.zones[symbol] = { z: zone, t: ts, r: Number(body.ratio) };
-
-    const z = censusPrune(ts);
-    const symbols = Object.keys(z);
-    const total = symbols.length;
-    if (total < CENSUS_MIN_SYMBOLS) return true;
-    if ((Date.now() - CENSUS_BOOT_TS) < CENSUS_WARMUP_MS) return true;
-
-    const counts = { ABOVE: 0, TOP: 0, MID: 0, PULLBACK: 0, BELOW: 0 };
-    for (const s of symbols) if (counts[z[s].z] !== undefined) counts[z[s].z]++;
-
-    // Bearish share = pulled back or broken down. Bullish = at or above the high.
-    const bear = (counts.PULLBACK + counts.BELOW) / total;
-    const bull = (counts.ABOVE + counts.TOP) / total;
-    const share = Math.max(bear, bull);
-    const bias = bear >= bull ? "SELL-SIDE" : "BUY-SIDE";
-
-    if (share < CENSUS_SHARE_TRIGGER) {
-        if (share < CENSUS_SHARE_TRIGGER - 0.1) censusState.lastShare = 0;
-        return true;
-    }
-
-    const cooled = (ts - (censusState.lastFire || 0)) >= CENSUS_COOLDOWN_MS;
-    const grew = share >= (censusState.lastShare || 0) + CENSUS_SHARE_STEP;
-    if ((censusState.lastShare || 0) > 0 && !grew && !cooled) return true;
-
-    const pct = n => Math.round((n / total) * 100) + "%";
-    const lines = [
-        "🧭 CENSUS — " + bias,
-        "",
-        Math.round(share * 100) + "% of " + total + " symbols on the " +
-            (bias === "SELL-SIDE" ? "sell" : "buy") + " side",
-        "",
-        "ABOVE prev high : " + counts.ABOVE + "  (" + pct(counts.ABOVE) + ")",
-        "TOP  0-0.12     : " + counts.TOP + "  (" + pct(counts.TOP) + ")",
-        "MID  0.12-0.35  : " + counts.MID + "  (" + pct(counts.MID) + ")",
-        "PULLBACK 0.35-1 : " + counts.PULLBACK + "  (" + pct(counts.PULLBACK) + ")",
-        "BELOW prev low  : " + counts.BELOW + "  (" + pct(counts.BELOW) + ")",
-        "",
-        bias === "SELL-SIDE"
-            ? "Most of the watchlist has pulled back off its highs — do not read individual pullback alerts as buy setups."
-            : "Most of the watchlist is at or above its previous high.",
-        "",
-        "⚠️ Describes what IS happening, not what happens next.",
-        formatDateTime(ts)
-    ];
-
-    sendToTelegram2(lines.join("\n"));
-    censusState.lastFire = ts;
-    censusState.lastShare = share;
-    saveState();
-    return true;
-}
-
-function processBreadth(symbol, group, ts, body = {}) {
-    if (!BREADTH_ENABLED || !symbol) return;
-
-    if (!breadthState || typeof breadthState !== "object") {
-        breadthState = { events: [], lastFire: 0, lastLevel: 0 };
-    }
-    if (!Array.isArray(breadthState.events)) breadthState.events = [];
-
-    breadthState.events.push({ t: ts, s: symbol, z: breadthZone(body) });
-    const arr = breadthPrune(ts);
-
-    // Breadth = DISTINCT symbols in the window, not raw alert count. Ten alerts
-    // from one symbol is one symbol moving; ten symbols is the market moving.
-    const bySymbol = new Map();
-    for (const e of arr) {
-        if (!bySymbol.has(e.s)) bySymbol.set(e.s, []);
-        bySymbol.get(e.s).push(e.z);
-    }
-    const breadth = bySymbol.size;
-    if (breadth < BREADTH_THRESHOLD) {
-        // Dropped back below the threshold: re-arm so the next surge can report.
-        if (breadth < BREADTH_THRESHOLD * 0.6) breadthState.lastLevel = 0;
-        return;
-    }
-
-    // Report on the first crossing, then only when it has grown by another STEP
-    // since the last report, or after the cooldown. One burst = a couple of
-    // messages, not one per alert.
-    const lastAt = breadthState.lastLevel || 0;
-    const cooledDown = (ts - (breadthState.lastFire || 0)) >= BREADTH_COOLDOWN_MS;
-    const grewEnough = breadth >= lastAt + BREADTH_STEP;
-    if (lastAt > 0 && !grewEnough && !cooledDown) return;
-
-    const counts = { pullback: 0, zero: 0, mixed: 0, other: 0 };
-    for (const [, zones] of bySymbol) {
-        const pick = zones.includes("pullback") ? "pullback"
-                   : zones.includes("zero")     ? "zero"
-                   : zones.includes("mixed")    ? "mixed" : "other";
-        counts[pick]++;
-    }
-
-    let bias = "UNCLEAR", note = "mixed alert types — no clear market-wide bias";
-    if (counts.pullback >= breadth * 0.6) {
-        bias = "SELL-SIDE";
-        note = "most symbols have fallen into pullback zones — treat these as a market-wide decline, NOT as individual buy setups";
-    } else if (counts.zero >= breadth * 0.6) {
-        bias = "BUY-SIDE";
-        note = "most symbols are pressing against their previous highs together";
-    }
-
-    const total = arr.length;
-    const lines = [
-        "🌊 BREADTH SURGE — " + bias,
-        "",
-        breadth + " distinct symbols in " + Math.round(BREADTH_WINDOW_MS / 60000) + " min  (normal ≈ 3)",
-        total + " alerts total",
-        "",
-        "pullback-zone symbols : " + counts.pullback,
-        "zero-zone symbols     : " + counts.zero,
-        "mixed / other         : " + (counts.mixed + counts.other),
-        "",
-        note,
-        "",
-        "⚠️ Describes what IS happening, not what happens next.",
-        formatDateTime(ts)
-    ];
-
-    sendToTelegram2(lines.join("\n"));
-    breadthState.lastFire = ts;
-    breadthState.lastLevel = breadth;
-    saveState();
-}
 
 function processTango(symbol, group, ts, body) {
     return;
@@ -2432,6 +2199,132 @@ let mambaFirstState = persisted.mambaFirstState || {};
 function getMambaFamily(group) {
     const match = String(group || "").match(/^(\d+)[A-Z]$/);
     return match ? match[1] : "";
+}
+
+
+/* ─────────────────────────────────────────────────────────────────────────────
+   ⚡ EXPANSION  —  timeframe disagreement detector  (Bot 2)
+   Replaces BREADTH and CENSUS, both of which were broken: their "sell side" was
+   PULLBACK+BELOW, which covers 60.5% of the ratio range by construction, against
+   a 60% trigger. They reported SELL-SIDE 125 times out of 127 regardless of the
+   market, and neither named a symbol, so neither was actionable.
+
+   This fires per symbol on the one configuration that separated in testing:
+   several timeframes clustered at the zero zone while at least one sits far out
+   past EXT 2. Measured on 1m data across 1H/4H/12H/1D:
+
+       all timeframes agree (TANDEM-like)   1.82% over 4h   0.83x baseline
+       baseline                             2.19%
+       disagreement (COLLABO-like)          3.72% over 4h   1.70x baseline
+
+   It is TWO-SIDED: 2.22% up and 1.93% down, net ~0. It says a move is likely,
+   NOT which way.
+
+   Only alerts carrying a "levels" list can be read, and only min_count-style
+   alerts can ever qualify - a require_all alert reports every level inside its
+   band by construction, so disagreement is impossible there.
+───────────────────────────────────────────────────────────────────────────── */
+const EXPANSION_ENABLED       = (process.env.EXPANSION_ENABLED || "1").trim() !== "0";
+const EXPANSION_NEAR          = Number((process.env.EXPANSION_NEAR || "0.05").trim());
+const EXPANSION_FAR           = Number((process.env.EXPANSION_FAR || "2.0").trim());
+const EXPANSION_MIN_NEAR      = Number((process.env.EXPANSION_MIN_NEAR || "2").trim());
+const EXPANSION_MIN_FAR       = Number((process.env.EXPANSION_MIN_FAR || "1").trim());
+const EXPANSION_WINDOW_MS     = Number((process.env.EXPANSION_WINDOW_MIN || "30").trim()) * 60 * 1000;
+const EXPANSION_COOLDOWN_MS   = Number((process.env.EXPANSION_COOLDOWN_MIN || "20").trim()) * 60 * 1000;
+const EXPANSION_PER_SYMBOL_MS = Number((process.env.EXPANSION_PER_SYMBOL_MIN || "60").trim()) * 60 * 1000;
+
+// Level name to signed ratio. 0 = previous high, 1 = previous low,
+// negative = above the previous high (an extension).
+function expansionRatio(name) {
+    const n = String(name || "").trim();
+    if (!n) return null;
+    if (/^EXT/i.test(n)) {
+        const v = Number(n.replace(/^EXT\s*/i, ""));
+        return Number.isFinite(v) ? -v : null;
+    }
+    if (/^low$/i.test(n)) return 1.0;
+    const v = Number(n);
+    return Number.isFinite(v) ? v : null;
+}
+
+// Levels arrive as ["1H":"0.05","23H":"EXT 7"], which the body parser repairs
+// into an object. Handle both the repaired object and the raw string.
+function expansionLevels(body) {
+    const raw = body ? body.levels : null;
+    const out = [];
+    if (raw && typeof raw === "object" && !Array.isArray(raw)) {
+        for (const tf of Object.keys(raw)) {
+            const r = expansionRatio(raw[tf]);
+            if (r !== null) out.push({ tf: tf, name: String(raw[tf]), r: r });
+        }
+        return out;
+    }
+    const text = typeof raw === "string" ? raw : "";
+    const re = /"?([A-Za-z0-9]+)"?\s*:\s*"([^"]+)"/g;
+    let m;
+    while ((m = re.exec(text)) !== null) {
+        const r = expansionRatio(m[2]);
+        if (r !== null) out.push({ tf: m[1], name: m[2], r: r });
+    }
+    return out;
+}
+
+function expansionPrune(ts) {
+    const h = (expansionState && expansionState.hits) || {};
+    for (const s of Object.keys(h)) {
+        if (!h[s] || (ts - (h[s].t || 0)) > EXPANSION_WINDOW_MS) delete h[s];
+    }
+    if (expansionState) expansionState.hits = h;
+    return h;
+}
+
+function processExpansion(symbol, group, ts, body) {
+    if (!EXPANSION_ENABLED || !symbol) return;
+
+    if (!expansionState || typeof expansionState !== "object") {
+        expansionState = { hits: {}, lastFire: 0 };
+    }
+    if (!expansionState.hits || typeof expansionState.hits !== "object") {
+        expansionState.hits = {};
+    }
+
+    const levels = expansionLevels(body);
+    if (levels.length < 3) return;
+
+    const near = levels.filter(x => Math.abs(x.r) <= EXPANSION_NEAR);
+    const far  = levels.filter(x => x.r <= -EXPANSION_FAR);
+    if (near.length < EXPANSION_MIN_NEAR || far.length < EXPANSION_MIN_FAR) return;
+
+    const prev = expansionState.hits[symbol];
+    const line = levels.slice().sort((a, b) => a.r - b.r)
+        .map(x => x.tf + " " + x.name).join("  ·  ");
+
+    // One entry per symbol - repeats refresh rather than queue, so a symbol
+    // sitting in this state cannot spam.
+    expansionState.hits[symbol] = { t: ts, line: line, far: far.length, near: near.length };
+
+    const h = expansionPrune(ts);
+    const fresh = !prev || (ts - (prev.t || 0)) >= EXPANSION_PER_SYMBOL_MS;
+    const cooled = (ts - (expansionState.lastFire || 0)) >= EXPANSION_COOLDOWN_MS;
+    if (!fresh || !cooled) { saveState(); return; }
+
+    const syms = Object.keys(h).sort((a, b) => (h[b].t || 0) - (h[a].t || 0));
+    const shown = syms.slice(0, 12);
+
+    const lines = ["⚡ EXPANSION WATCH — " + syms.length + (syms.length === 1 ? " symbol" : " symbols"), ""];
+    for (const s of shown) lines.push(s + "\n    " + h[s].line);
+    if (syms.length > shown.length) lines.push("… and " + (syms.length - shown.length) + " more");
+    lines.push("");
+    lines.push("Disagreement: " + EXPANSION_MIN_NEAR + "+ timeframes at the zero zone while " +
+               EXPANSION_MIN_FAR + "+ sits beyond EXT " + EXPANSION_FAR + ".");
+    lines.push("Tested: ~1.7x normal 4h movement; ~0.83x when all timeframes agree.");
+    lines.push("TWO-SIDED — expect a move, not a direction.");
+    lines.push("");
+    lines.push(formatDateTime(ts));
+
+    sendToTelegram2(lines.join("\n"));
+    expansionState.lastFire = ts;
+    saveState();
 }
 
 function processMamba(symbol, group, ts, body = {}) {
@@ -5645,12 +5538,7 @@ app.post("/incoming", (req, res) => {
         if (FOCUS_MODE) {
             processBazooka(symbol, group, ts, body);
 
-            if (censusIsReport(body)) {
-                processCensus(symbol, group, ts, body);
-                return res.sendStatus(200);
-            }
-
-            processBreadth(symbol, group, ts, body);
+            processExpansion(symbol, group, ts, body);
             processCobra(symbol, group, ts, body);          // normal groups only (checked inside)
             processBlackPanther(symbol, group, ts, body);   // groups with a number + letter
 
@@ -5666,15 +5554,8 @@ app.post("/incoming", (req, res) => {
         processZebraEcosystem(symbol, group, ts, body);
         // 💥 BAZOOKA (Bot4): 17G / 62H / 44U full-match alert + trail.
         processBazooka(symbol, group, ts, body);
-        // 🌊 BREADTH global market-wide bias detector.
-        // Must run on EVERY alert regardless of ecosystem, so it sits with the other globals.
-        // 🧭 CENSUS position reports are not trading setups - they only feed the head count,
-        // so they are handled here and must not enter the normal/hash pipelines below.
-        if (censusIsReport(body)) {
-            processCensus(symbol, group, ts, body);
-            return res.sendStatus(200);
-        }
-        processBreadth(symbol, group, ts, body);
+        // ⚡ EXPANSION global timeframe-disagreement detector (Bot 2).
+        processExpansion(symbol, group, ts, body);
         // 🐍 MAMBA global 99F match-type direction detector.
         // Runs before isolated ecosystem returns so normal, #, ~, @, ^ and $ can all be caught.
         processMamba(symbol, group, ts, body);
