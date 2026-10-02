@@ -109,6 +109,7 @@ function loadState() {
                 gammaMemory: parsed.gammaMemory || {},
                 mamamiaHashMemory: parsed.mamamiaHashMemory || {},
                 expansionState: parsed.expansionState || { hits: {}, lastFire: 0 },
+                flowState: parsed.flowState || { events: [], lastFire: 0 },
                 zuluState: parsed.zuluState || {},
                 sideFlipMemory: parsed.sideFlipMemory || {},
                 mambaMemory: parsed.mambaMemory || {},
@@ -171,6 +172,7 @@ function loadState() {
         gammaMemory: {},
         mamamiaHashMemory: {},
         expansionState: { hits: {}, lastFire: 0 },
+        flowState: { events: [], lastFire: 0 },
         zuluState: {},
         sideFlipMemory: {},
         mambaMemory: {},
@@ -239,6 +241,7 @@ function buildStateSnapshot() {
         gammaMemory,
         mamamiaHashMemory,
         expansionState,
+        flowState,
         zuluState,
         sideFlipMemory,
         mambaMemory,
@@ -333,6 +336,7 @@ function pruneStateBeforeSave() {
 
     // Keep the breadth window small.
     try { expansionPrune(ts); } catch {}
+    try { flowPrune(ts); } catch {}
 
     // Telegram outbox cap.
     if (Array.isArray(telegramOutbox) && telegramOutbox.length > TELEGRAM_OUTBOX_MAX) {
@@ -1883,6 +1887,7 @@ function processCheck(symbol, group, ts, body) {
 // ==========================================================
 
 let expansionState = persisted.expansionState || { hits: {}, lastFire: 0 };
+let flowState = persisted.flowState || { events: [], lastFire: 0 };
 let tangoState = persisted.tangoState || {};
 let gandoState = persisted.gandoState || {};
 
@@ -2324,6 +2329,117 @@ function processExpansion(symbol, group, ts, body) {
 
     sendToTelegram2(lines.join("\n"));
     expansionState.lastFire = ts;
+    saveState();
+}
+
+
+/* ─────────────────────────────────────────────────────────────────────────────
+   🌊 FLOW  —  synchronised zone-transition detector
+   The second attempt at market bias. The first (CENSUS) measured STANDING
+   POSITION and was structurally broken: PULLBACK+BELOW covers 60.5% of the ratio
+   range by construction, so against a 60% trigger it reported SELL-SIDE 92 times
+   out of 92 regardless of the market.
+
+   This measures MOVEMENT instead. A zone transition has a direction, and between
+   adjacent zones transitions balance out over time in a drifting market - so an
+   imbalance is real directional flow, not an artefact of zone widths.
+
+   On the sample log (422 reports, 82 symbols, 13 hours):
+       8+ symbols transitioning in 15 min          15.5% of windows
+       12+ symbols AND 70%+ one direction           3.4% of windows   <- trigger
+   The 29 Sep 01:01 event was 70 symbols up against 10 down. The old census
+   called that same period SELL-SIDE, because most symbols were still STANDING in
+   PULLBACK while MOVING upward.
+
+   Fed by CENSUS_REPORTER alerts, which carry zone + prev_zone.
+───────────────────────────────────────────────────────────────────────────── */
+const FLOW_ENABLED      = (process.env.FLOW_ENABLED || "1").trim() !== "0";
+const FLOW_BOT          = Number((process.env.FLOW_BOT || "6").trim());
+const FLOW_WINDOW_MS    = Number((process.env.FLOW_WINDOW_MIN || "15").trim()) * 60 * 1000;
+const FLOW_MIN_SYMBOLS  = Number((process.env.FLOW_MIN_SYMBOLS || "12").trim());
+const FLOW_MIN_SKEW     = Number((process.env.FLOW_MIN_SKEW || "0.7").trim());
+const FLOW_COOLDOWN_MS  = Number((process.env.FLOW_COOLDOWN_MIN || "20").trim()) * 60 * 1000;
+const FLOW_MAX_EVENTS   = 3000;
+
+// Zones ordered high to low. A positive step is a move DOWN the range.
+const FLOW_ORDER = { ABOVE: 0, TOP: 1, MID: 2, PULLBACK: 3, BELOW: 4 };
+
+function flowIsReport(body) {
+    return body && String(body.condition || "").toLowerCase() === "census";
+}
+
+function flowPrune(ts) {
+    if (!flowState || typeof flowState !== "object") flowState = { events: [], lastFire: 0 };
+    let arr = Array.isArray(flowState.events) ? flowState.events : [];
+    const cutoff = ts - FLOW_WINDOW_MS;
+    arr = arr.filter(e => e && e.t >= cutoff);
+    if (arr.length > FLOW_MAX_EVENTS) arr = arr.slice(-FLOW_MAX_EVENTS);
+    flowState.events = arr;
+    return arr;
+}
+
+function processFlow(symbol, group, ts, body) {
+    if (!FLOW_ENABLED || !symbol || !flowIsReport(body)) return;
+
+    const to = String(body.zone || "").toUpperCase();
+    const from = String(body.prev_zone || "").toUpperCase();
+    if (!(to in FLOW_ORDER) || !(from in FLOW_ORDER)) return;
+
+    const step = FLOW_ORDER[to] - FLOW_ORDER[from];
+    if (step === 0) return;
+
+    if (!flowState || typeof flowState !== "object") flowState = { events: [], lastFire: 0 };
+    if (!Array.isArray(flowState.events)) flowState.events = [];
+    flowState.events.push({ t: ts, s: symbol, d: step < 0 ? 1 : -1, from: from, to: to });
+
+    const arr = flowPrune(ts);
+
+    // Count DISTINCT symbols, so one symbol flipping repeatedly cannot carry it.
+    const seen = new Map();
+    let up = 0, dn = 0;
+    for (const e of arr) {
+        if (e.d > 0) up++; else dn++;
+        if (!seen.has(e.s)) seen.set(e.s, e);
+    }
+    const symbols = seen.size;
+    const total = up + dn;
+    if (symbols < FLOW_MIN_SYMBOLS || total === 0) return;
+
+    const skew = Math.max(up, dn) / total;
+    if (skew < FLOW_MIN_SKEW) return;
+
+    if ((ts - (flowState.lastFire || 0)) < FLOW_COOLDOWN_MS) return;
+
+    const bias = up > dn ? "BUY-SIDE" : "SELL-SIDE";
+    const wanted = up > dn ? 1 : -1;
+
+    const movers = arr.filter(e => e.d === wanted);
+    const byS = new Map();
+    for (const e of movers) byS.set(e.s, e);
+    const names = Array.from(byS.keys()).slice(0, 15);
+
+    const lines = [
+        "🌊 FLOW — " + bias,
+        "",
+        symbols + " symbols changed zone in the last " + Math.round(FLOW_WINDOW_MS / 60000) + " min",
+        "up " + up + "  ·  down " + dn + "  ·  " + Math.round(skew * 100) + "% one way",
+        "",
+        "moving " + (up > dn ? "UP" : "DOWN") + ":"
+    ];
+    for (const n of names) {
+        const e = byS.get(n);
+        lines.push("   " + n + "   " + e.from + " → " + e.to);
+    }
+    if (byS.size > names.length) lines.push("   … and " + (byS.size - names.length) + " more");
+    lines.push("");
+    lines.push("Measures MOVEMENT between zones, not standing position.");
+    lines.push("Typical window sees ~4 symbols move; this fires above " + FLOW_MIN_SYMBOLS + " with " +
+               Math.round(FLOW_MIN_SKEW * 100) + "%+ going one way (~3% of the time).");
+    lines.push("");
+    lines.push(formatDateTime(ts));
+
+    enqueueTelegram(FLOW_BOT, lines.join("\n"));
+    flowState.lastFire = ts;
     saveState();
 }
 
@@ -5539,6 +5655,7 @@ app.post("/incoming", (req, res) => {
             processBazooka(symbol, group, ts, body);
 
             processExpansion(symbol, group, ts, body);
+            processFlow(symbol, group, ts, body);
             processCobra(symbol, group, ts, body);          // normal groups only (checked inside)
             processBlackPanther(symbol, group, ts, body);   // groups with a number + letter
 
@@ -5556,6 +5673,8 @@ app.post("/incoming", (req, res) => {
         processBazooka(symbol, group, ts, body);
         // ⚡ EXPANSION global timeframe-disagreement detector (Bot 2).
         processExpansion(symbol, group, ts, body);
+        // 🌊 FLOW global synchronised zone-transition detector.
+        processFlow(symbol, group, ts, body);
         // 🐍 MAMBA global 99F match-type direction detector.
         // Runs before isolated ecosystem returns so normal, #, ~, @, ^ and $ can all be caught.
         processMamba(symbol, group, ts, body);
