@@ -95,7 +95,6 @@ function loadState() {
                 bazookaState: parsed.bazookaState || {},
                 hashMemory: parsed.hashMemory || {},
                 wakandaState: parsed.wakandaState || {},
-                boomPairState: parsed.boomPairState || {},
 
                 kookyMemory: parsed.kookyMemory || {},
                 speshMemory: parsed.speshMemory || {},
@@ -113,7 +112,7 @@ function loadState() {
                 zuluState: parsed.zuluState || {},
                 sideFlipMemory: parsed.sideFlipMemory || {},
                 mambaMemory: parsed.mambaMemory || {},
-                boomMemory: parsed.boomMemory || {},
+                firstMemory: parsed.firstMemory || null,
                 jupiterState: parsed.jupiterState || {},
                 yabaMemory: parsed.yabaMemory || {},
                 zebraMemory: parsed.zebraMemory || {},
@@ -158,7 +157,6 @@ function loadState() {
         bazookaState: {},
         hashMemory: {},
         wakandaState: {},
-        boomPairState: {},
 
         kookyMemory: {},
         speshMemory: {},
@@ -176,7 +174,7 @@ function loadState() {
         zuluState: {},
         sideFlipMemory: {},
         mambaMemory: {},
-        boomMemory: {},
+        firstMemory: null,
         jupiterState: {},
         yabaMemory: {},
         zebraMemory: {},
@@ -227,7 +225,6 @@ function buildStateSnapshot() {
         bazookaState,
         hashMemory,
         wakandaState,
-        boomPairState,
 
         kookyMemory,
         speshMemory,
@@ -245,7 +242,7 @@ function buildStateSnapshot() {
         zuluState,
         sideFlipMemory,
         mambaMemory,
-        boomMemory,
+        firstMemory,
         jupiterState,
         yabaMemory,
         zebraMemory,
@@ -927,6 +924,7 @@ if (telegramOutbox.length) {
 }
 
 function sendToTelegram1(text) { enqueueTelegram(1, text); }
+function sendToTelegram1Html(text) { enqueueTelegram(1, text, { html: true }); }
 function sendToTelegram2(text) { enqueueTelegram(2, text); }
 
 /* ─────────────────────────────────────────────────────────────────────────────
@@ -1152,7 +1150,7 @@ const BAZOOKA_TRAIL_RESET_MS =
 
 const BAZOOKA_STATE_VERSION = 4;
 
-// 🎯 FOCUS MODE: only EXPANSION (Bot2), BLACKPANTHER (Bot3), BAZOOKA (Bot4), OWL (Bot5) and COBRA (Bot7) run.
+// 🎯 FOCUS MODE: only FIRST (Bot1), EXPANSION (Bot2), BAZOOKA (Bot4), OWL (Bot5) and COBRA (Bot7) run. BLACKPANTHER (Bot3) is disabled.
 // Every other bot is paused. Set FOCUS_MODE=0 on Render to run every bot again.
 const FOCUS_MODE = (process.env.FOCUS_MODE || "1").trim() !== "0";
 const BAZOOKA_MAX_TRAIL = 200;   // stored per symbol + group
@@ -1167,7 +1165,7 @@ for (const key of Object.keys(bazookaState)) {
 }
 
 console.log("💥 BAZOOKA LOADED — Bot4 alert + trail | full match only | groups: " + [...BAZOOKA_GROUPS].join(", "));
-console.log(FOCUS_MODE ? "🎯 FOCUS MODE: running Bot2 EXPANSION, Bot3 BLACKPANTHER, Bot4 BAZOOKA, Bot5 OWL, Bot7 COBRA — all other bots paused" : "▶️ All bots active (FOCUS_MODE=0)");
+console.log(FOCUS_MODE ? "🎯 FOCUS MODE: running Bot1 FIRST, Bot2 EXPANSION, Bot4 BAZOOKA, Bot5 OWL, Bot7 COBRA — Bot3 BLACKPANTHER disabled, all other bots paused" : "▶️ All bots active (FOCUS_MODE=0)");
 
 function bazookaNum(v) {
     const n = Number(String(v ?? "").replace(/,/g, "").trim());
@@ -1427,7 +1425,7 @@ for (const key of Object.keys(blackPantherMemory)) {
     if (!st || st.v !== BLACKPANTHER_STATE_VERSION || !Array.isArray(st.trail)) delete blackPantherMemory[key];
 }
 
-console.log("🖤 BLACKPANTHER LOADED — Bot3 trail | every group with a number + letter");
+console.log("🖤 BLACKPANTHER — Bot3 trail | every group with a number + letter | " + ((process.env.BLACKPANTHER_ENABLED || "0").trim() === "1" ? "ENABLED" : "DISABLED"));
 
 function blackPantherGroupOk(group) {
     const g = String(group || "");
@@ -1472,7 +1470,11 @@ function bpPct(from, to) {
     return (pct >= 0 ? "+" : "") + pct.toFixed(2) + "%";
 }
 
+// 🖤 BLACKPANTHER is DISABLED. Set BLACKPANTHER_ENABLED=1 on Render to switch it back on.
+const BLACKPANTHER_ENABLED = (process.env.BLACKPANTHER_ENABLED || "0").trim() === "1";
+
 function processBlackPanther(symbol, group, ts, body = {}) {
+    if (!BLACKPANTHER_ENABLED) return;
     if (!symbol || !blackPantherGroupOk(group)) return;
 
     const rawGroup = String(group).trim().toUpperCase();
@@ -2865,153 +2867,126 @@ function sendCabalSlotAlert(symbol, state, candidate, slotNo) {
 
 
 // ==========================================================
-//  BOOM (ZEBRA-1 → NORMAL SEQUENCE TRACKER)
-//  Bot 13
+//  🥇 FIRST — FIRST ALERT AFTER 3 HOURS QUIET PER SYMBOL + GROUP   -> Bot 1
 //
-//  Rule:
-//    - Same symbol
-//    - Sequence must be:
-//        1) ZEBRA seed first: ~1__TOP or ~1__BOTTOM
-//        2) NORMAL ecosystem alert after it
-//    - Max span: 2 hours
-//    - If normal arrives after 2 hours, tracking resets/no alert
-//    - Other ~ flavours do NOT count:
-//        ~2__TOP, ~TOP_MAX, ~A, etc. are ignored by BOOM.
-//    - Hash, manual, and kangaroo are ignored.
+//  Sends an alert when a symbol gets an alert from a group, and
+//  that SAME symbol + group has been quiet for at least 3 hours.
+//
+//  Each group is tracked on its own:
+//    SOLUSDT 17G quiet for 3h+  -> 17G alerts       -> FIRST fires
+//    SOLUSDT 44U 10 min later   -> different group  -> FIRST fires too
+//    SOLUSDT 17G 20 min later   -> same group, <3h  -> no alert
+//
+//  Groups must have at least one number and one letter
+//  (17G, 44U, 62H, 35P, #12A ...), keeping CENSUS-style reports out.
+//
+//  Startup safety: right after FIRST is deployed it has no
+//  history, so for the first 3 hours it only learns and doesn't
+//  send. That way a deploy never floods Bot 1 with "firsts".
+//  The same alert from two exchanges is sent once (the copy
+//  arrives seconds later, so it's no longer "first in 3h").
+//
+//  Optional Render setting: FIRST_QUIET_HOURS (default 3)
 // ==========================================================
 
-const BOOM_TRACK_WINDOW_MS = 2 * 60 * 60 * 1000; // 2 hours
-const BOOM_VALID_ZEBRA_SEEDS = new Set(["~1__TOP", "~1__BOTTOM"]);
+const FIRST_QUIET_MS = (Number(process.env.FIRST_QUIET_HOURS) || 3) * 60 * 60 * 1000;
+const FIRST_KEEP_MS = 3 * 24 * 60 * 60 * 1000;   // history kept for the "quiet for" line
+const FIRST_STATE_VERSION = 1;
 
-// boomMemory[symbol] = {
-//   seed: { group, time }
-// }
-let boomMemory = persisted.boomMemory || {};
+let firstMemory = persisted.firstMemory || {};
 
-// kept for persistence compatibility; no longer used for BOOM throttling
-let boomPairState = persisted.boomPairState || {};
-
-function isBoomZebraSeed(group) {
-    const raw = String(group || "").trim().toUpperCase();
-    return BOOM_VALID_ZEBRA_SEEDS.has(raw);
+if (!firstMemory || firstMemory.v !== FIRST_STATE_VERSION || typeof firstMemory.seen !== "object") {
+    firstMemory = { v: FIRST_STATE_VERSION, since: Date.now(), seen: {} };
 }
 
-function isBoomNormalGroup(group) {
-    const raw = String(group || "").trim().toUpperCase();
+console.log(
+    "🥇 FIRST LOADED — Bot1 | first alert per symbol + group after " +
+    (FIRST_QUIET_MS / 3600000) + "h quiet | learning since " + formatDateTime(firstMemory.since)
+);
 
-    if (!raw) return false;
-    if (raw.startsWith("@")) return false;
-    if (raw.startsWith("#")) return false;
-    if (raw.startsWith("~")) return false;
-    if (raw.startsWith("^")) return false;
-
-    return true;
+function firstGroupOk(group) {
+    const g = String(group || "");
+    return /[0-9]/.test(g) && /[A-Za-z]/.test(g);
 }
 
-function getBoomState(symbol) {
-    const current = boomMemory[symbol];
-
-    const invalid =
-        !current ||
-        typeof current !== "object" ||
-        Array.isArray(current);
-
-    if (invalid) {
-        boomMemory[symbol] = {
-            seed: null
-        };
-    }
-
-    return boomMemory[symbol];
+function firstNum(v) {
+    const n = Number(String(v ?? "").replace(/,/g, "").trim());
+    return Number.isFinite(n) ? n : null;
 }
 
-function processBoom(symbol, group, ts) {
+function firstGap(ms) {
+    const totalMin = Math.floor(Math.max(0, ms) / 60000);
+    const d = Math.floor(totalMin / 1440);
+    const h = Math.floor((totalMin % 1440) / 60);
+    const m = totalMin % 60;
+    if (d > 0) return d + "d " + h + "h";
+    if (h > 0) return h + "h " + m + "m";
+    return m + "m";
+}
 
-    if (!symbol || !group) return;
+function firstWhen(ts) {
+    return new Date(ts).toLocaleString("en-GB", {
+        timeZone: "Europe/London",
+        day: "2-digit",
+        month: "2-digit",
+        hour: "2-digit",
+        minute: "2-digit"
+    });
+}
 
-    const rawGroup = String(group || "").trim().toUpperCase();
+function processFirst(symbol, group, ts, body = {}) {
+    if (!symbol || !firstGroupOk(group)) return false;
 
-    // Step 1: exact ZEBRA seed starts/restarts tracking.
-    if (isBoomZebraSeed(rawGroup)) {
-        const state = getBoomState(symbol);
+    const rawGroup = String(group).trim().toUpperCase();
+    const key = symbol + "|" + rawGroup;
+    const last = firstMemory.seen[key];
 
-        state.seed = {
-            group: rawGroup,
-            time: ts
-        };
+    // Always remember this alert as the latest for symbol + group.
+    firstMemory.seen[key] = ts;
 
-        saveState();
-        return;
+    const learning = ts - firstMemory.since < FIRST_QUIET_MS;
+    let fired = false;
+    const quiet = typeof last === "number" ? ts - last >= FIRST_QUIET_MS : !learning;
+
+    if (quiet && !learning) {
+        const matched = firstNum(body.matched_count);
+        const enabled = firstNum(body.enabled_count);
+        const price = firstNum(body.price ?? body.close);
+
+        // Other groups on this symbol within the quiet window, for context.
+        const others = Object.entries(firstMemory.seen)
+            .filter(([k, t]) => k.startsWith(symbol + "|") && k !== key && ts - t < FIRST_QUIET_MS)
+            .sort((a, b) => b[1] - a[1])
+            .map(([k, t]) => k.split("|")[1] + " " + firstGap(ts - t) + " ago");
+
+        const quietLine = typeof last === "number"
+            ? "Quiet for <b>" + firstGap(ts - last) + "</b>  (last " + tgEscape(rawGroup) + " " + firstWhen(last) + ")"
+            : "No " + tgEscape(rawGroup) + " alert since " + firstWhen(firstMemory.since);
+
+        sendToTelegram1Html(
+            "🥇 <b>FIRST</b>\n" +
+            "<b>" + tgEscape(symbol) + "</b>  ·  " + tgEscape(rawGroup) +
+            (matched !== null && enabled ? "  ·  " + matched + "/" + enabled : "") + "\n" +
+            "Price <b>" + tgEscape(price ?? "n/a") + "</b>\n" +
+            quietLine + "\n" +
+            (others.length
+                ? "Also active (" + (FIRST_QUIET_MS / 3600000) + "h): " + tgEscape(others.slice(0, 6).join(", ")) + (others.length > 6 ? " …" : "") + "\n"
+                : "") +
+            "<i>" + firstWhen(ts) + "</i>"
+        );
+
+        fired = true;
     }
 
-    // Ignore every other ~ flavour and all non-normal ecosystems.
-    if (!isBoomNormalGroup(rawGroup)) {
-        return;
-    }
-
-    // Step 2: normal alert can only confirm an existing seed.
-    const state = getBoomState(symbol);
-    const seed = state.seed;
-
-    if (!seed || typeof seed.time !== "number") {
-        saveState();
-        return;
-    }
-
-    const spanMs = ts - seed.time;
-
-    // Wrong sequence / bad timestamp safety.
-    if (spanMs < 0) {
-        state.seed = null;
-        saveState();
-        return;
-    }
-
-    // Over 2 hours: restart/clear tracking, no alert.
-    if (spanMs > BOOM_TRACK_WINDOW_MS) {
-        state.seed = null;
-        saveState();
-        return;
-    }
-
-    const spanMin = Math.floor(spanMs / 60000);
-    const spanSec = Math.floor((spanMs % 60000) / 1000);
-
-    sendToTelegram1(
-        "💥 BOOM\n" +
-        "Symbol: " + symbol + "\n" +
-        "Sequence: ZEBRA-1 → NORMAL\n" +
-        "Window: 2 hours max\n" +
-        "Rule: ~1__TOP or ~1__BOTTOM must come before normal ecosystem\n" +
-        "Span: " + spanMin + "m " + spanSec + "s\n\n" +
-        "Alerts:\n" +
-        "1) ZEBRA | " + seed.group + " @ " + formatDateTime(seed.time) + "\n" +
-        "2) NORMAL | " + rawGroup + " @ " + formatDateTime(ts)
-    );
-
-    // Reset after fire. A new ~1__TOP/~1__BOTTOM is needed for the next BOOM.
-    state.seed = null;
-
-    // Safety cleanup.
-    if (Object.keys(boomMemory).length > 5000) {
-        const cutoff = ts - BOOM_TRACK_WINDOW_MS;
-
-        for (const sym of Object.keys(boomMemory)) {
-            const st = boomMemory[sym];
-
-            if (
-                !st ||
-                typeof st !== "object" ||
-                !st.seed ||
-                typeof st.seed.time !== "number" ||
-                st.seed.time < cutoff
-            ) {
-                delete boomMemory[sym];
-            }
+    // Tidy up old history.
+    if (Object.keys(firstMemory.seen).length > 5000) {
+        for (const [k, t] of Object.entries(firstMemory.seen)) {
+            if (ts - t > FIRST_KEEP_MS) delete firstMemory.seen[k];
         }
     }
 
     saveState();
+    return fired;
 }
 
 // ==========================================================
@@ -5646,12 +5621,14 @@ app.post("/incoming", (req, res) => {
         // 🎯 FOCUS MODE (default ON)
         // Only the bots in use run; every other bot is paused:
         //   Bot 2 — 🌊 BREADTH + 🧭 CENSUS
-        //   Bot 3 — 🖤 BLACKPANTHER
+        //   Bot 1 — 🥇 FIRST
+        //   Bot 3 — 🖤 BLACKPANTHER (disabled — see BLACKPANTHER_ENABLED)
         //   Bot 4 — 💥 BAZOOKA
         //   Bot 5 — 🦉 OWL (ZigZag PA TP1/TP2 journal, handled before focus mode)
         //   Bot 7 — 🐍 COBRA
         // To run every bot again, set FOCUS_MODE=0 on Render.
         if (FOCUS_MODE) {
+            processFirst(symbol, group, ts, body);          // 🥇 Bot1: first per symbol + group after 3h quiet
             processBazooka(symbol, group, ts, body);
 
             processExpansion(symbol, group, ts, body);
@@ -5669,6 +5646,8 @@ app.post("/incoming", (req, res) => {
         // 🦓 ZEBRA global NORMAL + special ecosystem detector.
         // Runs before isolated ecosystem returns so normal, #, ~, @, ^ and $ can all be caught.
         processZebraEcosystem(symbol, group, ts, body);
+        // 🥇 FIRST (Bot1): first alert per symbol + group after 3h quiet.
+        processFirst(symbol, group, ts, body);
         // 💥 BAZOOKA (Bot4): 17G / 62H / 44U full-match alert + trail.
         processBazooka(symbol, group, ts, body);
         // ⚡ EXPANSION global timeframe-disagreement detector (Bot 2).
@@ -5713,7 +5692,6 @@ app.post("/incoming", (req, res) => {
         // 🦓 ZEBRA ~ ECOSYSTEM
         // Separate non-manual ecosystem. Must not enter normal/hash logic.
         if (isZebra) {
-            processBoom(symbol, group, ts);
         // processZebraEcosystem moved to global NORMAL + special detector
             saveState();
             return res.sendStatus(200);
@@ -5754,7 +5732,6 @@ if (!isHash) {
         // processMamba moved to global Bot6 90m-to-7h price-time detector
         processSpesh(symbol, group, ts);
         processCabal(symbol, group, ts);
-        processBoom(symbol, group, ts);
         processKooky(symbol, group, ts);        
         //processTesting(symbol, group, ts);
         //processAudit(symbol, group, ts, body);
@@ -5772,8 +5749,6 @@ if (!isHash) {
     // 🔴 HASH ECOSYSTEM (isolated)
 
     recordHashEvent(symbol, group, ts);
-
-    processBoom(symbol, group, ts);
 
     processGodzilla(symbol, group, ts);
 
@@ -5954,6 +5929,31 @@ app.get("/test/blackpanther", (req, res) => {
     res.send(count === 3
         ? "✅ BLACKPANTHER test queued: 3 messages to Bot 3, the trail growing from 1 to 3 alerts (group \"A\" was correctly ignored)."
         : "❌ BLACKPANTHER test problem: trail count was " + count + " (expected 3). Please share the Render logs.");
+});
+
+app.get("/test/first", (req, res) => {
+    if (!testSecretOk(req)) return res.status(401).send("❌ Wrong or missing ?secret=");
+
+    const sym = "TEST_FIRST";
+    const now = Date.now();
+    const saved = firstMemory;
+
+    // Run on a private copy that's past its learning period, so real history isn't touched.
+    firstMemory = { v: FIRST_STATE_VERSION, since: now - 10 * 3600000, seen: { [sym + "|17G"]: now - 5 * 3600000 } };
+
+    const results = [
+        processFirst(sym, "17G", now - 30 * 60000, { price: 100 }),     // quiet 4h30m  -> FIRST
+        processFirst(sym, "44U", now - 20 * 60000, { price: 101 }),     // new group     -> FIRST
+        processFirst(sym, "17G", now - 10 * 60000, { price: 102 }),     // same group <4h -> no
+        processFirst(sym, "CENSUS", now, { price: 103 })                // no number     -> no
+    ];
+    const ok = results.join(",") === "true,true,false,false";
+
+    firstMemory = saved;
+
+    res.send(ok
+        ? "✅ FIRST test queued: 2 messages to Bot 1 (17G after 3h+ quiet, then 44U as a different group). The repeat 17G and CENSUS were correctly ignored."
+        : "❌ FIRST test problem. Please share the Render logs.");
 });
 
 app.get("/test/:bot", async (req, res) => {
