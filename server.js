@@ -950,6 +950,7 @@ function sendToTelegram7(text) { enqueueTelegram(7, text); }
 function sendToTelegram8(text) { enqueueTelegram(8, text); }
 function sendToTelegram8Html(text) { enqueueTelegram(8, text, { html: true }); }
 function sendToTelegram9(text) { enqueueTelegram(9, text); }
+function sendToTelegram9Html(text) { enqueueTelegram(9, text, { html: true }); }
 function sendToTelegram10(text) { enqueueTelegram(10, text); }
 function sendToTelegram11(text) { enqueueTelegram(11, text); }
 function sendToTelegram12(text) { enqueueTelegram(12, text); }
@@ -1150,7 +1151,7 @@ const BAZOOKA_TRAIL_RESET_MS =
 
 const BAZOOKA_STATE_VERSION = 4;
 
-// 🎯 FOCUS MODE: only FIRST (Bot1), EXPANSION (Bot2), BAZOOKA (Bot4), OWL (Bot5) and COBRA (Bot7) run. BLACKPANTHER (Bot3) is disabled.
+// 🎯 FOCUS MODE: only FIRST (Bot1), EXPANSION (Bot2), BAZOOKA (Bot4), OWL (Bot5), COBRA (Bot7) and YABA (Bot9) run. BLACKPANTHER (Bot3) is disabled.
 // Every other bot is paused. Set FOCUS_MODE=0 on Render to run every bot again.
 const FOCUS_MODE = (process.env.FOCUS_MODE || "1").trim() !== "0";
 const BAZOOKA_MAX_TRAIL = 200;   // stored per symbol + group
@@ -1165,7 +1166,7 @@ for (const key of Object.keys(bazookaState)) {
 }
 
 console.log("💥 BAZOOKA LOADED — Bot4 alert + trail | full match only | groups: " + [...BAZOOKA_GROUPS].join(", "));
-console.log(FOCUS_MODE ? "🎯 FOCUS MODE: running Bot1 FIRST, Bot2 EXPANSION, Bot4 BAZOOKA, Bot5 OWL, Bot7 COBRA — Bot3 BLACKPANTHER disabled, all other bots paused" : "▶️ All bots active (FOCUS_MODE=0)");
+console.log(FOCUS_MODE ? "🎯 FOCUS MODE: running Bot1 FIRST, Bot2 EXPANSION, Bot4 BAZOOKA, Bot5 OWL, Bot7 COBRA, Bot9 YABA — Bot3 BLACKPANTHER disabled, all other bots paused" : "▶️ All bots active (FOCUS_MODE=0)");
 
 function bazookaNum(v) {
     const n = Number(String(v ?? "").replace(/,/g, "").trim());
@@ -1451,7 +1452,7 @@ function bpDay(ts) {
         day: "numeric",
         month: "numeric"
     }).formatToParts(new Date(ts));
-    const day = parts.find(p => p.type === "day")?.value || "";
+    const day = String(Number(parts.find(p => p.type === "day")?.value || 0));
     const month = Number(parts.find(p => p.type === "month")?.value || 1);
     return day + " " + ["Jan","Feb","Mar","Apr","May","Jun","Jul","Aug","Sep","Oct","Nov","Dec"][month - 1];
 }
@@ -3280,163 +3281,181 @@ function registerTrinity(symbol, type) {
 }
 
 // ==========================================================
-//  YABA ($ → ANY OTHER ECOSYSTEM CORRELATION)
-//  Bot 9
+//  🟨 YABA — 55H ⇄ 65K ALTERNATING LINK               -> Bot 9
 //
-//  Rule:
-//    - Same symbol
-//    - One $ ecosystem alert
-//    - One NON-$ ecosystem alert
-//    - Other ecosystem can be NORMAL, #, ~, ^, or @
-//    - Either order is valid
-//    - Must match within 1 hour
+//  Same symbol. Tracks a chain that alternates between the two
+//  groups, one of each at a time:
+//
+//      55H → 65K → 55H → 65K → ...   (either can start)
+//
+//  - A repeat of the same group before the other one arrives is
+//    ignored (55H, 55H counts as one 55H: the first one is kept).
+//  - No time limit: the chain continues however long it takes
+//    for the next link to arrive.
+//  - An alert is sent each time the chain grows (2 links or more).
+//  - To keep messages short: once the chain has 8 links, the next
+//    link starts a new chain carrying over the last 2 links.
+//      1..8 full  ->  next message shows  7, 8, 9
+//    The overall link count keeps running, so nothing is lost.
+//
+//  Optional Render settings (no need to set them):
+//    YABA_GROUP_A           default 55H
+//    YABA_GROUP_B           default 65K
 // ==========================================================
 
-const YABA_CROSS_WINDOW_MS = 60 * 60 * 1000; // 1 hour
+const YABA_GROUP_A = (process.env.YABA_GROUP_A || "55H").trim().toUpperCase();
+const YABA_GROUP_B = (process.env.YABA_GROUP_B || "65K").trim().toUpperCase();
+const YABA_CLEANUP_MS = 30 * 24 * 60 * 60 * 1000;   // memory housekeeping only
+const YABA_MAX_LINKS = 8;     // chain length before it's trimmed
+const YABA_CARRY = 2;         // links carried into the next chain
+const YABA_STATE_VERSION = 2;
 
-// yabaMemory[symbol] = {
-//   lastDollar: { ecosystem, group, time, price },
-//   lastOther: { ecosystem, group, time, price },
-//   lastSentKey: string
-// }
 let yabaMemory = persisted.yabaMemory || {};
 
-function yabaEcosystemFromGroup(group) {
-    const raw = String(group || "").trim().toUpperCase();
-
-    if (!raw) return "";
-
-    if (raw.startsWith("$")) return "DOLLAR";
-    if (raw.startsWith("#")) return "HASH";
-    if (raw.startsWith("~")) return "ZEBRA";
-    if (raw.startsWith("^")) return "KANGAROO";
-    if (raw.startsWith("@")) return "MANUAL";
-
-    return "NORMAL";
+// Drop anything saved by the old $ → other YABA.
+for (const key of Object.keys(yabaMemory)) {
+    const st = yabaMemory[key];
+    if (!st || st.v !== YABA_STATE_VERSION || !Array.isArray(st.chain)) delete yabaMemory[key];
 }
 
-function getYabaSymbolState(symbol) {
-    const current = yabaMemory[symbol];
+console.log(
+    "🟨 YABA LOADED — Bot9 | " + YABA_GROUP_A + " ⇄ " + YABA_GROUP_B +
+    " alternating | no time limit | trimmed at " + YABA_MAX_LINKS + " links"
+);
 
-    const invalid =
-        !current ||
-        typeof current !== "object" ||
-        Array.isArray(current) ||
-        (
-            !Object.prototype.hasOwnProperty.call(current, "lastDollar") &&
-            !Object.prototype.hasOwnProperty.call(current, "lastOther")
-        );
-
-    if (invalid) {
-        yabaMemory[symbol] = {
-            lastDollar: null,
-            lastOther: null,
-            lastSentKey: ""
-        };
-    }
-
-    return yabaMemory[symbol];
+function ybNum(v) {
+    const n = Number(String(v ?? "").replace(/,/g, "").trim());
+    return Number.isFinite(n) ? n : null;
 }
 
-function yabaPairKey(a, b) {
-    return [
-        a.ecosystem + ":" + a.group + ":" + a.time,
-        b.ecosystem + ":" + b.group + ":" + b.time
-    ].sort().join("|");
+function ybHm(ts) {
+    return new Date(ts).toLocaleTimeString("en-GB", {
+        timeZone: "Europe/London",
+        hour: "2-digit",
+        minute: "2-digit"
+    });
 }
 
-function yabaEventLine(e, index) {
-    return (
-        (index + 1) + ") " +
-        e.ecosystem +
-        " | " + e.group +
-        " | Price " + (e.price ?? "n/a") +
-        " @ " + formatDateTime(e.time)
-    );
+function ybDay(ts) {
+    const parts = new Intl.DateTimeFormat("en-GB", {
+        timeZone: "Europe/London",
+        day: "numeric",
+        month: "numeric"
+    }).formatToParts(new Date(ts));
+    const day = String(Number(parts.find(p => p.type === "day")?.value || 0));
+    const month = Number(parts.find(p => p.type === "month")?.value || 1);
+    return day + " " + ["Jan","Feb","Mar","Apr","May","Jun","Jul","Aug","Sep","Oct","Nov","Dec"][month - 1];
 }
 
-function pruneYabaMemory(ts) {
-    if (!yabaMemory || typeof yabaMemory !== "object") return;
+function ybGap(ms) {
+    const totalMin = Math.floor(Math.max(0, ms) / 60000);
+    const d = Math.floor(totalMin / 1440);
+    const h = Math.floor((totalMin % 1440) / 60);
+    const m = totalMin % 60;
+    if (d > 0) return d + "d " + h + "h";
+    return h > 0 ? h + "h " + m + "m" : m + "m";
+}
 
-    const cutoff = ts - (2 * YABA_CROSS_WINDOW_MS);
-
-    for (const sym of Object.keys(yabaMemory)) {
-        const st = yabaMemory[sym];
-
-        if (!st || typeof st !== "object") {
-            delete yabaMemory[sym];
-            continue;
-        }
-
-        const d = st.lastDollar?.time || 0;
-        const o = st.lastOther?.time || 0;
-
-        if (Math.max(d, o) < cutoff) {
-            delete yabaMemory[sym];
-        }
-    }
+function ybPct(from, to) {
+    if (!from || !to) return "";
+    const pct = ((to - from) / from) * 100;
+    return (pct >= 0 ? "+" : "") + pct.toFixed(2) + "%";
 }
 
 function processYaba(symbol, group, ts, body = {}) {
+    if (!symbol || !group) return false;
 
-    if (!symbol || !group) return;
+    const rawGroup = String(group).trim().toUpperCase();
+    if (rawGroup !== YABA_GROUP_A && rawGroup !== YABA_GROUP_B) return false;
 
-    const rawGroup = String(group || "").trim();
-    const ecosystem = yabaEcosystemFromGroup(rawGroup);
+    let state = yabaMemory[symbol];
+    const lastLink = state?.chain?.[state.chain.length - 1];
 
-    if (!ecosystem) return;
+    // No chain yet -> start one.
+    if (!state || !lastLink) {
+        yabaMemory[symbol] = {
+            v: YABA_STATE_VERSION,
+            total: 1,
+            startedAt: ts,
+            chain: [{ n: 1, group: rawGroup, time: ts, price: ybNum(body.price ?? body.close) }]
+        };
+        saveState();
+        return false;
+    }
 
-    const state = getYabaSymbolState(symbol);
+    // Same group again before the other one -> ignore (keep the first).
+    if (lastLink.group === rawGroup) return false;
 
-    const current = {
-        ecosystem,
-        group: rawGroup,
-        time: ts,
-        price:
-            body?.price ??
-            body?.close ??
-            body?.current_price ??
-            "n/a"
-    };
+    // Keep the link short: after 8 links, carry over the last 2.
+    if (state.chain.length >= YABA_MAX_LINKS) {
+        state.chain = state.chain.slice(-YABA_CARRY);
+    }
 
-    const isDollar = ecosystem === "DOLLAR";
-    const opposite = isDollar ? state.lastOther : state.lastDollar;
+    state.total += 1;
+    const current = { n: state.total, group: rawGroup, time: ts, price: ybNum(body.price ?? body.close) };
+    state.chain.push(current);
 
-    if (opposite && typeof opposite.time === "number") {
-        const gapMs = Math.abs(ts - opposite.time);
+    const chain = state.chain;
+    const first = chain[0];
 
-        if (gapMs <= YABA_CROSS_WINDOW_MS) {
-            const first = opposite.time <= current.time ? opposite : current;
-            const second = opposite.time <= current.time ? current : opposite;
-            const pairKey = yabaPairKey(first, second);
+    // ---------- link table ----------
+    const rows = chain.map((e, i) => ({
+        n: String(e.n),
+        time: ybHm(e.time),
+        group: e.group,
+        price: e.price === null || e.price === undefined ? "n/a" : String(e.price),
+        gap: i === 0 ? "-" : ybGap(e.time - chain[i - 1].time),
+        day: ybDay(e.time),
+        isNew: e === current
+    }));
 
-            if (state.lastSentKey !== pairKey) {
-                const gapMin = Math.floor(gapMs / 60000);
-                const gapSec = Math.floor((gapMs % 60000) / 1000);
+    const cols = [
+        { key: "n", title: "#", right: true },
+        { key: "time", title: "Time", right: false },
+        { key: "group", title: "Grp", right: false },
+        { key: "price", title: "Price", right: true },
+        { key: "gap", title: "Gap", right: true }
+    ];
 
-                sendToTelegram9(
-                    "🟨 YABA\n" +
-                    "Rule: $ + any other ecosystem within 1 hour\n" +
-                    "Symbol: " + symbol + "\n" +
-                    "Span: " + gapMin + "m " + gapSec + "s\n\n" +
-                    "Alerts:\n" +
-                    yabaEventLine(first, 0) + "\n" +
-                    yabaEventLine(second, 1)
-                );
+    for (const c of cols) {
+        c.width = Math.max(c.title.length, ...rows.map(r => r[c.key].length));
+    }
 
-                state.lastSentKey = pairKey;
-            }
+    const fmtRow = r => cols
+        .map(c => c.right ? r[c.key].padStart(c.width) : r[c.key].padEnd(c.width))
+        .join("  ")
+        .trimEnd();
+
+    const table = [fmtRow(Object.fromEntries(cols.map(c => [c.key, c.title])))];
+    if (first.n > 1) table.push("… " + (first.n - 1) + " earlier link(s)");
+
+    rows.forEach((r, i) => {
+        if (i > 0 && r.day !== rows[i - 1].day) table.push("── " + r.day + " ──");
+        table.push(fmtRow(r) + (r.isNew ? "  ◀" : ""));
+    });
+
+    const pct = ybPct(first.price, current.price);
+
+    sendToTelegram9Html(
+        "🟨 <b>YABA</b>  ·  " + tgEscape(YABA_GROUP_A) + " ⇄ " + tgEscape(YABA_GROUP_B) + "\n" +
+        "<b>" + tgEscape(symbol) + "</b>  ·  link " + current.n + "  (" + tgEscape(rawGroup) + ")\n" +
+        "Price <b>" + tgEscape(current.price ?? "n/a") + "</b>" +
+        (pct ? "  (" + tgEscape(pct) + " since #" + first.n + ")" : "") + "\n" +
+        "\n<pre>" + tgEscape(table.join("\n")) + "</pre>\n" +
+        "<i>" + current.n + " links over " + ybGap(current.time - (state.startedAt || first.time)) +
+        " · started " + ybDay(state.startedAt || first.time) + " " + ybHm(state.startedAt || first.time) + "</i>"
+    );
+
+    // Housekeeping only if memory ever gets very large: drop chains idle for 30+ days.
+    if (Object.keys(yabaMemory).length > 3000) {
+        for (const k of Object.keys(yabaMemory)) {
+            const c = yabaMemory[k]?.chain;
+            if (!Array.isArray(c) || !c.length || ts - c[c.length - 1].time > YABA_CLEANUP_MS) delete yabaMemory[k];
         }
     }
 
-    if (isDollar) {
-        state.lastDollar = current;
-    } else {
-        state.lastOther = current;
-    }
-
-    pruneYabaMemory(ts);
     saveState();
+    return true;
 }
 
 // ==========================================================
@@ -5626,10 +5645,12 @@ app.post("/incoming", (req, res) => {
         //   Bot 4 — 💥 BAZOOKA
         //   Bot 5 — 🦉 OWL (ZigZag PA TP1/TP2 journal, handled before focus mode)
         //   Bot 7 — 🐍 COBRA
+        //   Bot 9 — 🟨 YABA
         // To run every bot again, set FOCUS_MODE=0 on Render.
         if (FOCUS_MODE) {
             processFirst(symbol, group, ts, body);          // 🥇 Bot1: first per symbol + group after 3h quiet
             processBazooka(symbol, group, ts, body);
+            processYaba(symbol, group, ts, body);           // 🟨 Bot9: 55H ⇄ 65K link
 
             processExpansion(symbol, group, ts, body);
             processFlow(symbol, group, ts, body);
@@ -5640,7 +5661,7 @@ app.post("/incoming", (req, res) => {
         }
 
         // 🐍 COBRA is NORMAL-only now — called inside the normal pipeline below.
-        // 🟨 YABA global $ cross-ecosystem detector.
+        // 🟨 YABA (Bot9): 55H ⇄ 65K alternating link per symbol.
         // Runs before isolated ecosystem returns so $, #, ~, @, ^ and normal can all be caught.
         processYaba(symbol, group, ts, body);
         // 🦓 ZEBRA global NORMAL + special ecosystem detector.
@@ -5724,7 +5745,6 @@ if (!isHash) {
         processGando(symbol, group, ts);
         processSideFlip(symbol, group, ts);
         // processGamma(symbol, group, ts); // disabled by request
-        // processYaba moved to global $ cross-ecosystem detector
         processTango(symbol, group, ts);
         processCobra(symbol, group, ts, body); // 🐍 Bot7: 2+ different normal groups within 30m
         // processZulu(symbol, group, ts); // disabled by request
@@ -5954,6 +5974,32 @@ app.get("/test/first", (req, res) => {
     res.send(ok
         ? "✅ FIRST test queued: 2 messages to Bot 1 (17G after 3h+ quiet, then 44U as a different group). The repeat 17G and CENSUS were correctly ignored."
         : "❌ FIRST test problem. Please share the Render logs.");
+});
+
+app.get("/test/yaba", (req, res) => {
+    if (!testSecretOk(req)) return res.status(401).send("❌ Wrong or missing ?secret=");
+
+    const sym = "TEST_YABA";
+    const now = Date.now();
+    delete yabaMemory[sym];
+
+    const A = YABA_GROUP_A, B = YABA_GROUP_B;
+    const seq = [
+        [A, 600], [A, 590],              // second A ignored (same group)
+        [B, 540], [A, 480], [B, 420], [A, 360], [B, 300], [A, 240], [B, 180],
+        [A, 120]                          // link 9 -> trimmed: shows 7, 8, 9
+    ];
+    const sent = seq.map(([g, minAgo], i) =>
+        processYaba(sym, g, now - minAgo * 60000, { price: 100 + i })
+    );
+
+    const st = yabaMemory[sym];
+    const ok = sent.filter(Boolean).length === 8 && st?.total === 9 && st?.chain?.length === 3;
+    delete yabaMemory[sym];
+
+    res.send(ok
+        ? "✅ YABA test queued: 8 messages to Bot 9 (links 2 to 9). The repeated " + A + " was ignored, and the last message shows links 7, 8, 9 after the trim."
+        : "❌ YABA test problem. Please share the Render logs.");
 });
 
 app.get("/test/:bot", async (req, res) => {
