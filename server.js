@@ -107,7 +107,7 @@ function loadState() {
                 blackPantherMemory: parsed.blackPantherMemory || {},
                 gammaMemory: parsed.gammaMemory || {},
                 mamamiaHashMemory: parsed.mamamiaHashMemory || {},
-                expansionState: parsed.expansionState || { hits: {}, lastFire: 0 },
+                salsaState: parsed.salsaState || null,
                 flowState: parsed.flowState || { events: [], lastFire: 0 },
                 zuluState: parsed.zuluState || {},
                 sideFlipMemory: parsed.sideFlipMemory || {},
@@ -169,7 +169,7 @@ function loadState() {
         blackPantherMemory: {},
         gammaMemory: {},
         mamamiaHashMemory: {},
-        expansionState: { hits: {}, lastFire: 0 },
+        salsaState: null,
         flowState: { events: [], lastFire: 0 },
         zuluState: {},
         sideFlipMemory: {},
@@ -237,7 +237,7 @@ function buildStateSnapshot() {
         blackPantherMemory,
         gammaMemory,
         mamamiaHashMemory,
-        expansionState,
+        salsaState,
         flowState,
         zuluState,
         sideFlipMemory,
@@ -332,7 +332,6 @@ function pruneStateBeforeSave() {
     pruneCobraRepeatState(cobraComboState, ts, 30 * 60 * 1000);
 
     // Keep the breadth window small.
-    try { expansionPrune(ts); } catch {}
     try { flowPrune(ts); } catch {}
 
     // Telegram outbox cap.
@@ -928,12 +927,13 @@ function sendToTelegram1Html(text) { enqueueTelegram(1, text, { html: true }); }
 function sendToTelegram2(text) { enqueueTelegram(2, text); }
 
 /* ─────────────────────────────────────────────────────────────────────────────
-   Bot 2 is now the EXPANSION bot only. Bundle / Zebra / Dollar used to notify here
+   Bot 2 is now the SALSA bot only. Bundle / Zebra / Dollar used to notify here
    and are disabled at your request. Their message-building code is untouched —
    it just goes to a sink instead of Telegram. To bring any of them back, swap
    sendToTelegram2Disabled(...) back to sendToTelegram2(...) at the call site.
 ───────────────────────────────────────────────────────────────────────────── */
 const BOT2_LEGACY_ENABLED = (process.env.BOT2_LEGACY_ENABLED || "0").trim() === "1";
+function sendToTelegram2Html(text) { enqueueTelegram(2, text, { html: true }); }
 function sendToTelegram2Disabled(text) {
     if (BOT2_LEGACY_ENABLED) { sendToTelegram2(text); return; }
     // swallowed on purpose
@@ -1151,7 +1151,7 @@ const BAZOOKA_TRAIL_RESET_MS =
 
 const BAZOOKA_STATE_VERSION = 4;
 
-// 🎯 FOCUS MODE: only FIRST (Bot1), EXPANSION (Bot2), BAZOOKA (Bot4), OWL (Bot5), COBRA (Bot7) and YABA (Bot9) run. BLACKPANTHER (Bot3) is disabled.
+// 🎯 FOCUS MODE: only FIRST (Bot1), SALSA (Bot2), BAZOOKA (Bot4), OWL (Bot5), COBRA (Bot7) and YABA (Bot9) run. BLACKPANTHER (Bot3) is disabled.
 // Every other bot is paused. Set FOCUS_MODE=0 on Render to run every bot again.
 const FOCUS_MODE = (process.env.FOCUS_MODE || "1").trim() !== "0";
 const BAZOOKA_MAX_TRAIL = 200;   // stored per symbol + group
@@ -1166,7 +1166,7 @@ for (const key of Object.keys(bazookaState)) {
 }
 
 console.log("💥 BAZOOKA LOADED — Bot4 alert + trail | full match only | groups: " + [...BAZOOKA_GROUPS].join(", "));
-console.log(FOCUS_MODE ? "🎯 FOCUS MODE: running Bot1 FIRST, Bot2 EXPANSION, Bot4 BAZOOKA, Bot5 OWL, Bot7 COBRA, Bot9 YABA — Bot3 BLACKPANTHER disabled, all other bots paused" : "▶️ All bots active (FOCUS_MODE=0)");
+console.log(FOCUS_MODE ? "🎯 FOCUS MODE: running Bot1 FIRST, Bot2 SALSA, Bot4 BAZOOKA, Bot5 OWL, Bot7 COBRA, Bot9 YABA — Bot3 BLACKPANTHER disabled, all other bots paused" : "▶️ All bots active (FOCUS_MODE=0)");
 
 function bazookaNum(v) {
     const n = Number(String(v ?? "").replace(/,/g, "").trim());
@@ -1399,7 +1399,7 @@ let gammaMemory = persisted.gammaMemory || {};
 //  filter: 13 of 18 counts just the same as 18 of 18.
 //
 //  Groups without both (e.g. "A", "#12", no group) are ignored,
-//  which keeps EXPANSION style payloads out.
+//  which keeps report-style payloads out.
 //
 //  One message per alert: the alert details on top, and the
 //  trail of every alert for that symbol + group so far below.
@@ -1889,7 +1889,6 @@ function processCheck(symbol, group, ts, body) {
 //  Names kept only so we can reuse them later.
 // ==========================================================
 
-let expansionState = persisted.expansionState || { hits: {}, lastFire: 0 };
 let flowState = persisted.flowState || { events: [], lastFire: 0 };
 let tangoState = persisted.tangoState || {};
 let gandoState = persisted.gandoState || {};
@@ -2211,128 +2210,182 @@ function getMambaFamily(group) {
 
 
 /* ─────────────────────────────────────────────────────────────────────────────
-   ⚡ EXPANSION  —  timeframe disagreement detector  (Bot 2)
-   Replaces BREADTH and CENSUS, both of which were broken: their "sell side" was
-   PULLBACK+BELOW, which covers 60.5% of the ratio range by construction, against
-   a 60% trigger. They reported SELL-SIDE 125 times out of 127 regardless of the
-   market, and neither named a symbol, so neither was actionable.
+   🌶️ SALSA — REPEAT WITHIN 10 HOURS                                  -> Bot 2
 
-   This fires per symbol on the one configuration that separated in testing:
-   several timeframes clustered at the zero zone while at least one sits far out
-   past EXT 2. Measured on 1m data across 1H/4H/12H/1D:
+   Groups 3R and 100Y, each tracked on its own, per symbol.
+   An alert is sent when the same group fires AGAIN on the same symbol
+   within 10 hours of its previous alert:
 
-       all timeframes agree (TANDEM-like)   1.82% over 4h   0.83x baseline
-       baseline                             2.19%
-       disagreement (COLLABO-like)          3.72% over 4h   1.70x baseline
+       SOLUSDT 3R  04:07                      -> remembered, no alert
+       SOLUSDT 3R  09:30  (5h 23m later)      -> SALSA fires
+       SOLUSDT 3R  11:00  (1h 30m later)      -> SALSA fires again
+       SOLUSDT 3R  23:10  (12h 10m later)     -> too late, remembered only
+       SOLUSDT 100Y never mixes with 3R.
 
-   It is TWO-SIDED: 2.22% up and 1.93% down, net ~0. It says a move is likely,
-   NOT which way.
+   The message lists every alert of that group on that symbol in the last
+   10 hours. The same bar arriving twice (e.g. BINANCE + OKX) counts once.
 
-   Only alerts carrying a "levels" list can be read, and only min_count-style
-   alerts can ever qualify - a require_all alert reports every level inside its
-   band by construction, so disagreement is impossible there.
+   Optional Render settings (no need to set them):
+     SALSA_GROUPS          default "3R,100Y"
+     SALSA_WINDOW_HOURS    default 10
 ───────────────────────────────────────────────────────────────────────────── */
-const EXPANSION_ENABLED       = (process.env.EXPANSION_ENABLED || "1").trim() !== "0";
-const EXPANSION_NEAR          = Number((process.env.EXPANSION_NEAR || "0.05").trim());
-const EXPANSION_FAR           = Number((process.env.EXPANSION_FAR || "2.0").trim());
-const EXPANSION_MIN_NEAR      = Number((process.env.EXPANSION_MIN_NEAR || "2").trim());
-const EXPANSION_MIN_FAR       = Number((process.env.EXPANSION_MIN_FAR || "1").trim());
-const EXPANSION_WINDOW_MS     = Number((process.env.EXPANSION_WINDOW_MIN || "30").trim()) * 60 * 1000;
-const EXPANSION_COOLDOWN_MS   = Number((process.env.EXPANSION_COOLDOWN_MIN || "20").trim()) * 60 * 1000;
-const EXPANSION_PER_SYMBOL_MS = Number((process.env.EXPANSION_PER_SYMBOL_MIN || "60").trim()) * 60 * 1000;
 
-// Level name to signed ratio. 0 = previous high, 1 = previous low,
-// negative = above the previous high (an extension).
-function expansionRatio(name) {
-    const n = String(name || "").trim();
-    if (!n) return null;
-    if (/^EXT/i.test(n)) {
-        const v = Number(n.replace(/^EXT\s*/i, ""));
-        return Number.isFinite(v) ? -v : null;
-    }
-    if (/^low$/i.test(n)) return 1.0;
-    const v = Number(n);
-    return Number.isFinite(v) ? v : null;
+const SALSA_GROUPS = new Set(
+    (process.env.SALSA_GROUPS || "3R,100Y")
+        .split(",")
+        .map(g => g.trim().toUpperCase())
+        .filter(Boolean)
+);
+
+const SALSA_WINDOW_MS = (Number(process.env.SALSA_WINDOW_HOURS) || 10) * 60 * 60 * 1000;
+const SALSA_STATE_VERSION = 1;
+const SALSA_MAX_KEEP = 100;   // alerts kept per symbol + group
+
+let salsaState = persisted.salsaState || {};
+
+if (!salsaState || salsaState.v !== SALSA_STATE_VERSION || typeof salsaState.hits !== "object") {
+    salsaState = { v: SALSA_STATE_VERSION, hits: {} };
 }
 
-// Levels arrive as ["1H":"0.05","23H":"EXT 7"], which the body parser repairs
-// into an object. Handle both the repaired object and the raw string.
-function expansionLevels(body) {
-    const raw = body ? body.levels : null;
-    const out = [];
-    if (raw && typeof raw === "object" && !Array.isArray(raw)) {
-        for (const tf of Object.keys(raw)) {
-            const r = expansionRatio(raw[tf]);
-            if (r !== null) out.push({ tf: tf, name: String(raw[tf]), r: r });
+console.log(
+    "🌶️ SALSA LOADED — Bot2 | repeat within " + (SALSA_WINDOW_MS / 3600000) +
+    "h | groups: " + [...SALSA_GROUPS].join(", ")
+);
+
+function slNum(v) {
+    const n = Number(String(v ?? "").replace(/,/g, "").trim());
+    return Number.isFinite(n) ? n : null;
+}
+
+function slHm(ts) {
+    return new Date(ts).toLocaleTimeString("en-GB", {
+        timeZone: "Europe/London",
+        hour: "2-digit",
+        minute: "2-digit"
+    });
+}
+
+function slDay(ts) {
+    const parts = new Intl.DateTimeFormat("en-GB", {
+        timeZone: "Europe/London",
+        day: "numeric",
+        month: "numeric"
+    }).formatToParts(new Date(ts));
+    const day = String(Number(parts.find(p => p.type === "day")?.value || 0));
+    const month = Number(parts.find(p => p.type === "month")?.value || 1);
+    return day + " " + ["Jan","Feb","Mar","Apr","May","Jun","Jul","Aug","Sep","Oct","Nov","Dec"][month - 1];
+}
+
+function slGap(ms) {
+    const totalMin = Math.floor(Math.max(0, ms) / 60000);
+    const h = Math.floor(totalMin / 60);
+    const m = totalMin % 60;
+    return h > 0 ? h + "h " + m + "m" : m + "m";
+}
+
+function slPct(from, to) {
+    if (!from || !to) return "";
+    const pct = ((to - from) / from) * 100;
+    return (pct >= 0 ? "+" : "") + pct.toFixed(2) + "%";
+}
+
+function processSalsa(symbol, group, ts, body = {}) {
+    if (!symbol || !group) return false;
+
+    const rawGroup = String(group).trim().toUpperCase();
+    if (!SALSA_GROUPS.has(rawGroup)) return false;
+
+    const key = symbol + "|" + rawGroup;
+    const barTime = slNum(body.time) || ts;
+
+    // Only alerts from the last 10 hours matter.
+    let hits = (salsaState.hits[key] || []).filter(e => e && ts - e.time <= SALSA_WINDOW_MS);
+
+    if (hits.some(e => e.barTime === barTime)) return false;   // duplicate copy
+
+    const matched = slNum(body.matched_count);
+    const enabled = slNum(body.enabled_count);
+
+    const current = {
+        time: ts,
+        barTime,
+        price: slNum(body.price ?? body.close),
+        match: matched !== null && enabled ? matched + "/" + enabled : ""
+    };
+
+    const previous = hits[hits.length - 1];
+    hits.push(current);
+    if (hits.length > SALSA_MAX_KEEP) hits = hits.slice(-SALSA_MAX_KEEP);
+    salsaState.hits[key] = hits;
+
+    let fired = false;
+
+    if (previous) {
+        const first = hits[0];
+
+        // ---------- table of this group's alerts in the last 10h ----------
+        const rows = hits.map((e, i) => ({
+            n: String(i + 1),
+            time: slHm(e.time),
+            price: e.price === null || e.price === undefined ? "n/a" : String(e.price),
+            gap: i === 0 ? "-" : slGap(e.time - hits[i - 1].time),
+            match: e.match || "-",
+            day: slDay(e.time),
+            isNew: e === current
+        }));
+
+        const hasMatch = rows.some(r => r.match !== "-");
+        const cols = [
+            { key: "n", title: "#", right: true },
+            { key: "time", title: "Time", right: false },
+            { key: "price", title: "Price", right: true },
+            { key: "gap", title: "Gap", right: true },
+            ...(hasMatch ? [{ key: "match", title: "Match", right: true }] : [])
+        ];
+
+        for (const c of cols) {
+            c.width = Math.max(c.title.length, ...rows.map(r => r[c.key].length));
         }
-        return out;
-    }
-    const text = typeof raw === "string" ? raw : "";
-    const re = /"?([A-Za-z0-9]+)"?\s*:\s*"([^"]+)"/g;
-    let m;
-    while ((m = re.exec(text)) !== null) {
-        const r = expansionRatio(m[2]);
-        if (r !== null) out.push({ tf: m[1], name: m[2], r: r });
-    }
-    return out;
-}
 
-function expansionPrune(ts) {
-    const h = (expansionState && expansionState.hits) || {};
-    for (const s of Object.keys(h)) {
-        if (!h[s] || (ts - (h[s].t || 0)) > EXPANSION_WINDOW_MS) delete h[s];
-    }
-    if (expansionState) expansionState.hits = h;
-    return h;
-}
+        const fmtRow = r => cols
+            .map(c => c.right ? r[c.key].padStart(c.width) : r[c.key].padEnd(c.width))
+            .join("  ")
+            .trimEnd();
 
-function processExpansion(symbol, group, ts, body) {
-    if (!EXPANSION_ENABLED || !symbol) return;
+        const table = [fmtRow(Object.fromEntries(cols.map(c => [c.key, c.title])))];
+        rows.forEach((r, i) => {
+            if (i > 0 && r.day !== rows[i - 1].day) table.push("── " + r.day + " ──");
+            table.push(fmtRow(r) + (r.isNew ? "  ◀" : ""));
+        });
 
-    if (!expansionState || typeof expansionState !== "object") {
-        expansionState = { hits: {}, lastFire: 0 };
-    }
-    if (!expansionState.hits || typeof expansionState.hits !== "object") {
-        expansionState.hits = {};
+        const pct = slPct(first.price, current.price);
+        const windowH = SALSA_WINDOW_MS / 3600000;
+
+        sendToTelegram2Html(
+            "🌶️ <b>SALSA</b>  ·  " + tgEscape(rawGroup) + " repeat\n" +
+            "<b>" + tgEscape(symbol) + "</b>  ·  " + tgEscape(rawGroup) +
+            (current.match ? "  ·  " + tgEscape(current.match) : "") +
+            "  ·  " + hits.length + " in " + windowH + "h\n" +
+            "Price <b>" + tgEscape(current.price ?? "n/a") + "</b>" +
+            (pct ? "  (" + tgEscape(pct) + " since #1)" : "") + "\n" +
+            "\n<pre>" + tgEscape(table.join("\n")) + "</pre>\n" +
+            "<i>Previous " + tgEscape(rawGroup) + " " + slGap(ts - previous.time) + " ago · window " + windowH + "h</i>"
+        );
+
+        fired = true;
     }
 
-    const levels = expansionLevels(body);
-    if (levels.length < 3) return;
+    // Tidy up symbols with nothing in the window.
+    if (Object.keys(salsaState.hits).length > 3000) {
+        for (const [k, arr] of Object.entries(salsaState.hits)) {
+            if (!Array.isArray(arr) || !arr.length || ts - arr[arr.length - 1].time > SALSA_WINDOW_MS) {
+                delete salsaState.hits[k];
+            }
+        }
+    }
 
-    const near = levels.filter(x => Math.abs(x.r) <= EXPANSION_NEAR);
-    const far  = levels.filter(x => x.r <= -EXPANSION_FAR);
-    if (near.length < EXPANSION_MIN_NEAR || far.length < EXPANSION_MIN_FAR) return;
-
-    const prev = expansionState.hits[symbol];
-    const line = levels.slice().sort((a, b) => a.r - b.r)
-        .map(x => x.tf + " " + x.name).join("  ·  ");
-
-    // One entry per symbol - repeats refresh rather than queue, so a symbol
-    // sitting in this state cannot spam.
-    expansionState.hits[symbol] = { t: ts, line: line, far: far.length, near: near.length };
-
-    const h = expansionPrune(ts);
-    const fresh = !prev || (ts - (prev.t || 0)) >= EXPANSION_PER_SYMBOL_MS;
-    const cooled = (ts - (expansionState.lastFire || 0)) >= EXPANSION_COOLDOWN_MS;
-    if (!fresh || !cooled) { saveState(); return; }
-
-    const syms = Object.keys(h).sort((a, b) => (h[b].t || 0) - (h[a].t || 0));
-    const shown = syms.slice(0, 12);
-
-    const lines = ["⚡ EXPANSION WATCH — " + syms.length + (syms.length === 1 ? " symbol" : " symbols"), ""];
-    for (const s of shown) lines.push(s + "\n    " + h[s].line);
-    if (syms.length > shown.length) lines.push("… and " + (syms.length - shown.length) + " more");
-    lines.push("");
-    lines.push("Disagreement: " + EXPANSION_MIN_NEAR + "+ timeframes at the zero zone while " +
-               EXPANSION_MIN_FAR + "+ sits beyond EXT " + EXPANSION_FAR + ".");
-    lines.push("Tested: ~1.7x normal 4h movement; ~0.83x when all timeframes agree.");
-    lines.push("TWO-SIDED — expect a move, not a direction.");
-    lines.push("");
-    lines.push(formatDateTime(ts));
-
-    sendToTelegram2(lines.join("\n"));
-    expansionState.lastFire = ts;
     saveState();
+    return fired;
 }
 
 
@@ -5639,8 +5692,8 @@ app.post("/incoming", (req, res) => {
 
         // 🎯 FOCUS MODE (default ON)
         // Only the bots in use run; every other bot is paused:
-        //   Bot 2 — 🌊 BREADTH + 🧭 CENSUS
         //   Bot 1 — 🥇 FIRST
+        //   Bot 2 — 🌶️ SALSA
         //   Bot 3 — 🖤 BLACKPANTHER (disabled — see BLACKPANTHER_ENABLED)
         //   Bot 4 — 💥 BAZOOKA
         //   Bot 5 — 🦉 OWL (ZigZag PA TP1/TP2 journal, handled before focus mode)
@@ -5652,7 +5705,7 @@ app.post("/incoming", (req, res) => {
             processBazooka(symbol, group, ts, body);
             processYaba(symbol, group, ts, body);           // 🟨 Bot9: 55H ⇄ 65K link
 
-            processExpansion(symbol, group, ts, body);
+            processSalsa(symbol, group, ts, body);
             processFlow(symbol, group, ts, body);
             processCobra(symbol, group, ts, body);          // normal groups only (checked inside)
             processBlackPanther(symbol, group, ts, body);   // groups with a number + letter
@@ -5671,8 +5724,8 @@ app.post("/incoming", (req, res) => {
         processFirst(symbol, group, ts, body);
         // 💥 BAZOOKA (Bot4): 17G / 62H / 44U full-match alert + trail.
         processBazooka(symbol, group, ts, body);
-        // ⚡ EXPANSION global timeframe-disagreement detector (Bot 2).
-        processExpansion(symbol, group, ts, body);
+        // 🌶️ SALSA (Bot2): 3R / 100Y repeat within 10h per symbol.
+        processSalsa(symbol, group, ts, body);
         // 🌊 FLOW global synchronised zone-transition detector.
         processFlow(symbol, group, ts, body);
         // 🐍 MAMBA global 99F match-type direction detector.
@@ -6000,6 +6053,32 @@ app.get("/test/yaba", (req, res) => {
     res.send(ok
         ? "✅ YABA test queued: 8 messages to Bot 9 (links 2 to 9). The repeated " + A + " was ignored, and the last message shows links 7, 8, 9 after the trim."
         : "❌ YABA test problem. Please share the Render logs.");
+});
+
+app.get("/test/salsa", (req, res) => {
+    if (!testSecretOk(req)) return res.status(401).send("❌ Wrong or missing ?secret=");
+
+    const sym = "TEST_SALSA";
+    const now = Date.now();
+    const saved = salsaState;
+    salsaState = { v: SALSA_STATE_VERSION, hits: {} };   // private copy, real history untouched
+
+    const H = 3600000;
+    const results = [
+        processSalsa(sym, "3R",   now - 15 * H, { price: 95,  time: 1 }),   // first ever        -> no
+        processSalsa(sym, "3R",   now - 3 * H,  { price: 100, time: 2 }),   // 12h later (>10h)  -> no
+        processSalsa(sym, "3R",   now - 1 * H,  { price: 102, time: 3 }),   // 2h later          -> SALSA
+        processSalsa(sym, "3R",   now,          { price: 101, time: 4 }),   // 1h later          -> SALSA
+        processSalsa(sym, "100Y", now,          { price: 101, time: 5 }),   // other group, first -> no
+        processSalsa(sym, "17G",  now,          { price: 101, time: 6 })    // not a SALSA group -> no
+    ];
+
+    salsaState = saved;
+    const ok = results.join(",") === "false,false,true,true,false,false";
+
+    res.send(ok
+        ? "✅ SALSA test queued: 2 messages to Bot 2 (3R repeats 2h and 1h apart). The 12h-apart 3R, the first 100Y and the 17G were correctly ignored."
+        : "❌ SALSA test problem: " + results.join(",") + ". Please share the Render logs.");
 });
 
 app.get("/test/:bot", async (req, res) => {
