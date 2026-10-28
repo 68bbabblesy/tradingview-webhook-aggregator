@@ -942,6 +942,7 @@ function sendToTelegram2Disabled(text) {
 function sendToTelegram3(text) { enqueueTelegram(3, text); }
 function sendToTelegram3Html(text) { enqueueTelegram(3, text, { html: true }); }
 function sendToTelegram4(text) { enqueueTelegram(4, text); }
+function sendToTelegram4Html(text) { enqueueTelegram(4, text, { html: true }); }
 function sendToTelegram5(text) { enqueueTelegram(5, text); }
 function sendToTelegram5Html(text) { enqueueTelegram(5, text, { html: true }); }
 function sendToTelegram5Disabled(text) { return; } // Bot 5 is reserved for OWL
@@ -1115,169 +1116,174 @@ function getRecentHashBefore(symbol, ts, windowMs) {
 }
 
 // ==========================================================
-//  💥 BAZOOKA — FULL-MATCH ALERT + TRAIL          -> Bot 4
-//
-//  Only these groups, and only when EVERY level matched
-//  (matched_count === enabled_count):
-//
-//    17G  my.golden.pocket          18 of 18
-//    62H  EARLY 0.5 RET to 0.883    18 of 18
-//    44U  KOSOKO 0.618              4 of 4
-//
-//  Anything less (17 of 18, 3 of 4 ...) is ignored.
-//
-//  One message per full match: the alert details on top, and
-//  underneath the trail of every full match for that symbol +
-//  group so far, e.g. 1) 04:07  2) 04:11  3) 05:30 <- new
-//
-//  The trail starts fresh after BAZOOKA_TRAIL_RESET_HOURS
-//  (default 24) with no new full match for that symbol + group.
-//  The same bar arriving twice (e.g. BINANCE + OKX) counts once.
-//
-//  Optional Render settings (no need to set them):
-//    BAZOOKA_GROUPS             default "17G,62H,44U"
-//    BAZOOKA_TRAIL_RESET_HOURS  default 24
+//  🎯 FOCUS MODE
+//  Only the bots in use run; every other bot is paused.
+//  Set FOCUS_MODE=0 on Render to run every bot again.
 // ==========================================================
 
-const BAZOOKA_GROUPS = new Set(
-    (process.env.BAZOOKA_GROUPS || "17G,62H,44U")
-        .split(",")
-        .map(g => g.trim().toUpperCase())
-        .filter(Boolean)
-);
-
-const BAZOOKA_TRAIL_RESET_MS =
-    (Number(process.env.BAZOOKA_TRAIL_RESET_HOURS) || 24) * 60 * 60 * 1000;
-
-const BAZOOKA_STATE_VERSION = 4;
-
-// 🎯 FOCUS MODE: only FIRST (Bot1), SALSA (Bot2), BAZOOKA (Bot4), OWL (Bot5), COBRA (Bot7) and YABA (Bot9) run. BLACKPANTHER (Bot3) is disabled.
-// Every other bot is paused. Set FOCUS_MODE=0 on Render to run every bot again.
 const FOCUS_MODE = (process.env.FOCUS_MODE || "1").trim() !== "0";
-const BAZOOKA_MAX_TRAIL = 200;   // stored per symbol + group
-const BAZOOKA_MAX_LINES = 25;    // shown in one Telegram message
+
+console.log(FOCUS_MODE
+    ? "🎯 FOCUS MODE: running Bot1 FIRST, Bot2 SALSA, Bot3 BLACKPANTHER, Bot4 BAZOOKA, Bot5 OWL, Bot7 COBRA, Bot9 YABA — all other bots paused"
+    : "▶️ All bots active (FOCUS_MODE=0)");
+
+
+// ==========================================================
+//  💥 BAZOOKA — 28P + 3R + 5K ALL WITHIN 30 MINUTES   -> Bot 4
+//
+//  Same symbol. Fires when all three groups have alerted within
+//  30 minutes (first to last), in any order:
+//
+//      28P 04:07, 3R 04:15, 5K 04:31   -> fires (span 24m)
+//      28P 04:07, 3R 04:15, 5K 04:40   -> no (span 33m)
+//
+//  - Fires when the group that completes the set arrives.
+//  - A group repeating while the set is already complete does not
+//    re-fire (it just refreshes that group's time). It fires again
+//    once a group has dropped out of the 30 minutes and comes back.
+//  - Only the latest alert of each group counts.
+//
+//  Optional Render settings (no need to set them):
+//    BAZOOKA_GROUPS        default "28P,3R,5K"
+//    BAZOOKA_WINDOW_MIN    default 30
+// ==========================================================
+
+const BAZOOKA_GROUPS = (process.env.BAZOOKA_GROUPS || "28P,3R,5K")
+    .split(",")
+    .map(g => g.trim().toUpperCase())
+    .filter(Boolean);
+
+const BAZOOKA_WINDOW_MS = (Number(process.env.BAZOOKA_WINDOW_MIN) || 30) * 60 * 1000;
+const BAZOOKA_STATE_VERSION = 5;
 
 let bazookaState = persisted.bazookaState || {};
 
 // Drop anything saved by older BAZOOKA versions.
 for (const key of Object.keys(bazookaState)) {
     const st = bazookaState[key];
-    if (!st || st.v !== BAZOOKA_STATE_VERSION || !Array.isArray(st.trail)) delete bazookaState[key];
+    if (!st || st.v !== BAZOOKA_STATE_VERSION || !Array.isArray(st.events)) delete bazookaState[key];
 }
 
-console.log("💥 BAZOOKA LOADED — Bot4 alert + trail | full match only | groups: " + [...BAZOOKA_GROUPS].join(", "));
-console.log(FOCUS_MODE ? "🎯 FOCUS MODE: running Bot1 FIRST, Bot2 SALSA, Bot4 BAZOOKA, Bot5 OWL, Bot7 COBRA, Bot9 YABA — Bot3 BLACKPANTHER disabled, all other bots paused" : "▶️ All bots active (FOCUS_MODE=0)");
+console.log(
+    "💥 BAZOOKA LOADED — Bot4 | all of " + BAZOOKA_GROUPS.join(" + ") +
+    " within " + (BAZOOKA_WINDOW_MS / 60000) + "m"
+);
 
-function bazookaNum(v) {
+function bzNum(v) {
     const n = Number(String(v ?? "").replace(/,/g, "").trim());
     return Number.isFinite(n) ? n : null;
 }
 
-function bazookaTime(ts) {
-    return new Date(ts).toLocaleString("en-GB", {
+function bzHm(ts) {
+    return new Date(ts).toLocaleTimeString("en-GB", {
         timeZone: "Europe/London",
-        day: "2-digit",
-        month: "2-digit",
         hour: "2-digit",
-        minute: "2-digit",
-        second: "2-digit"
+        minute: "2-digit"
     });
 }
 
-function bazookaGap(ms) {
-    const safe = Math.max(0, ms);
-    const totalMin = Math.floor(safe / 60000);
-    const h = Math.floor(totalMin / 60);
-    if (h > 0) return h + "h " + (totalMin % 60) + "m";
-    return totalMin + "m " + Math.floor((safe % 60000) / 1000) + "s";
+function bzGap(ms) {
+    const totalMin = Math.floor(Math.max(0, ms) / 60000);
+    const s = Math.floor((Math.max(0, ms) % 60000) / 1000);
+    return totalMin > 0 ? totalMin + "m" : s + "s";
 }
 
-function bazookaPct(from, to) {
+function bzPct(from, to) {
     if (!from || !to) return "";
     const pct = ((to - from) / from) * 100;
     return (pct >= 0 ? "+" : "") + pct.toFixed(2) + "%";
 }
 
 function processBazooka(symbol, group, ts, body = {}) {
-    if (!symbol || !group) return;
+    if (!symbol || !group) return false;
 
     const rawGroup = String(group).trim().toUpperCase();
-    if (!BAZOOKA_GROUPS.has(rawGroup)) return;
+    if (!BAZOOKA_GROUPS.includes(rawGroup)) return false;
 
-    const matched = bazookaNum(body.matched_count);
-    const enabled = bazookaNum(body.enabled_count);
-    if (!enabled || matched !== enabled) return;   // full match only
+    const state = bazookaState[symbol] || { v: BAZOOKA_STATE_VERSION, events: [] };
+    bazookaState[symbol] = state;
 
-    const key = symbol + "|" + rawGroup;
-    let state = bazookaState[key];
+    // Keep only the last 30 minutes.
+    state.events = state.events.filter(e => e && ts - e.time <= BAZOOKA_WINDOW_MS);
 
-    // Fresh trail if none yet, or it went quiet for too long.
-    if (
-        !state ||
-        !state.trail.length ||
-        ts - state.trail[state.trail.length - 1].time > BAZOOKA_TRAIL_RESET_MS
-    ) {
-        state = bazookaState[key] = { v: BAZOOKA_STATE_VERSION, trail: [] };
+    const alreadyIn = state.events.some(e => e.group === rawGroup);
+
+    const matched = bzNum(body.matched_count);
+    const enabled = bzNum(body.enabled_count);
+    const current = {
+        group: rawGroup,
+        time: ts,
+        price: bzNum(body.price ?? body.close),
+        match: matched !== null && enabled ? matched + "/" + enabled : ""
+    };
+
+    // Same group again: refresh it, no new alert.
+    state.events = state.events.filter(e => e.group !== rawGroup);
+    state.events.push(current);
+
+    let fired = false;
+    const groupsIn = new Set(state.events.map(e => e.group));
+
+    if (!alreadyIn && BAZOOKA_GROUPS.every(g => groupsIn.has(g))) {
+        const set = [...state.events].sort((a, b) => a.time - b.time);
+        const first = set[0];
+
+        const rows = set.map(e => ({
+            group: e.group,
+            time: bzHm(e.time),
+            price: e.price === null || e.price === undefined ? "n/a" : String(e.price),
+            after: e === first ? "-" : "+" + bzGap(e.time - first.time),
+            match: e.match || "-",
+            isNew: e === current
+        }));
+
+        const hasMatch = rows.some(r => r.match !== "-");
+        const cols = [
+            { key: "group", title: "Grp", right: false },
+            { key: "time", title: "Time", right: false },
+            { key: "price", title: "Price", right: true },
+            { key: "after", title: "After", right: true },
+            ...(hasMatch ? [{ key: "match", title: "Match", right: true }] : [])
+        ];
+
+        for (const c of cols) {
+            c.width = Math.max(c.title.length, ...rows.map(r => r[c.key].length));
+        }
+
+        const fmtRow = r => cols
+            .map(c => c.right ? r[c.key].padStart(c.width) : r[c.key].padEnd(c.width))
+            .join("  ")
+            .trimEnd();
+
+        const table = [fmtRow(Object.fromEntries(cols.map(c => [c.key, c.title])))]
+            .concat(rows.map(r => fmtRow(r) + (r.isNew ? "  ◀" : "")));
+
+        const pct = bzPct(first.price, current.price);
+
+        sendToTelegram4Html(
+            "💥 <b>BAZOOKA</b>  ·  " + tgEscape(BAZOOKA_GROUPS.join(" + ")) + "\n" +
+            "<b>" + tgEscape(symbol) + "</b>  ·  all " + BAZOOKA_GROUPS.length + " within " + bzGap(current.time - first.time) + "\n" +
+            "Price <b>" + tgEscape(current.price ?? "n/a") + "</b>" +
+            (pct ? "  (" + tgEscape(pct) + " since " + tgEscape(first.group) + ")" : "") + "\n" +
+            "\n<pre>" + tgEscape(table.join("\n")) + "</pre>\n" +
+            "<i>Completed by " + tgEscape(rawGroup) + " · window " + (BAZOOKA_WINDOW_MS / 60000) + "m</i>"
+        );
+
+        fired = true;
     }
 
-    const barTime = bazookaNum(body.time) || ts;
-    if (state.trail.some(e => e.barTime === barTime)) return;   // duplicate copy
-
-    const current = { time: ts, barTime, price: bazookaNum(body.price ?? body.close) };
-    state.trail.push(current);
-
-    if (state.trail.length > BAZOOKA_MAX_TRAIL) {
-        state.trail = state.trail.slice(-BAZOOKA_MAX_TRAIL);
-    }
-
-    const trail = state.trail;
-    const first = trail[0];
-    const shown = trail.slice(-BAZOOKA_MAX_LINES);
-    const hidden = trail.length - shown.length;
-
-    const lines = shown.map((e, i) => {
-        const n = hidden + i + 1;
-        const prev = trail[n - 2];
-        let line = n + ") " + bazookaTime(e.time) + " | Price " + (e.price ?? "n/a");
-
-        if (prev) line += " | +" + bazookaGap(e.time - prev.time);
-
-        const pct = n > 1 ? bazookaPct(first.price, e.price) : "";
-        if (pct) line += " | " + pct + " vs #1";
-
-        if (e === current && trail.length > 1) line += "  ⬅️ new";
-        return line;
-    });
-
-    if (hidden > 0) lines.unshift("… " + hidden + " earlier alert(s) not shown");
-
-    const band =
-        body.band_top !== undefined && body.band_bottom !== undefined
-            ? body.band_top + " – " + body.band_bottom
-            : "n/a";
-
-    sendToTelegram4(
-        "💥 BAZOOKA\n" +
-        "Symbol: " + symbol + "\n" +
-        "Group: " + rawGroup + " (" + matched + " of " + enabled + ")\n" +
-        "Band: " + band + "\n" +
-        "Price: " + (current.price ?? "n/a") + "\n" +
-        "Time: " + bazookaTime(ts) + "\n\n" +
-        "Trail (" + trail.length + " alert" + (trail.length > 1 ? "s over " + bazookaGap(current.time - first.time) : "") + "):\n" +
-        lines.join("\n")
-    );
-
-    // Tidy up long-dead trails.
-    if (Object.keys(bazookaState).length > 2000) {
+    // Tidy up symbols with nothing recent.
+    if (Object.keys(bazookaState).length > 3000) {
         for (const k of Object.keys(bazookaState)) {
-            const t = bazookaState[k]?.trail;
-            if (!Array.isArray(t) || !t.length || ts - t[t.length - 1].time > BAZOOKA_TRAIL_RESET_MS) {
+            const ev = bazookaState[k]?.events;
+            if (!Array.isArray(ev) || !ev.length || ts - Math.max(...ev.map(e => e.time)) > BAZOOKA_WINDOW_MS) {
                 delete bazookaState[k];
             }
         }
     }
 
     saveState();
+    return fired;
 }
 
 // Old activation link kept dead for compatibility.
@@ -1392,46 +1398,48 @@ let gammaMemory = persisted.gammaMemory || {};
 
 
 // ==========================================================
-//  🖤 BLACKPANTHER — ALERT + TRAIL, ALL GROUPS       -> Bot 3
+//  🖤 BLACKPANTHER — ANY 2 OF 28P / 3R / 5K WITHIN 15 MINUTES   -> Bot 3
 //
-//  Every alert whose group has at least one NUMBER and one
-//  LETTER (17G, 44U, 62H, 91W, 35P, #12A ...). No match-count
-//  filter: 13 of 18 counts just the same as 18 of 18.
+//  Same symbol. Fires when two DIFFERENT groups from 28P, 3R and
+//  5K alert within 15 minutes of each other, in any order:
 //
-//  Groups without both (e.g. "A", "#12", no group) are ignored,
-//  which keeps report-style payloads out.
+//      3R 04:07, 5K 04:16          -> fires (3R + 5K, 9m apart)
+//      then 28P 04:20              -> fires again (all three in 15m)
+//      3R 04:07, 28P 04:25         -> no (18m apart)
+//      3R 04:07, 3R 04:10          -> no (same group)
 //
-//  One message per alert: the alert details on top, and the
-//  trail of every alert for that symbol + group so far below.
+//  - Fires each time a new group joins the 15-minute window and
+//    there are then 2 or more different groups in it.
+//  - A group repeating inside the window does not re-fire (it just
+//    refreshes that group's time).
+//  - Fully separate from BAZOOKA: own settings and memory.
 //
-//  The trail starts fresh after BLACKPANTHER_TRAIL_RESET_HOURS
-//  (default 24) with no new alert for that symbol + group.
-//  The same bar arriving twice (e.g. BINANCE + OKX) counts once.
-//
-//  Fully separate from BAZOOKA: own settings, helpers and memory.
+//  Optional Render settings (no need to set them):
+//    BLACKPANTHER_GROUPS       default "28P,3R,5K"
+//    BLACKPANTHER_WINDOW_MIN   default 15
 // ==========================================================
 
-const BLACKPANTHER_TRAIL_RESET_MS =
-    (Number(process.env.BLACKPANTHER_TRAIL_RESET_HOURS) || 24) * 60 * 60 * 1000;
+const BLACKPANTHER_GROUPS = (process.env.BLACKPANTHER_GROUPS || "28P,3R,5K")
+    .split(",")
+    .map(g => g.trim().toUpperCase())
+    .filter(Boolean);
 
-const BLACKPANTHER_STATE_VERSION = 2;
-const BLACKPANTHER_MAX_TRAIL = 200;   // stored per symbol + group
-const BLACKPANTHER_MAX_LINES = 25;    // shown in one Telegram message
+const BLACKPANTHER_WINDOW_MS = (Number(process.env.BLACKPANTHER_WINDOW_MIN) || 15) * 60 * 1000;
+const BLACKPANTHER_MIN_GROUPS = 2;
+const BLACKPANTHER_STATE_VERSION = 3;
 
 let blackPantherMemory = persisted.blackPantherMemory || {};
 
 // Drop anything saved by older BLACKPANTHER versions.
 for (const key of Object.keys(blackPantherMemory)) {
     const st = blackPantherMemory[key];
-    if (!st || st.v !== BLACKPANTHER_STATE_VERSION || !Array.isArray(st.trail)) delete blackPantherMemory[key];
+    if (!st || st.v !== BLACKPANTHER_STATE_VERSION || !Array.isArray(st.events)) delete blackPantherMemory[key];
 }
 
-console.log("🖤 BLACKPANTHER — Bot3 trail | every group with a number + letter | " + ((process.env.BLACKPANTHER_ENABLED || "0").trim() === "1" ? "ENABLED" : "DISABLED"));
-
-function blackPantherGroupOk(group) {
-    const g = String(group || "");
-    return /[0-9]/.test(g) && /[A-Za-z]/.test(g);
-}
+console.log(
+    "🖤 BLACKPANTHER LOADED — Bot3 | any " + BLACKPANTHER_MIN_GROUPS + " of " +
+    BLACKPANTHER_GROUPS.join(" / ") + " within " + (BLACKPANTHER_WINDOW_MS / 60000) + "m"
+);
 
 function bpNum(v) {
     const n = Number(String(v ?? "").replace(/,/g, "").trim());
@@ -1446,23 +1454,10 @@ function bpHm(ts) {
     });
 }
 
-function bpDay(ts) {
-    const parts = new Intl.DateTimeFormat("en-GB", {
-        timeZone: "Europe/London",
-        day: "numeric",
-        month: "numeric"
-    }).formatToParts(new Date(ts));
-    const day = String(Number(parts.find(p => p.type === "day")?.value || 0));
-    const month = Number(parts.find(p => p.type === "month")?.value || 1);
-    return day + " " + ["Jan","Feb","Mar","Apr","May","Jun","Jul","Aug","Sep","Oct","Nov","Dec"][month - 1];
-}
-
 function bpGap(ms) {
-    const safe = Math.max(0, ms);
-    const totalMin = Math.floor(safe / 60000);
-    const h = Math.floor(totalMin / 60);
-    if (h > 0) return h + "h " + (totalMin % 60) + "m";
-    return totalMin + "m " + Math.floor((safe % 60000) / 1000) + "s";
+    const totalMin = Math.floor(Math.max(0, ms) / 60000);
+    const s = Math.floor((Math.max(0, ms) % 60000) / 1000);
+    return totalMin > 0 ? totalMin + "m" : s + "s";
 }
 
 function bpPct(from, to) {
@@ -1471,125 +1466,96 @@ function bpPct(from, to) {
     return (pct >= 0 ? "+" : "") + pct.toFixed(2) + "%";
 }
 
-// 🖤 BLACKPANTHER is DISABLED. Set BLACKPANTHER_ENABLED=1 on Render to switch it back on.
-const BLACKPANTHER_ENABLED = (process.env.BLACKPANTHER_ENABLED || "0").trim() === "1";
-
 function processBlackPanther(symbol, group, ts, body = {}) {
-    if (!BLACKPANTHER_ENABLED) return;
-    if (!symbol || !blackPantherGroupOk(group)) return;
+    if (!symbol || !group) return false;
 
     const rawGroup = String(group).trim().toUpperCase();
-    const key = symbol + "|" + rawGroup;
-    let state = blackPantherMemory[key];
+    if (!BLACKPANTHER_GROUPS.includes(rawGroup)) return false;
 
-    // Fresh trail if none yet, or it went quiet for too long.
-    if (
-        !state ||
-        !state.trail.length ||
-        ts - state.trail[state.trail.length - 1].time > BLACKPANTHER_TRAIL_RESET_MS
-    ) {
-        state = blackPantherMemory[key] = { v: BLACKPANTHER_STATE_VERSION, trail: [] };
-    }
+    const state = blackPantherMemory[symbol] || { v: BLACKPANTHER_STATE_VERSION, events: [] };
+    blackPantherMemory[symbol] = state;
 
-    const barTime = bpNum(body.time) || ts;
-    if (state.trail.some(e => e.barTime === barTime)) return;   // duplicate copy
+    // Keep only the last 15 minutes.
+    state.events = state.events.filter(e => e && ts - e.time <= BLACKPANTHER_WINDOW_MS);
+
+    const alreadyIn = state.events.some(e => e.group === rawGroup);
 
     const matched = bpNum(body.matched_count);
     const enabled = bpNum(body.enabled_count);
-
     const current = {
+        group: rawGroup,
         time: ts,
-        barTime,
         price: bpNum(body.price ?? body.close),
         match: matched !== null && enabled ? matched + "/" + enabled : ""
     };
 
-    state.trail.push(current);
+    // Same group again: refresh it, no new alert.
+    state.events = state.events.filter(e => e.group !== rawGroup);
+    state.events.push(current);
 
-    if (state.trail.length > BLACKPANTHER_MAX_TRAIL) {
-        state.trail = state.trail.slice(-BLACKPANTHER_MAX_TRAIL);
-    }
+    let fired = false;
 
-    const trail = state.trail;
-    const first = trail[0];
-    const shown = trail.slice(-BLACKPANTHER_MAX_LINES);
-    const hidden = trail.length - shown.length;
+    if (!alreadyIn && state.events.length >= BLACKPANTHER_MIN_GROUPS) {
+        const set = [...state.events].sort((a, b) => a.time - b.time);
+        const first = set[0];
 
-    // ---------- trail table ----------
-    const rows = shown.map((e, i) => {
-        const n = hidden + i + 1;
-        return {
-            n: String(n),
+        const rows = set.map(e => ({
+            group: e.group,
             time: bpHm(e.time),
             price: e.price === null || e.price === undefined ? "n/a" : String(e.price),
-            chg: n === 1 ? "-" : (bpPct(first.price, e.price) || "-"),
+            after: e === first ? "-" : "+" + bpGap(e.time - first.time),
             match: e.match || "-",
-            day: bpDay(e.time),
-            isNew: e === current && trail.length > 1
-        };
-    });
+            isNew: e === current
+        }));
 
-    const hasMatch = rows.some(r => r.match !== "-");
-    const cols = [
-        { key: "n", title: "#", right: true },
-        { key: "time", title: "Time", right: false },
-        { key: "price", title: "Price", right: true },
-        { key: "chg", title: "Chg", right: true },
-        ...(hasMatch ? [{ key: "match", title: "Match", right: true }] : [])
-    ];
+        const hasMatch = rows.some(r => r.match !== "-");
+        const cols = [
+            { key: "group", title: "Grp", right: false },
+            { key: "time", title: "Time", right: false },
+            { key: "price", title: "Price", right: true },
+            { key: "after", title: "After", right: true },
+            ...(hasMatch ? [{ key: "match", title: "Match", right: true }] : [])
+        ];
 
-    for (const c of cols) {
-        c.width = Math.max(c.title.length, ...rows.map(r => r[c.key].length));
+        for (const c of cols) {
+            c.width = Math.max(c.title.length, ...rows.map(r => r[c.key].length));
+        }
+
+        const fmtRow = r => cols
+            .map(c => c.right ? r[c.key].padStart(c.width) : r[c.key].padEnd(c.width))
+            .join("  ")
+            .trimEnd();
+
+        const table = [fmtRow(Object.fromEntries(cols.map(c => [c.key, c.title])))]
+            .concat(rows.map(r => fmtRow(r) + (r.isNew ? "  ◀" : "")));
+
+        const pct = bpPct(first.price, current.price);
+        const names = set.map(e => e.group).join(" + ");
+
+        sendToTelegram3Html(
+            "🖤 <b>BLACKPANTHER</b>  ·  " + set.length + " of " + tgEscape(BLACKPANTHER_GROUPS.join(" / ")) + "\n" +
+            "<b>" + tgEscape(symbol) + "</b>  ·  " + tgEscape(names) + " within " + bpGap(current.time - first.time) + "\n" +
+            "Price <b>" + tgEscape(current.price ?? "n/a") + "</b>" +
+            (pct ? "  (" + tgEscape(pct) + " since " + tgEscape(first.group) + ")" : "") + "\n" +
+            "\n<pre>" + tgEscape(table.join("\n")) + "</pre>\n" +
+            "<i>New: " + tgEscape(rawGroup) + " · window " + (BLACKPANTHER_WINDOW_MS / 60000) + "m</i>"
+        );
+
+        fired = true;
     }
 
-    const fmtRow = r => cols
-        .map(c => c.right ? r[c.key].padStart(c.width) : r[c.key].padEnd(c.width))
-        .join("  ")
-        .trimEnd();
-
-    const table = [fmtRow(Object.fromEntries(cols.map(c => [c.key, c.title])))];
-    if (hidden > 0) table.push("… " + hidden + " earlier");
-
-    rows.forEach((r, i) => {
-        if (i > 0 && r.day !== rows[i - 1].day) table.push("── " + r.day + " ──");
-        table.push(fmtRow(r) + (r.isNew ? "  ◀" : ""));
-    });
-
-    // ---------- header ----------
-    const pctSinceFirst = trail.length > 1 ? bpPct(first.price, current.price) : "";
-
-    let msg =
-        "🖤 <b>BLACKPANTHER</b>\n" +
-        "<b>" + tgEscape(symbol) + "</b>  ·  " + tgEscape(rawGroup) +
-        (current.match ? "  ·  " + tgEscape(current.match) : "") + "\n" +
-        "Price <b>" + tgEscape(current.price ?? "n/a") + "</b>" +
-        (pctSinceFirst ? "  (" + tgEscape(pctSinceFirst) + " since #1)" : "") + "\n";
-
-    if (body.band_top !== undefined && body.band_bottom !== undefined) {
-        msg += "Band " + tgEscape(body.band_top) + " – " + tgEscape(body.band_bottom) + "\n";
-    }
-
-    msg +=
-        "\n<pre>" + tgEscape(table.join("\n")) + "</pre>\n" +
-        "<i>" +
-        (trail.length > 1
-            ? trail.length + " alerts over " + bpGap(current.time - first.time) + " · started " + bpDay(first.time) + " " + bpHm(first.time)
-            : "First alert · " + bpDay(first.time) + " " + bpHm(first.time)) +
-        "</i>";
-
-    sendToTelegram3Html(msg);
-
-    // Tidy up long-dead trails.
+    // Tidy up symbols with nothing recent.
     if (Object.keys(blackPantherMemory).length > 3000) {
         for (const k of Object.keys(blackPantherMemory)) {
-            const t = blackPantherMemory[k]?.trail;
-            if (!Array.isArray(t) || !t.length || ts - t[t.length - 1].time > BLACKPANTHER_TRAIL_RESET_MS) {
+            const ev = blackPantherMemory[k]?.events;
+            if (!Array.isArray(ev) || !ev.length || ts - Math.max(...ev.map(e => e.time)) > BLACKPANTHER_WINDOW_MS) {
                 delete blackPantherMemory[k];
             }
         }
     }
 
     saveState();
+    return fired;
 }
 
 function processGamma(symbol, group, ts, body) {
@@ -5694,7 +5660,7 @@ app.post("/incoming", (req, res) => {
         // Only the bots in use run; every other bot is paused:
         //   Bot 1 — 🥇 FIRST
         //   Bot 2 — 🌶️ SALSA
-        //   Bot 3 — 🖤 BLACKPANTHER (disabled — see BLACKPANTHER_ENABLED)
+        //   Bot 3 — 🖤 BLACKPANTHER
         //   Bot 4 — 💥 BAZOOKA
         //   Bot 5 — 🦉 OWL (ZigZag PA TP1/TP2 journal, handled before focus mode)
         //   Bot 7 — 🐍 COBRA
@@ -5708,7 +5674,7 @@ app.post("/incoming", (req, res) => {
             processSalsa(symbol, group, ts, body);
             processFlow(symbol, group, ts, body);
             processCobra(symbol, group, ts, body);          // normal groups only (checked inside)
-            processBlackPanther(symbol, group, ts, body);   // groups with a number + letter
+            processBlackPanther(symbol, group, ts, body);   // 🖤 Bot3: any 2 of 28P / 3R / 5K within 15m
 
             return res.sendStatus(200);
         }
@@ -5722,8 +5688,10 @@ app.post("/incoming", (req, res) => {
         processZebraEcosystem(symbol, group, ts, body);
         // 🥇 FIRST (Bot1): first alert per symbol + group after 3h quiet.
         processFirst(symbol, group, ts, body);
-        // 💥 BAZOOKA (Bot4): 17G / 62H / 44U full-match alert + trail.
+        // 💥 BAZOOKA (Bot4): 28P + 3R + 5K all within 30m.
         processBazooka(symbol, group, ts, body);
+        // 🖤 BLACKPANTHER (Bot3): any 2 of 28P / 3R / 5K within 15m.
+        processBlackPanther(symbol, group, ts, body);
         // 🌶️ SALSA (Bot2): 3R / 100Y repeat within 10h per symbol.
         processSalsa(symbol, group, ts, body);
         // 🌊 FLOW global synchronised zone-transition detector.
@@ -5910,8 +5878,8 @@ saveState();
 //
 //    /test/7?secret=YOUR_ALERT_SECRET      -> plain test message to Bot 7
 //    /test/3?secret=YOUR_ALERT_SECRET      -> same for any bot number 1-15
-//    /test/bazooka                          -> fake 17G trail of 3 -> Bot 4
-//    /test/blackpanther                     -> fake 35P trail of 3 -> Bot 3
+//    /test/bazooka                          -> fake 28P + 3R + 5K -> Bot 4
+//    /test/blackpanther                     -> fake 2-of-3 pairs -> Bot 3
 //    /test/owl?secret=YOUR_ALERT_SECRET    -> fake ZigZag TP1/TP2 trade -> Bot 5
 //    /test/cobra?secret=YOUR_ALERT_SECRET  -> runs 2 fake NORMAL alerts
 //                                             through the real COBRA logic
@@ -5957,51 +5925,54 @@ app.get("/test/cobra", (req, res) => {
 app.get("/test/bazooka", (req, res) => {
     if (!testSecretOk(req)) return res.status(401).send("❌ Wrong or missing ?secret=");
 
-    const key = "TEST_BAZOOKA|17G";
+    const sym = "TEST_BAZOOKA";
     const now = Date.now();
-    delete bazookaState[key];
+    const M = 60000;
+    const [A, B, C] = BAZOOKA_GROUPS;
+    const saved = bazookaState[sym];
+    delete bazookaState[sym];
 
-    const fire = (min, price, time, matched = 18) =>
-        processBazooka("TEST_BAZOOKA", "17G", now - min * 60000, {
-            matched_count: matched, enabled_count: 18,
-            band_top: "0.55", band_bottom: "0.66", price, time
-        });
+    const results = [
+        processBazooka(sym, A, now - 40 * M, { price: 99 }),    // 1st group
+        processBazooka(sym, B, now - 25 * M, { price: 100 }),   // 2nd group
+        processBazooka(sym, C, now - 5 * M,  { price: 101 }),   // A is 35m old -> no
+        processBazooka(sym, A, now,          { price: 102 })    // B, C, A within 25m -> BAZOOKA
+    ];
 
-    fire(83, 99, 1, 17);   // 17 of 18 -> ignored
-    fire(83, 100, 2);
-    fire(79, 101, 3);
-    fire(0, 98.5, 4);
+    delete bazookaState[sym];
+    if (saved) bazookaState[sym] = saved;
+    const ok = results.join(",") === "false,false,false,true";
 
-    const count = bazookaState[key]?.trail?.length || 0;
-    delete bazookaState[key];
-
-    res.send(count === 3
-        ? "✅ BAZOOKA test queued: 3 messages to Bot 4, the trail growing from 1 to 3 alerts (the 17 of 18 was correctly ignored)."
-        : "❌ BAZOOKA test problem: trail count was " + count + " (expected 3). Please share the Render logs.");
+    res.send(ok
+        ? "✅ BAZOOKA test queued: 1 message to Bot 4 (" + B + ", " + C + ", " + A + " within 25m). The earlier attempt with a 35m spread was correctly ignored."
+        : "❌ BAZOOKA test problem: " + results.join(",") + ". Please share the Render logs.");
 });
 
 app.get("/test/blackpanther", (req, res) => {
     if (!testSecretOk(req)) return res.status(401).send("❌ Wrong or missing ?secret=");
 
-    const key = "TEST_BLACKPANTHER|35P";
+    const sym = "TEST_BLACKPANTHER";
     const now = Date.now();
-    delete blackPantherMemory[key];
+    const M = 60000;
+    const [A, B, C] = BLACKPANTHER_GROUPS;
+    const saved = blackPantherMemory[sym];
+    delete blackPantherMemory[sym];
 
-    const fire = (min, price, time, matched) =>
-        processBlackPanther("TEST_BLACKPANTHER", "35P", now - min * 60000,
-            { matched_count: matched, enabled_count: 18, price, time });
+    const results = [
+        processBlackPanther(sym, A, now - 40 * M, { price: 99 }),    // alone
+        processBlackPanther(sym, B, now - 22 * M, { price: 100 }),   // 18m after A -> no
+        processBlackPanther(sym, B, now - 20 * M, { price: 100 }),   // same group -> no
+        processBlackPanther(sym, C, now - 10 * M, { price: 101 }),   // B + C within 10m -> BLACKPANTHER
+        processBlackPanther(sym, A, now - 8 * M,  { price: 102 })    // A joins -> all 3 within 12m -> BLACKPANTHER
+    ];
 
-    processBlackPanther("TEST_BLACKPANTHER", "A", now, { price: 1, time: 9 });   // no number -> ignored
-    fire(83, 100, 1, 13);
-    fire(79, 101, 2, 18);
-    fire(0, 98.5, 3, 15);
+    delete blackPantherMemory[sym];
+    if (saved) blackPantherMemory[sym] = saved;
+    const ok = results.join(",") === "false,false,false,true,true";
 
-    const count = blackPantherMemory[key]?.trail?.length || 0;
-    delete blackPantherMemory[key];
-
-    res.send(count === 3
-        ? "✅ BLACKPANTHER test queued: 3 messages to Bot 3, the trail growing from 1 to 3 alerts (group \"A\" was correctly ignored)."
-        : "❌ BLACKPANTHER test problem: trail count was " + count + " (expected 3). Please share the Render logs.");
+    res.send(ok
+        ? "✅ BLACKPANTHER test queued: 2 messages to Bot 3 (" + B + " + " + C + ", then all three). The 18m pair and the repeat were correctly ignored."
+        : "❌ BLACKPANTHER test problem: " + results.join(",") + ". Please share the Render logs.");
 });
 
 app.get("/test/first", (req, res) => {
