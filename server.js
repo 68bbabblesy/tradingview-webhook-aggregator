@@ -102,7 +102,6 @@ function loadState() {
                 speshComboState: parsed.speshComboState || {},
                 cobraComboState: parsed.cobraComboState || {},
                 cabalState: parsed.cabalState || {},
-                mambaFirstState: parsed.mambaFirstState || {},
                 events: parsed.events || {},
                 blackPantherMemory: parsed.blackPantherMemory || {},
                 gammaMemory: parsed.gammaMemory || {},
@@ -164,7 +163,6 @@ function loadState() {
         speshComboState: {},
         cobraComboState: {},
         cabalState: {},
-        mambaFirstState: {},
         events: {},
         blackPantherMemory: {},
         gammaMemory: {},
@@ -232,7 +230,6 @@ function buildStateSnapshot() {
         speshComboState,
         cobraComboState,
         cabalState,
-        mambaFirstState,
         events,
         blackPantherMemory,
         gammaMemory,
@@ -947,6 +944,8 @@ function sendToTelegram5(text) { enqueueTelegram(5, text); }
 function sendToTelegram5Html(text) { enqueueTelegram(5, text, { html: true }); }
 function sendToTelegram5Disabled(text) { return; } // Bot 5 is reserved for OWL
 function sendToTelegram6(text) { enqueueTelegram(6, text); }
+function sendToTelegram6Html(text) { enqueueTelegram(6, text, { html: true }); }
+function sendToTelegram6Disabled(text) { return; } // Bot 6 is reserved for MAMBA
 function sendToTelegram7(text) { enqueueTelegram(7, text); }
 function sendToTelegram8(text) { enqueueTelegram(8, text); }
 function sendToTelegram8Html(text) { enqueueTelegram(8, text, { html: true }); }
@@ -1124,7 +1123,7 @@ function getRecentHashBefore(symbol, ts, windowMs) {
 const FOCUS_MODE = (process.env.FOCUS_MODE || "1").trim() !== "0";
 
 console.log(FOCUS_MODE
-    ? "🎯 FOCUS MODE: running Bot1 FIRST, Bot2 SALSA, Bot3 BLACKPANTHER, Bot4 BAZOOKA, Bot5 OWL, Bot7 COBRA, Bot9 YABA — all other bots paused"
+    ? "🎯 FOCUS MODE: running Bot1 FIRST, Bot2 SALSA, Bot3 BLACKPANTHER, Bot4 BAZOOKA, Bot5 OWL, Bot6 MAMBA, Bot7 COBRA, Bot9 YABA — all other bots paused"
     : "▶️ All bots active (FOCUS_MODE=0)");
 
 
@@ -2136,7 +2135,7 @@ function processSideFlip(symbol, group, ts) {
     const diffMin = Math.floor(diffMs / 60000);
     const diffSec = Math.floor((diffMs % 60000) / 1000);
 
-    sendToTelegram6(
+    sendToTelegram6Disabled(   // muted: Bot 6 is MAMBA only
         `🔁 SIDE_FLIP\n` +
         `Symbol: ${symbol}\n` +
         `Pattern: ${a.side} → ${b.side} → ${c.side}\n` +
@@ -2148,31 +2147,6 @@ function processSideFlip(symbol, group, ts) {
 }
 
 
-// ==========================================================
-//  MAMBA (PERSISTENT — first family cross in 2h)
-//  Condition:
-//    - Main ecosystem only
-//    - Same symbol
-//    - Same numeric family, e.g. 16A + 16B
-//    - Different exact subgroups
-//    - Pair must occur within 90 seconds
-//    - Only first valid cross per symbol+family in 2 hours
-//  Bot 6
-// ==========================================================
-
-const MAMBA_PAIR_WINDOW_MS = 90 * 1000; // 90 seconds
-const MAMBA_ANCHOR_WINDOW_MS = 2 * 60 * 60 * 1000; // 2 hours
-
-// mambaMemory[symbol][family] = { group, time }
-let mambaMemory = persisted.mambaMemory || {};
-
-// mambaFirstState[symbol][family] = lastFireTimestamp
-let mambaFirstState = persisted.mambaFirstState || {};
-
-function getMambaFamily(group) {
-    const match = String(group || "").match(/^(\d+)[A-Z]$/);
-    return match ? match[1] : "";
-}
 
 
 /* ─────────────────────────────────────────────────────────────────────────────
@@ -2465,212 +2439,180 @@ function processFlow(symbol, group, ts, body) {
     saveState();
 }
 
+// ==========================================================
+//  🐍 MAMBA — 3R REPEATS, 1 HOUR OR MORE APART       -> Bot 6
+//
+//  Same symbol. Builds a continuous chain of 3R alerts where each
+//  link is at least 1 hour after the previous link:
+//
+//      3R 04:00   -> link 1 (remembered, no alert)
+//      3R 04:20   -> only 20m after link 1  -> ignored
+//      3R 05:10   -> 1h 10m after link 1    -> link 2 -> MAMBA fires
+//      3R 06:30   -> 1h 20m after link 2    -> link 3 -> MAMBA fires
+//
+//  - An ignored 3R doesn't move the clock: the next link must be
+//    1h+ after the last LINK, not after the ignored alert.
+//  - Continuous: no time limit between links.
+//  - Each message shows only the last 4 links; the overall link
+//    number keeps counting.
+//
+//  Optional Render settings (no need to set them):
+//    MAMBA_GROUP          default 3R
+//    MAMBA_MIN_GAP_MIN    default 60
+// ==========================================================
+
+const MAMBA_GROUP = (process.env.MAMBA_GROUP || "3R").trim().toUpperCase();
+const MAMBA_MIN_GAP_MS = (Number(process.env.MAMBA_MIN_GAP_MIN) || 60) * 60 * 1000;
+const MAMBA_SHOW = 4;                                   // links shown per message
+const MAMBA_CLEANUP_MS = 30 * 24 * 60 * 60 * 1000;      // housekeeping only
+const MAMBA_STATE_VERSION = 2;
+
+let mambaMemory = persisted.mambaMemory || {};
+
+// Drop anything saved by the old 99F / family-cross MAMBA.
+for (const key of Object.keys(mambaMemory)) {
+    const st = mambaMemory[key];
+    if (!st || st.v !== MAMBA_STATE_VERSION || !Array.isArray(st.links)) delete mambaMemory[key];
+}
+
+console.log(
+    "🐍 MAMBA LOADED — Bot6 | " + MAMBA_GROUP + " repeats " +
+    (MAMBA_MIN_GAP_MS / 60000) + "m+ apart | last " + MAMBA_SHOW + " links shown"
+);
+
+function mbNum(v) {
+    const n = Number(String(v ?? "").replace(/,/g, "").trim());
+    return Number.isFinite(n) ? n : null;
+}
+
+function mbHm(ts) {
+    return new Date(ts).toLocaleTimeString("en-GB", {
+        timeZone: "Europe/London",
+        hour: "2-digit",
+        minute: "2-digit"
+    });
+}
+
+function mbDay(ts) {
+    const parts = new Intl.DateTimeFormat("en-GB", {
+        timeZone: "Europe/London",
+        day: "numeric",
+        month: "numeric"
+    }).formatToParts(new Date(ts));
+    const day = String(Number(parts.find(p => p.type === "day")?.value || 0));
+    const month = Number(parts.find(p => p.type === "month")?.value || 1);
+    return day + " " + ["Jan","Feb","Mar","Apr","May","Jun","Jul","Aug","Sep","Oct","Nov","Dec"][month - 1];
+}
+
+function mbGap(ms) {
+    const totalMin = Math.floor(Math.max(0, ms) / 60000);
+    const d = Math.floor(totalMin / 1440);
+    const h = Math.floor((totalMin % 1440) / 60);
+    const m = totalMin % 60;
+    if (d > 0) return d + "d " + h + "h";
+    return h > 0 ? h + "h " + m + "m" : m + "m";
+}
+
+function mbPct(from, to) {
+    if (!from || !to) return "";
+    const pct = ((to - from) / from) * 100;
+    return (pct >= 0 ? "+" : "") + pct.toFixed(2) + "%";
+}
+
 function processMamba(symbol, group, ts, body = {}) {
+    if (!symbol || !group) return false;
+    if (String(group).trim().toUpperCase() !== MAMBA_GROUP) return false;
 
-    if (!symbol || !group) return;
+    const matched = mbNum(body.matched_count);
+    const enabled = mbNum(body.enabled_count);
+    const link = {
+        time: ts,
+        price: mbNum(body.price ?? body.close),
+        match: matched !== null && enabled ? matched + "/" + enabled : ""
+    };
 
-    const rawGroup = String(group || "").trim().toUpperCase();
+    let state = mambaMemory[symbol];
 
-    // MAMBA only tracks exact group 99F.
-    if (rawGroup !== "99F") return;
-
-    const matchTypeRaw =
-        body?.match_type ??
-        body?.matchType ??
-        body?.matchtype ??
-        body?.type ??
-        "";
-
-    const matchType = String(matchTypeRaw || "").trim().toUpperCase();
-
-    // MAMBA needs a clear match type for the directional price rule.
-    if (matchType !== "RETRACEMENTS" && matchType !== "EXTENSIONS") return;
-
-    const priceRaw =
-        body?.price ??
-        body?.close ??
-        body?.current_price ??
-        body?.alert_price ??
-        body?.level ??
-        "";
-
-    const price = Number(
-        String(priceRaw)
-            .replace(/,/g, "")
-            .replace(/[^0-9.-]/g, "")
-    );
-
-    if (!Number.isFinite(price) || price <= 0) return;
-
-    const MAMBA_MIN_GAP_MS = 5 * 60 * 1000;        // 5 minutes
-    const MAMBA_MAX_GAP_MS = 24 * 60 * 60 * 1000;  // 24 hours
-
-    function mambaPriceDiffPct(a, b) {
-        const base = Math.abs(Number(a));
-        const other = Math.abs(Number(b));
-
-        if (!base || !other) return NaN;
-
-        return Math.abs(other - base) / base * 100;
-    }
-
-    function mambaDirectionPass(previousPrice, latestPrice, latestMatchType) {
-        const prev = Number(previousPrice);
-        const latest = Number(latestPrice);
-
-        if (!Number.isFinite(prev) || !Number.isFinite(latest)) return false;
-
-        // For RETRACEMENTS, previous price must be lower than or equal to latest.
-        if (latestMatchType === "RETRACEMENTS") {
-            return prev >= latest;
-        }
-
-        // For EXTENSIONS, previous price must be higher than or equal to latest.
-        if (latestMatchType === "EXTENSIONS") {
-            return prev <= latest;
-        }
-
+    // First 3R for this symbol: start the chain, no alert yet.
+    if (!state || !state.links.length) {
+        mambaMemory[symbol] = { v: MAMBA_STATE_VERSION, total: 1, startedAt: ts, links: [{ n: 1, ...link }] };
+        saveState();
         return false;
     }
 
-    function mambaEventLine(e, index) {
-        return (
-            (index + 1) + ") " +
-            e.group +
-            " | " + (e.matchType || "n/a") +
-            " | Price " + e.price +
-            " @ " + formatDateTime(e.time)
-        );
+    const last = state.links[state.links.length - 1];
+
+    // Less than 1 hour since the last link: ignore, clock unchanged.
+    if (ts - last.time < MAMBA_MIN_GAP_MS) return false;
+
+    state.total += 1;
+    const current = { n: state.total, ...link };
+    state.links.push(current);
+    if (state.links.length > MAMBA_SHOW) state.links = state.links.slice(-MAMBA_SHOW);
+
+    const links = state.links;
+    const first = links[0];
+
+    // ---------- last 4 links ----------
+    const rows = links.map((e, i) => ({
+        n: String(e.n),
+        time: mbHm(e.time),
+        price: e.price === null || e.price === undefined ? "n/a" : String(e.price),
+        gap: i === 0 ? (e.n > 1 ? "…" : "-") : mbGap(e.time - links[i - 1].time),
+        match: e.match || "-",
+        day: mbDay(e.time),
+        isNew: e === current
+    }));
+
+    const hasMatch = rows.some(r => r.match !== "-");
+    const cols = [
+        { key: "n", title: "#", right: true },
+        { key: "time", title: "Time", right: false },
+        { key: "price", title: "Price", right: true },
+        { key: "gap", title: "Gap", right: true },
+        ...(hasMatch ? [{ key: "match", title: "Match", right: true }] : [])
+    ];
+
+    for (const c of cols) {
+        c.width = Math.max(c.title.length, ...rows.map(r => r[c.key].length));
     }
 
-    if (
-        !mambaMemory[symbol] ||
-        typeof mambaMemory[symbol] !== "object" ||
-        Array.isArray(mambaMemory[symbol])
-    ) {
-        mambaMemory[symbol] = {
-            events: [],
-            lastSentKey: ""
-        };
-    }
+    const fmtRow = r => cols
+        .map(c => c.right ? r[c.key].padStart(c.width) : r[c.key].padEnd(c.width))
+        .join("  ")
+        .trimEnd();
 
-    if (!Array.isArray(mambaMemory[symbol].events)) {
-        mambaMemory[symbol] = {
-            events: [],
-            lastSentKey: ""
-        };
-    }
+    const table = [fmtRow(Object.fromEntries(cols.map(c => [c.key, c.title])))];
+    if (first.n > 1) table.push("… " + (first.n - 1) + " earlier link(s)");
 
-    const state = mambaMemory[symbol];
+    rows.forEach((r, i) => {
+        if (i > 0 && r.day !== rows[i - 1].day) table.push("── " + r.day + " ──");
+        table.push(fmtRow(r) + (r.isNew ? "  ◀" : ""));
+    });
 
-    const current = {
-        group: rawGroup,
-        matchType,
-        time: ts,
-        price
-    };
+    const pct = mbPct(first.price, current.price);
 
-    const cutoff = ts - MAMBA_MAX_GAP_MS - (10 * 60 * 1000);
+    sendToTelegram6Html(
+        "🐍 <b>MAMBA</b>  ·  " + tgEscape(MAMBA_GROUP) + " repeat, " + (MAMBA_MIN_GAP_MS / 3600000) + "h+ apart\n" +
+        "<b>" + tgEscape(symbol) + "</b>  ·  link " + current.n +
+        (current.match ? "  ·  " + tgEscape(current.match) : "") + "\n" +
+        "Price <b>" + tgEscape(current.price ?? "n/a") + "</b>" +
+        (pct ? "  (" + tgEscape(pct) + " since #" + first.n + ")" : "") + "\n" +
+        "\n<pre>" + tgEscape(table.join("\n")) + "</pre>\n" +
+        "<i>" + current.n + " links over " + mbGap(ts - state.startedAt) +
+        " · started " + mbDay(state.startedAt) + " " + mbHm(state.startedAt) + "</i>"
+    );
 
-    state.events = state.events
-        .filter(e =>
-            e &&
-            e.group === "99F" &&
-            typeof e.time === "number" &&
-            e.time >= cutoff &&
-            Number.isFinite(Number(e.price)) &&
-            Number(e.price) > 0
-        )
-        .sort((a, b) => a.time - b.time);
-
-    // Check all previous 99F alerts within the 24h window.
-    // It does NOT have to be the most recent previous alert.
-    const prior = state.events
-        .map(e => {
-            const gapMs = Math.abs(ts - e.time);
-            const diffPct = mambaPriceDiffPct(e.price, current.price);
-            const directionOk = mambaDirectionPass(e.price, current.price, current.matchType);
-
-            return {
-                event: e,
-                gapMs,
-                diffPct,
-                directionOk
-            };
-        })
-        .filter(x =>
-            x.gapMs >= MAMBA_MIN_GAP_MS &&
-            x.gapMs <= MAMBA_MAX_GAP_MS &&
-            Number.isFinite(x.diffPct) &&
-            x.directionOk
-        )
-        .sort((a, b) => b.event.time - a.event.time)[0];
-
-    if (prior) {
-        const first = prior.event.time <= current.time ? prior.event : current;
-        const second = prior.event.time <= current.time ? current : prior.event;
-
-        const pairKey = [
-            first.group + ":" + (first.matchType || "") + ":" + first.price + ":" + first.time,
-            second.group + ":" + (second.matchType || "") + ":" + second.price + ":" + second.time
-        ].sort().join("|");
-
-        if (state.lastSentKey !== pairKey) {
-            const gapMin = Math.floor(prior.gapMs / 60000);
-            const gapSec = Math.floor((prior.gapMs % 60000) / 1000);
-
-            const directionText =
-                current.matchType === "RETRACEMENTS"
-                    ? "Previous price >= latest price"
-                    : "Previous price <= latest price";
-
-            sendToTelegram6(
-                "🐍 MAMBA\n" +
-                "Symbol: " + symbol + "\n" +
-                "Group: 99F\n" +
-                "Match type: " + current.matchType + "\n" +
-                "Gap: " + gapMin + "m " + gapSec + "s\n" +
-                "Price difference: " + prior.diffPct.toFixed(3) + "%\n\n" +
-                "Alerts:\n" +
-                mambaEventLine(first, 0) + "\n" +
-                mambaEventLine(second, 1) + "\n\n" +
-                "Direction check: " + directionText + "\n" +
-                "Rule: exact 99F repeat, 5 minutes to 24 hours, no price-difference cap"
-            );
-
-            state.lastSentKey = pairKey;
-        }
-    }
-
-    state.events.push(current);
-
-    if (state.events.length > 500) {
-        state.events = state.events.slice(-500);
-    }
-
-    if (Object.keys(mambaMemory).length > 5000) {
-        for (const sym of Object.keys(mambaMemory)) {
-            const st = mambaMemory[sym];
-
-            if (!st || typeof st !== "object" || !Array.isArray(st.events)) {
-                delete mambaMemory[sym];
-                continue;
-            }
-
-            st.events = st.events.filter(e =>
-                e &&
-                e.group === "99F" &&
-                typeof e.time === "number" &&
-                e.time >= cutoff
-            );
-
-            if (!st.events.length) {
-                delete mambaMemory[sym];
-            }
+    // Housekeeping only if memory ever gets very large: drop chains idle 30+ days.
+    if (Object.keys(mambaMemory).length > 3000) {
+        for (const k of Object.keys(mambaMemory)) {
+            const l = mambaMemory[k]?.links;
+            if (!Array.isArray(l) || !l.length || ts - l[l.length - 1].time > MAMBA_CLEANUP_MS) delete mambaMemory[k];
         }
     }
 
     saveState();
+    return true;
 }
 
 function processSpesh(symbol, group, ts, body) {
@@ -3269,7 +3211,7 @@ function registerTrinity(symbol, type) {
 
                 if (s.sideFlip) {
 
-                    sendToTelegram6(
+                    sendToTelegram6Disabled(   // muted: Bot 6 is MAMBA only
                         `⚡ TRINITY_FLIP+\n` +
                         `Symbol: ${symbol}\n` +
                         `Signals: ANY_TWO + MAMBA + MINTA + SIDE_FLIP\n` +
@@ -3278,7 +3220,7 @@ function registerTrinity(symbol, type) {
 
                 } else {
 
-                    sendToTelegram6(
+                    sendToTelegram6Disabled(   // muted: Bot 6 is MAMBA only
                         `⚡ TRINITY\n` +
                         `Symbol: ${symbol}\n` +
                         `Signals: ANY_TWO + MAMBA + MINTA\n` +
@@ -5662,6 +5604,7 @@ app.post("/incoming", (req, res) => {
         //   Bot 2 — 🌶️ SALSA
         //   Bot 3 — 🖤 BLACKPANTHER
         //   Bot 4 — 💥 BAZOOKA
+        //   Bot 6 — 🐍 MAMBA
         //   Bot 5 — 🦉 OWL (ZigZag PA TP1/TP2 journal, handled before focus mode)
         //   Bot 7 — 🐍 COBRA
         //   Bot 9 — 🟨 YABA
@@ -5672,7 +5615,7 @@ app.post("/incoming", (req, res) => {
             processYaba(symbol, group, ts, body);           // 🟨 Bot9: 55H ⇄ 65K link
 
             processSalsa(symbol, group, ts, body);
-            processFlow(symbol, group, ts, body);
+            processMamba(symbol, group, ts, body);          // 🐍 Bot6: 3R repeats 1h+ apart
             processCobra(symbol, group, ts, body);          // normal groups only (checked inside)
             processBlackPanther(symbol, group, ts, body);   // 🖤 Bot3: any 2 of 28P / 3R / 5K within 15m
 
@@ -5694,10 +5637,8 @@ app.post("/incoming", (req, res) => {
         processBlackPanther(symbol, group, ts, body);
         // 🌶️ SALSA (Bot2): 3R / 100Y repeat within 10h per symbol.
         processSalsa(symbol, group, ts, body);
-        // 🌊 FLOW global synchronised zone-transition detector.
-        processFlow(symbol, group, ts, body);
-        // 🐍 MAMBA global 99F match-type direction detector.
-        // Runs before isolated ecosystem returns so normal, #, ~, @, ^ and $ can all be caught.
+        // 🌊 FLOW switched off: it posted to Bot 6, which is now MAMBA only.
+        // 🐍 MAMBA (Bot6): 3R repeats 1h+ apart per symbol.
         processMamba(symbol, group, ts, body);
 
 
@@ -6050,6 +5991,35 @@ app.get("/test/salsa", (req, res) => {
     res.send(ok
         ? "✅ SALSA test queued: 2 messages to Bot 2 (3R repeats 2h and 1h apart). The 12h-apart 3R, the first 100Y and the 17G were correctly ignored."
         : "❌ SALSA test problem: " + results.join(",") + ". Please share the Render logs.");
+});
+
+app.get("/test/mamba", (req, res) => {
+    if (!testSecretOk(req)) return res.status(401).send("❌ Wrong or missing ?secret=");
+
+    const sym = "TEST_MAMBA";
+    const now = Date.now();
+    const M = 60000;
+    const saved = mambaMemory[sym];
+    delete mambaMemory[sym];
+
+    const results = [
+        processMamba(sym, MAMBA_GROUP, now - 400 * M, { price: 100 }),  // link 1 (no alert)
+        processMamba(sym, MAMBA_GROUP, now - 380 * M, { price: 99 }),   // 20m later -> ignored
+        processMamba(sym, MAMBA_GROUP, now - 330 * M, { price: 101 }),  // 1h10m after link 1 -> link 2
+        processMamba(sym, MAMBA_GROUP, now - 250 * M, { price: 102 }),  // link 3
+        processMamba(sym, MAMBA_GROUP, now - 180 * M, { price: 103 }),  // link 4
+        processMamba(sym, MAMBA_GROUP, now - 60 * M,  { price: 104 }),  // link 5 -> shows 2..5
+        processMamba(sym, "5K", now, { price: 105 })                    // other group -> ignored
+    ];
+
+    const total = mambaMemory[sym]?.total;
+    delete mambaMemory[sym];
+    if (saved) mambaMemory[sym] = saved;
+    const ok = results.join(",") === "false,false,true,true,true,true,false" && total === 5;
+
+    res.send(ok
+        ? "✅ MAMBA test queued: 4 messages to Bot 6 (links 2 to 5). The 3R only 20m later was ignored, and the last message shows links 2–5."
+        : "❌ MAMBA test problem: " + results.join(",") + " total=" + total + ". Please share the Render logs.");
 });
 
 app.get("/test/:bot", async (req, res) => {
